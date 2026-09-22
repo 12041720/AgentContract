@@ -3,6 +3,7 @@
 **Status:** READY_FOR_EXECUTOR  
 **Milestone:** M1 — Executable contract core  
 **Owner:** Execution agent  
+**Work branch:** `task/TASK-001-core-ledger`  
 **Main-agent review:** pending
 
 ## Objective
