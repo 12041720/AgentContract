@@ -14,6 +14,7 @@
 
 - Task: **TASK-001 — Core domain model and Constraint Ledger**
 - Task file: `.agent/tasks/TASK-001.md`
+- Work branch: `task/TASK-001-core-ledger`
 - Status: **READY_FOR_EXECUTOR**
 - Owner: Execution agent
 - Main-agent review: pending
