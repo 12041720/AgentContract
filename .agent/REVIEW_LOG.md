@@ -122,3 +122,24 @@ Next:
 - Historical TASK-001 review records mentioning Python 3.11 remain unchanged because they describe what was actually tested at that time.
 
 ---
+
+## 2026-09-23 — TASK-002 first implementation review
+
+**Implementation reviewed:** `431534bd21ab62751a63b47db19d6368c5828a08`
+
+**Verdict:** CHANGES_REQUESTED
+
+**Verified strengths:**
+- local Python 3.12.9 baseline followed and uv-managed 3.11 removed;
+- shared immutable primitive extracted cleanly;
+- strong initial trace identity/sequence/correlation model;
+- pointer/filter/serialization paths implemented;
+- executor reports 64/64 tests passing.
+
+**Blocking findings:**
+- TOOL_RESULT can contain contradictory provenance when `parent_id` points to a different tool call than `ToolResult.call_id`.
+- `ToolResult.output: Any` can retain unsupported mutable objects such as `bytearray`, allowing recorded history to change after creation and weakening JSON durability guarantees.
+
+**Next:** execution agent fixes TASK-002 on `task/TASK-002-trace-model`; TASK-003 remains blocked.
+
+---
