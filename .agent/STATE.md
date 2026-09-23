@@ -12,19 +12,20 @@
 
 ## Current active task
 
-- Task: **TASK-001 — Core domain model and Constraint Ledger**
-- Task file: `.agent/tasks/TASK-001.md`
-- Work branch: `task/TASK-001-core-ledger`
-- Status: **CHANGES_REQUESTED**
+- Task: **TASK-002 — Unified trace and provenance model**
+- Task file: `.agent/tasks/TASK-002.md`
+- Work branch: `task/TASK-002-trace-model`
+- Status: **READY_FOR_EXECUTOR**
 - Owner: Execution agent
-- Main-agent review: TASK-001 third-round final hardening requested after review of `b1522169346945cb22a4be62bcf1cb2c2b0731a8`
+- Main-agent review: TASK-001 accepted and merged; TASK-002 ready for execution
 
 ## Main-agent checkpoint
 
 - Repository initialized on 2026-09-22.
 - Persistent main-agent/executor protocol established.
 - High-level architecture fixed for v0.1.
-- TASK-001 round-3 implementation was reviewed. Lifecycle enforcement is now centralized, but two final immutability hardening blockers remain. No implementation task has been accepted yet.
+- TASK-001 accepted after final hardening and integrated to `main` as `48a7ae1cc07025a400b11804c298c2970cfc5107`.
+- TASK-002 task contract has been created and is now active.
 
 ## Current design decisions
 
@@ -38,7 +39,7 @@
 
 ## Review gate
 
-The main agent will not activate TASK-002 until TASK-001 fixes the recorded blockers, passes Python 3.11+ checks, and is re-reviewed.
+The main agent will not activate TASK-003 until TASK-002 satisfies its acceptance criteria and is reviewed.
 
 ## Resume instructions for the main agent
 
