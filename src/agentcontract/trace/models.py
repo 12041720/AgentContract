@@ -20,6 +20,38 @@ EventId: TypeAlias = str
 ToolCallId: TypeAlias = str
 
 
+def _freeze_trace_value(val: Any) -> Any:
+    """Recursively validate and freeze trace values into an immutable, JSON-compatible domain.
+
+    Permitted types:
+    - None
+    - bool
+    - int (excluding bool)
+    - float
+    - str
+    - Mapping (recursively frozen into FrozenDict)
+    - list, tuple (recursively frozen into tuple)
+    - set, frozenset (recursively frozen into frozenset)
+
+    Any other type (e.g. bytearray, bytes, custom classes, mutable containers) is rejected
+    with TraceValidationError.
+    """
+    if val is None or isinstance(val, (bool, int, float, str)):
+        return val
+    if isinstance(val, FrozenDict):
+        return FrozenDict({str(k): _freeze_trace_value(v) for k, v in val.items()})
+    if isinstance(val, Mapping):
+        return FrozenDict({str(k): _freeze_trace_value(v) for k, v in val.items()})
+    if isinstance(val, (list, tuple)):
+        return tuple(_freeze_trace_value(v) for v in val)
+    if isinstance(val, (set, frozenset)):
+        return frozenset(_freeze_trace_value(v) for v in val)
+    raise TraceValidationError(
+        f"Unsupported trace value of type '{type(val).__name__}': trace values must be "
+        f"scalars (None, bool, int, float, str) or composed of mappings/sequences thereof."
+    )
+
+
 class ActorKind(StrEnum):
     """Normalized classification of entities producing trace events."""
 
@@ -64,9 +96,11 @@ class TracePointer(BaseModel):
         description="Optional session identifier.",
     )
 
-    @field_validator("trace_id", "event_id")
+    @field_validator("trace_id", "event_id", "session_id")
     @classmethod
-    def _validate_non_empty(cls, v: str) -> str:
+    def _validate_non_empty(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
         stripped = v.strip()
         if not stripped:
             raise TraceValidationError("Identifier must not be empty or blank.")
@@ -96,13 +130,11 @@ class ToolCall(BaseModel):
     @field_validator("arguments", mode="before")
     @classmethod
     def _freeze_arguments(cls, val: Any) -> FrozenDict:
-        if isinstance(val, FrozenDict):
-            return val
-        if isinstance(val, Mapping):
-            return FrozenDict(val)
         if val is None:
             return FrozenDict()
-        raise TraceValidationError(f"ToolCall arguments must be a mapping, got {type(val)}")
+        if isinstance(val, Mapping):
+            return FrozenDict({str(k): _freeze_trace_value(v) for k, v in val.items()})
+        raise TraceValidationError(f"ToolCall arguments must be a mapping, got {type(val).__name__}")
 
 
 class ToolResult(BaseModel):
@@ -145,7 +177,7 @@ class ToolResult(BaseModel):
     @field_validator("output", mode="after")
     @classmethod
     def _freeze_output(cls, val: Any) -> Any:
-        return _freeze_value(val)
+        return _freeze_trace_value(val)
 
     @field_serializer("output", mode="plain")
     def _serialize_output(self, val: Any) -> Any:
@@ -155,7 +187,7 @@ class ToolResult(BaseModel):
             if isinstance(v, (list, tuple)):
                 return [_to_serializable(item) for item in v]
             if isinstance(v, (set, frozenset)):
-                return [_to_serializable(item) for item in v]
+                return [_to_serializable(item) for item in sorted(v, key=lambda x: str(x))]
             return v
 
         return _to_serializable(val)
@@ -163,13 +195,11 @@ class ToolResult(BaseModel):
     @field_validator("metadata", mode="before")
     @classmethod
     def _freeze_metadata(cls, val: Any) -> FrozenDict:
-        if isinstance(val, FrozenDict):
-            return val
-        if isinstance(val, Mapping):
-            return FrozenDict(val)
         if val is None:
             return FrozenDict()
-        raise TraceValidationError(f"ToolResult metadata must be a mapping, got {type(val)}")
+        if isinstance(val, Mapping):
+            return FrozenDict({str(k): _freeze_trace_value(v) for k, v in val.items()})
+        raise TraceValidationError(f"ToolResult metadata must be a mapping, got {type(val).__name__}")
 
     @property
     def is_success(self) -> bool:
@@ -237,29 +267,25 @@ class TraceEvent(BaseModel):
     @field_validator("metadata", mode="before")
     @classmethod
     def _freeze_metadata(cls, val: Any) -> FrozenDict:
-        if isinstance(val, FrozenDict):
-            return val
-        if isinstance(val, Mapping):
-            return FrozenDict(val)
         if val is None:
             return FrozenDict()
-        raise TraceValidationError(f"metadata must be a mapping, got {type(val)}")
+        if isinstance(val, Mapping):
+            return FrozenDict({str(k): _freeze_trace_value(v) for k, v in val.items()})
+        raise TraceValidationError(f"metadata must be a mapping, got {type(val).__name__}")
 
     @field_serializer("payload", mode="plain")
     def _serialize_payload(self, val: Any) -> Any:
         if isinstance(val, BaseModel):
             return val.model_dump(mode="json")
-        if isinstance(val, FrozenDict):
-            def _to_serializable(v: Any) -> Any:
-                if isinstance(v, FrozenDict):
-                    return {str(k): _to_serializable(item) for k, item in v.items()}
-                if isinstance(v, (list, tuple)):
-                    return [_to_serializable(item) for item in v]
-                if isinstance(v, (set, frozenset)):
-                    return [_to_serializable(item) for item in v]
-                return v
-            return _to_serializable(val)
-        return val
+        def _to_serializable(v: Any) -> Any:
+            if isinstance(v, FrozenDict):
+                return {str(k): _to_serializable(item) for k, item in v.items()}
+            if isinstance(v, (list, tuple)):
+                return [_to_serializable(item) for item in v]
+            if isinstance(v, (set, frozenset)):
+                return [_to_serializable(item) for item in sorted(v, key=lambda x: str(x))]
+            return v
+        return _to_serializable(val)
 
     @model_validator(mode="before")
     @classmethod
@@ -277,9 +303,13 @@ class TraceEvent(BaseModel):
             if isinstance(payload, dict) and not isinstance(payload, ToolResult):
                 data["payload"] = ToolResult.model_validate(payload)
         elif isinstance(payload, Mapping) and not isinstance(payload, FrozenDict):
-            data["payload"] = FrozenDict(payload)
-        elif isinstance(payload, (list, tuple, set)):
-            data["payload"] = _freeze_value(payload)
+            data["payload"] = FrozenDict({str(k): _freeze_trace_value(v) for k, v in payload.items()})
+        elif isinstance(payload, (list, tuple)):
+            data["payload"] = tuple(_freeze_trace_value(v) for v in payload)
+        elif isinstance(payload, (set, frozenset)):
+            data["payload"] = frozenset(_freeze_trace_value(v) for v in payload)
+        elif payload is not None and not isinstance(payload, (ToolCall, ToolResult, FrozenDict)):
+            data["payload"] = _freeze_trace_value(payload)
 
         return data
 

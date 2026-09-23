@@ -674,3 +674,142 @@ def test_store_container_operations_and_error_handling():
     # Corrupted iterable with duplicate event_id
     with pytest.raises(DuplicateEventError):
         TraceStore([e, e])
+
+
+# --- BLOCKER 1 Regression Tests: ToolResult Parent Provenance Integrity ---
+
+def test_tool_result_matching_parent_accepted():
+    """BLOCKER 1: When parent_id is supplied on TOOL_RESULT, matching parent TOOL_CALL is accepted."""
+    store = TraceStore()
+    tc_evt = store.append(
+        TraceEvent(
+            event_id="evt-tc-1",
+            trace_id="tr-provenance",
+            sequence=0,
+            actor=ActorKind.AGENT,
+            event_kind=EventKind.TOOL_CALL,
+            payload=ToolCall(call_id="call-matching-1", tool_name="search"),
+        )
+    )
+
+    tr_evt = store.append(
+        TraceEvent(
+            event_id="evt-tr-1",
+            trace_id="tr-provenance",
+            parent_id="evt-tc-1",
+            sequence=1,
+            actor=ActorKind.TOOL,
+            event_kind=EventKind.TOOL_RESULT,
+            payload=ToolResult(call_id="call-matching-1", status=ToolResultStatus.SUCCESS, output="results"),
+        )
+    )
+    assert tr_evt.parent_id == "evt-tc-1"
+    assert tr_evt.tool_result.call_id == "call-matching-1"
+
+
+def test_tool_result_parent_pointing_to_different_tool_call_rejected():
+    """BLOCKER 1: TOOL_RESULT whose parent_id points to a different TOOL_CALL must be rejected."""
+    store = TraceStore()
+    store.append(
+        TraceEvent(
+            event_id="evt-tc-A",
+            trace_id="tr-provenance-mismatch",
+            sequence=0,
+            actor=ActorKind.AGENT,
+            event_kind=EventKind.TOOL_CALL,
+            payload=ToolCall(call_id="call-A", tool_name="bash"),
+        )
+    )
+    store.append(
+        TraceEvent(
+            event_id="evt-tc-B",
+            trace_id="tr-provenance-mismatch",
+            sequence=1,
+            actor=ActorKind.AGENT,
+            event_kind=EventKind.TOOL_CALL,
+            payload=ToolCall(call_id="call-B", tool_name="python"),
+        )
+    )
+
+    # ToolResult has call_id="call-B", but parent_id points to evt-tc-A (call-A)
+    with pytest.raises(ToolCorrelationError) as exc_info:
+        store.append(
+            TraceEvent(
+                event_id="evt-tr-contradictory",
+                trace_id="tr-provenance-mismatch",
+                parent_id="evt-tc-A",
+                sequence=2,
+                actor=ActorKind.TOOL,
+                event_kind=EventKind.TOOL_RESULT,
+                payload=ToolResult(call_id="call-B", status=ToolResultStatus.SUCCESS),
+            )
+        )
+    assert "does not match parent TOOL_CALL 'evt-tc-A' call_id 'call-A'" in str(exc_info.value)
+
+
+def test_tool_result_parent_pointing_to_non_tool_call_event_rejected():
+    """BLOCKER 1: TOOL_RESULT whose parent_id points to a non-TOOL_CALL event must be rejected."""
+    store = TraceStore()
+    store.append(
+        TraceEvent(
+            event_id="evt-msg-1",
+            trace_id="tr-provenance-kind",
+            sequence=0,
+            actor=ActorKind.USER,
+            event_kind=EventKind.USER_MESSAGE,
+            payload="Perform action",
+        )
+    )
+    store.append(
+        TraceEvent(
+            event_id="evt-tc-1",
+            trace_id="tr-provenance-kind",
+            sequence=1,
+            actor=ActorKind.AGENT,
+            event_kind=EventKind.TOOL_CALL,
+            payload=ToolCall(call_id="call-action", tool_name="run"),
+        )
+    )
+
+    # ToolResult parent points to the USER_MESSAGE instead of the TOOL_CALL
+    with pytest.raises(ParentEventError) as exc_info:
+        store.append(
+            TraceEvent(
+                event_id="evt-tr-invalid-parent",
+                trace_id="tr-provenance-kind",
+                parent_id="evt-msg-1",
+                sequence=2,
+                actor=ActorKind.TOOL,
+                event_kind=EventKind.TOOL_RESULT,
+                payload=ToolResult(call_id="call-action", status=ToolResultStatus.SUCCESS),
+            )
+        )
+    assert "TOOL_RESULT parent must be a TOOL_CALL" in str(exc_info.value)
+
+
+def test_tool_result_without_parent_accepted():
+    """BLOCKER 1: TOOL_RESULT without parent_id (parent_id is None) is valid and correlated by call_id."""
+    store = TraceStore()
+    store.append(
+        TraceEvent(
+            event_id="evt-tc-noparent",
+            trace_id="tr-noparent",
+            sequence=0,
+            actor=ActorKind.AGENT,
+            event_kind=EventKind.TOOL_CALL,
+            payload=ToolCall(call_id="call-noparent", tool_name="ls"),
+        )
+    )
+    tr_evt = store.append(
+        TraceEvent(
+            event_id="evt-tr-noparent",
+            trace_id="tr-noparent",
+            parent_id=None,
+            sequence=1,
+            actor=ActorKind.TOOL,
+            event_kind=EventKind.TOOL_RESULT,
+            payload=ToolResult(call_id="call-noparent", status=ToolResultStatus.SUCCESS),
+        )
+    )
+    assert tr_evt.parent_id is None
+    assert store.get_tool_result("tr-noparent", "call-noparent") is not None

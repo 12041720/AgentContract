@@ -1,12 +1,10 @@
 """Core domain models for constraints, provenance, and execution scopes."""
 
-from collections.abc import Iterable, Iterator, Mapping
 from datetime import datetime, timezone
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, TypeAlias
-from pydantic import BaseModel, ConfigDict, Field, GetCoreSchemaHandler, field_validator, model_validator
-from pydantic_core import core_schema
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing_extensions import Self
 
 from agentcontract.common.immutable import FrozenDict, _freeze_value

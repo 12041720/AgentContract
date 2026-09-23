@@ -129,6 +129,21 @@ class TraceStore:
                     f"ToolResult call_id '{tr.call_id}' does not match any prior ToolCall in trace '{event.trace_id}'."
                 )
 
+            # Enforce non-contradictory parent provenance for TOOL_RESULT
+            if event.parent_id is not None:
+                parent_event = self._events_by_id[event.parent_id]
+                if parent_event.event_kind != EventKind.TOOL_CALL:
+                    raise ParentEventError(
+                        f"TOOL_RESULT event '{event.event_id}' has parent '{event.parent_id}' with kind "
+                        f"'{parent_event.event_kind.value}', but TOOL_RESULT parent must be a TOOL_CALL."
+                    )
+                assert parent_event.tool_call is not None
+                if parent_event.tool_call.call_id != tr.call_id:
+                    raise ToolCorrelationError(
+                        f"TOOL_RESULT event '{event.event_id}' call_id '{tr.call_id}' does not match "
+                        f"parent TOOL_CALL '{event.parent_id}' call_id '{parent_event.tool_call.call_id}'."
+                    )
+
             trace_results = self._tool_results_by_trace.setdefault(event.trace_id, {})
             if tr.call_id in trace_results:
                 raise ToolCorrelationError(

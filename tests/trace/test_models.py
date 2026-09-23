@@ -377,3 +377,113 @@ def test_top_level_package_exports_trace():
     assert RootTracePointer is TracePointer
     assert RootTraceStore is TraceStore
     assert RootFrozenDict is FrozenDict
+
+
+# --- BLOCKER 2 Regression Tests: ToolResult.output Immutability and Domain ---
+
+def test_unsupported_mutable_and_custom_types_rejected_in_output():
+    """BLOCKER 2: Unsupported mutable types (bytearray, bytes) and custom objects must be rejected."""
+    # bytearray rejected
+    with pytest.raises(ValidationError) as exc_info:
+        ToolResult(
+            call_id="c-bytearray",
+            status=ToolResultStatus.SUCCESS,
+            output=bytearray(b"hello"),
+        )
+    assert "Unsupported trace value of type 'bytearray'" in str(exc_info.value)
+
+    # bytes rejected
+    with pytest.raises(ValidationError) as exc_info:
+        ToolResult(
+            call_id="c-bytes",
+            status=ToolResultStatus.SUCCESS,
+            output=b"raw bytes",
+        )
+    assert "Unsupported trace value of type 'bytes'" in str(exc_info.value)
+
+    # arbitrary object instance rejected
+    with pytest.raises(ValidationError) as exc_info:
+        ToolResult(
+            call_id="c-object",
+            status=ToolResultStatus.SUCCESS,
+            output=object(),
+        )
+    assert "Unsupported trace value of type 'object'" in str(exc_info.value)
+
+    # custom class instance rejected
+    class CustomObject:
+        pass
+
+    with pytest.raises(ValidationError) as exc_info:
+        ToolResult(
+            call_id="c-custom",
+            status=ToolResultStatus.SUCCESS,
+            output=CustomObject(),
+        )
+    assert "Unsupported trace value of type 'CustomObject'" in str(exc_info.value)
+
+    # deeply nested unsupported mutable rejected
+    with pytest.raises(ValidationError) as exc_info:
+        ToolResult(
+            call_id="c-nested-bad",
+            status=ToolResultStatus.SUCCESS,
+            output={"data": [1, {"flag": bytearray(b"nested")}]},
+        )
+    assert "Unsupported trace value of type 'bytearray'" in str(exc_info.value)
+
+
+def test_accepted_output_domain_json_round_trip():
+    """BLOCKER 2: Accepted output domain values (scalars, FrozenDict, tuple, frozenset) serialize predictably."""
+    cases = [
+        None,
+        True,
+        False,
+        0,
+        -42,
+        3.14159,
+        "standard string output",
+        {"name": "agent", "count": 10, "nested": {"valid": True}},
+        [1, "two", 3.0, None],
+        (10, 20, 30),
+        frozenset(["tag1", "tag2"]),
+    ]
+
+    for expected_val in cases:
+        tr = ToolResult(
+            call_id="c-domain-test",
+            status=ToolResultStatus.SUCCESS,
+            output=expected_val,
+        )
+        json_repr = tr.model_dump_json()
+        rebuilt = ToolResult.model_validate_json(json_repr)
+
+        assert rebuilt.call_id == tr.call_id
+        assert rebuilt.status == tr.status
+        if isinstance(expected_val, (list, tuple)):
+            assert rebuilt.output == tuple(expected_val)
+        elif isinstance(expected_val, (set, frozenset)):
+            # Sets/frozensets serialize to sorted lists in JSON, which deserialize to tuples in output domain
+            assert set(rebuilt.output) == set(expected_val)
+        elif isinstance(expected_val, dict):
+            assert rebuilt.output == FrozenDict(expected_val)
+        else:
+            assert rebuilt.output == expected_val
+
+
+def test_trace_pointer_blank_session_id_rejected():
+    """Non-blocking cleanup: TracePointer.session_id must reject blank strings when provided."""
+    with pytest.raises(ValidationError) as exc_info:
+        TracePointer(trace_id="tr-1", event_id="evt-1", session_id="   ")
+    assert "Identifier must not be empty or blank" in str(exc_info.value)
+
+    with pytest.raises(ValidationError) as exc_info:
+        TracePointer(trace_id="tr-1", event_id="evt-1", session_id="")
+    assert "Identifier must not be empty or blank" in str(exc_info.value)
+
+    # Valid session_id accepted
+    p = TracePointer(trace_id="tr-1", event_id="evt-1", session_id="sess-valid")
+    assert p.session_id == "sess-valid"
+
+    # None session_id accepted
+    p_none = TracePointer(trace_id="tr-1", event_id="evt-1", session_id=None)
+    assert p_none.session_id is None
