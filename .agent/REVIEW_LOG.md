@@ -64,3 +64,23 @@ Next:
 **Next:** execution agent must replace the mutable-dict subclass approach, centralize transition validation, add bypass/table-driven tests, and resubmit TASK-001.
 
 ---
+
+## 2026-09-23 — TASK-001 third implementation review
+
+**Implementation reviewed:** `b1522169346945cb22a4be62bcf1cb2c2b0731a8`
+
+**Verdict:** CHANGES_REQUESTED — ROUND 3 (FINAL HARDENING)
+
+**Verified improvements:**
+- composition-based `FrozenDict` blocks normal dict mutation paths;
+- lifecycle validation is centralized through `validate_transition`;
+- all 16 status-pair transitions are table-tested;
+- CONFLICTED handling and peer preconditions are explicit.
+
+**Remaining blockers:**
+- `FrozenDict._data` is still a directly reachable mutable dictionary, so recorded metadata/provenance can still be mutated externally.
+- public `ALLOWED_TRANSITIONS` is a mutable dictionary, allowing callers to rewrite lifecycle semantics at runtime.
+
+**Next:** apply two narrow immutability fixes, rerun Python 3.11/3.12 suites, and resubmit. TASK-002 remains blocked.
+
+---
