@@ -37,14 +37,14 @@ Implement under `src/agentcontract/trace/` plus tests.
 
 ### Required identifiers
 
-Define Python 3.11-compatible typed aliases or lightweight value types for at least:
+Define typed aliases or lightweight value types for at least:
 
 - `TraceId`
 - `SessionId`
 - `EventId`
 - `ToolCallId`
 
-Do not use Python 3.12-only syntax while the project declares Python 3.11+.
+Use the repository's development baseline: the user's installed local **Python 3.12.9**. Python 3.12 syntax is allowed. Do not install another Python version just to broaden compatibility.
 
 ### Required enums
 
@@ -222,7 +222,7 @@ The executor may choose a different narrow split.
 
 Main-agent review requires:
 
-- [ ] Python 3.11+ compatible syntax;
+- [ ] runs correctly on the user's local Python 3.12.9 environment;
 - [ ] Pydantic durable models;
 - [ ] normalized actor/event/status enums;
 - [ ] typed ToolCall and ToolResult representation;
@@ -236,7 +236,7 @@ Main-agent review requires:
 - [ ] TASK-001 tests still pass unchanged;
 - [ ] no vendor SDK/network/LLM dependency;
 - [ ] concise type hints/docstrings;
-- [ ] full `pytest` suite passes on Python 3.11 and current development Python.
+- [ ] full `pytest` suite passes on the user's local Python 3.12.9 interpreter.
 
 ## Suggested test scenarios
 
@@ -260,14 +260,25 @@ At minimum cover scenarios equivalent to:
 
 ## Required checks
 
-Run at least:
+Before implementation/testing, remove the Python 3.11 interpreter that was downloaded by uv solely for the previous compatibility check. First inspect uv-managed interpreters and then uninstall 3.11 if present:
 
 ```bash
-python -m pytest
-uv run --python 3.11 --with pytest python -m pytest
+uv python list --managed-python
+uv python uninstall 3.11
 ```
 
-Report exact Python versions and results.
+Do **not** uninstall the user's system Python 3.12.9. The uv command above targets uv-managed Python installations. uv documents `uv python uninstall <TARGETS>` for removing managed Python versions. If no uv-managed 3.11 remains, record that and continue.
+
+Then run only the local development interpreter checks:
+
+```bash
+python --version
+python -m pytest
+```
+
+Expected development interpreter: **Python 3.12.9**. Do not download or run an additional Python version merely for compatibility testing.
+
+Report the local Python version and test result.
 
 ## Executor Report
 
