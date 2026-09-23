@@ -15,16 +15,16 @@
 - Task: **TASK-001 — Core domain model and Constraint Ledger**
 - Task file: `.agent/tasks/TASK-001.md`
 - Work branch: `task/TASK-001-core-ledger`
-- Status: **READY_FOR_EXECUTOR**
+- Status: **CHANGES_REQUESTED**
 - Owner: Execution agent
-- Main-agent review: pending
+- Main-agent review: TASK-001 changes requested after review of `0ce2fd897ba5e407407586fe67db987b3e182f6d`
 
 ## Main-agent checkpoint
 
 - Repository initialized on 2026-09-22.
 - Persistent main-agent/executor protocol established.
 - High-level architecture fixed for v0.1.
-- No implementation task has been accepted yet.
+- TASK-001 implementation was reviewed; blockers were found in Python 3.11 compatibility and deep immutability. No implementation task has been accepted yet.
 
 ## Current design decisions
 
@@ -38,7 +38,7 @@
 
 ## Review gate
 
-The main agent will not activate TASK-002 until TASK-001 satisfies all acceptance criteria and its tests are reviewed.
+The main agent will not activate TASK-002 until TASK-001 fixes the recorded blockers, passes Python 3.11+ checks, and is re-reviewed.
 
 ## Resume instructions for the main agent
 
