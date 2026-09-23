@@ -110,3 +110,15 @@ Next:
 **Next:** TASK-002 — Unified trace and provenance model is active.
 
 ---
+
+## 2026-09-23 — Development Python baseline correction
+
+**Decision:** use the user's actual local development interpreter as the project test baseline.
+
+- Local development Python: **3.12.9**.
+- `pyproject.toml` now declares `requires-python = ">=3.12"`.
+- Execution agents must not download alternate Python versions solely to satisfy a compatibility matrix unless the user explicitly requests it.
+- TASK-002 instructs the executor to remove the uv-managed Python 3.11 installed only for prior compatibility testing, then run the suite once on local Python 3.12.9.
+- Historical TASK-001 review records mentioning Python 3.11 remain unchanged because they describe what was actually tested at that time.
+
+---
