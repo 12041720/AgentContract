@@ -285,22 +285,54 @@ Report the local Python version and test result.
 > Execution agent: fill this section only after implementation.
 
 **Implementation summary:**  
-TBD
+- **Environment & Baseline Alignment:** Uninstalled uv-managed Python 3.11 (`cpython-3.11.12-windows-x86_64-none`) per task instructions. Validated development environment on local Python **3.12.9**.
+- **Neutral Shared Immutable Module:** Extracted generic immutable primitives (`FrozenDict`, `_freeze_value`) into `src/agentcontract/common/immutable.py` per the cross-package design rule. Re-exported from `agentcontract.constraints.models` to ensure 100% backward compatibility. Verified all TASK-001 tests pass unchanged.
+- **Trace Domain Models & Enums:** Implemented under `src/agentcontract/trace/models.py`:
+  - Typed identifiers: `TraceId`, `SessionId`, `EventId`, `ToolCallId`.
+  - Normalized enums: `ActorKind` (`USER`, `AGENT`, `TOOL`, `SYSTEM`, `GUARD`, `ENVIRONMENT`), `EventKind` (`USER_MESSAGE`, `AGENT_MESSAGE`, `TOOL_CALL`, `TOOL_RESULT`, `GUARD_DECISION`, `STATE_OBSERVATION`, `ERROR`), and `ToolResultStatus` (`SUCCESS`, `ERROR`, `TIMEOUT`, `CANCELLED`).
+  - Durable models: `TracePointer`, `ToolCall`, `ToolResult`, and `TraceEvent` with `frozen=True` and `extra="forbid"`.
+  - Enforced non-empty string validation on identifiers, explicit rejection of timezone-naive datetimes, UTC normalization for aware datetimes, defensive isolation from external mutations, and payload type correlation (`TOOL_CALL` requires `ToolCall`, `TOOL_RESULT` requires `ToolResult`).
+- **Trace Domain Exceptions:** Implemented typed hierarchy in `src/agentcontract/trace/exceptions.py` (`TraceError`, `TraceValidationError`, `DuplicateEventError`, `InvalidSequenceError`, `EventNotFoundError`, `ToolCorrelationError`, `ParentEventError`).
+- **Append-Oriented TraceStore:** Implemented `src/agentcontract/trace/store.py` enforcing:
+  1. Store-wide unique event IDs.
+  2. Non-negative, strictly monotonic sequences per trace ID.
+  3. Independent sequence namespaces across distinct trace IDs.
+  4. Timezone-aware UTC timestamp validation.
+  5. Parent-event integrity within the same trace.
+  6. Tool call / tool result correlation, single result per tool call, and unique `ToolCallId` per trace.
+  7. Invariant 12: Agent messages do not synthesize or imply success.
+  8. Deterministic querying, filtering by trace/session/actor/event_kind, pointer creation/resolution, and complete JSON round-trip serialization.
+- **Public & Top-Level Exports:** Re-exported public trace symbols in `src/agentcontract/trace/__init__.py` and top-level `src/agentcontract/__init__.py`.
+- **Test Coverage:** Added 31 new tests across `tests/trace/test_models.py` and `tests/trace/test_store.py` covering all 15 scenarios suggested in TASK-002 plus container operations and top-level exports.
 
 **Files changed:**  
-TBD
+- `src/agentcontract/common/__init__.py` (new: exports `FrozenDict`, `_freeze_value`)
+- `src/agentcontract/common/immutable.py` (new: neutral shared immutable mapping backed by `MappingProxyType`)
+- `src/agentcontract/constraints/models.py` (updated: import `FrozenDict` and `_freeze_value` from `agentcontract.common.immutable`)
+- `src/agentcontract/trace/__init__.py` (updated: public trace domain exports)
+- `src/agentcontract/trace/exceptions.py` (new: domain exceptions)
+- `src/agentcontract/trace/models.py` (new: identifiers, enums, durable models)
+- `src/agentcontract/trace/store.py` (new: `TraceStore` append-oriented container with invariants)
+- `src/agentcontract/__init__.py` (updated: top-level package re-exports)
+- `tests/trace/test_models.py` (new: 14 tests for enums, identifiers, immutability, timezone, serialization)
+- `tests/trace/test_store.py` (new: 17 tests covering all 15 scenarios from TASK-002, container operations, and invariant 12)
+- `.agent/tasks/TASK-002.md` (updated: Executor Report)
 
 **Tests/checks:**  
-TBD
+- Python version check: `python --version` -> `Python 3.12.9`.
+- uv Python 3.11 removal: `uv python uninstall 3.11` executed; confirmed uninstalled via `uv python list --managed-python`.
+- Full pytest suite: `python -m pytest -v` -> **64 passed in 0.48s** (100% pass rate: 33 constraint tests + 31 trace tests).
 
 **Known limitations:**  
-TBD
+- In-memory append-only storage for v0.1 (database persistence via SQLite/PostgreSQL is deferred to later milestones).
+- External framework/telemetry adapters (OpenTelemetry, LangGraph, etc.) are deferred to TASK-008 per scope boundaries.
 
 **Commit/PR:**  
-TBD
+- Branch: `task/TASK-002-trace-model`
+- Commit SHA: `431534b`
 
 **Questions/blockers:**  
-TBD
+- None. All acceptance criteria and suggested test scenarios are fully met and verified.
 
 ## Main Agent Review
 
