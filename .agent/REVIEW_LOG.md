@@ -84,3 +84,29 @@ Next:
 **Next:** apply two narrow immutability fixes, rerun Python 3.11/3.12 suites, and resubmit. TASK-002 remains blocked.
 
 ---
+
+## 2026-09-23 — TASK-001 final review and integration
+
+**Final implementation reviewed:** `a3953f94fae767939c33d0cfcd0be904cc75adad`
+
+**Verdict:** ACCEPTED
+
+**Integration:**
+- execution PR #1 was closed because persistent `.agent/*` state had intentionally diverged between main and the task branch;
+- main agent created a clean integration branch containing only implementation/test changes;
+- PR #2 was squash-merged to `main`;
+- main integration commit: `48a7ae1cc07025a400b11804c298c2970cfc5107`.
+
+**Final acceptance:**
+- Python 3.11+ compatibility;
+- deeply isolated immutable constraint/provenance metadata;
+- read-only lifecycle transition policy;
+- centralized lifecycle validation;
+- version-preserving ledger semantics;
+- executor-reported 33/33 tests passing on Python 3.11.12 and 3.12.9.
+
+**Threat-model boundary:** interpreter-level sabotage/reflection intended solely to violate private implementation invariants is outside v0.1 immutability guarantees.
+
+**Next:** TASK-002 — Unified trace and provenance model is active.
+
+---
