@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 import itertools
+from types import MappingProxyType
 import pytest
 
 from agentcontract.constraints.exceptions import (
@@ -512,6 +513,29 @@ def test_all_lifecycle_status_pairs_table_driven():
             assert f"cannot transition from '{from_status.value}' to '{to_status.value}'" in str(exc_info.value)
 
     assert tested_count == 16
+
+
+def test_allowed_transitions_table_is_structurally_immutable():
+    """Round 3 Blocker 2 regression test: ALLOWED_TRANSITIONS cannot be modified at runtime."""
+    table = ALLOWED_TRANSITIONS
+    assert isinstance(table, MappingProxyType)
+    assert not isinstance(table, dict)
+
+    # Attempt to rewrite state transitions at runtime must raise TypeError
+    with pytest.raises(TypeError):
+        table[ConstraintStatus.REVOKED] = frozenset({ConstraintStatus.ACTIVE})  # type: ignore[index]
+
+    with pytest.raises(TypeError):
+        del table[ConstraintStatus.ACTIVE]  # type: ignore[attr-defined]
+
+    with pytest.raises(TypeError):
+        table |= {ConstraintStatus.REVOKED: frozenset()}  # type: ignore[operator]
+
+    # Target sets are also immutable frozensets
+    for target_set in table.values():
+        assert isinstance(target_set, frozenset)
+        with pytest.raises(AttributeError):
+            target_set.add(ConstraintStatus.ACTIVE)  # type: ignore[attr-defined]
 
 
 def test_add_rejects_non_active_initial_states(empty_ledger: ConstraintLedger):

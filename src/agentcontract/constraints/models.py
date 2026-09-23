@@ -3,6 +3,7 @@
 from collections.abc import Iterable, Iterator, Mapping
 from datetime import datetime, timezone
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Any, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, GetCoreSchemaHandler, field_validator, model_validator
 from pydantic_core import core_schema
@@ -31,11 +32,11 @@ def _freeze_value(val: Any) -> Any:
 
 
 class FrozenDict(Mapping[str, Any]):
-    """An immutable mapping that wraps an internal dictionary via composition.
+    """An immutable mapping that wraps an internal read-only mapping via composition.
 
-    Subclasses Mapping (not dict) so that no mutable methods (such as |=,
-    dict.__setitem__, pop, update, or clear) exist or can bypass immutability.
-    Durable domain metadata and selectors are protected from in-place alteration.
+    Subclasses Mapping (not dict) and backs its storage with a MappingProxyType so
+    that no mutable methods exist and direct attribute access to `_data` cannot
+    mutate contents. Durable domain metadata and selectors are protected from in-place alteration.
     """
 
     __slots__ = ("_data", "_hash")
@@ -50,7 +51,8 @@ class FrozenDict(Mapping[str, Any]):
             raw.update(dict(mapping_or_iterable))
         if kwargs:
             raw.update(kwargs)
-        self._data: dict[str, Any] = {str(k): _freeze_value(v) for k, v in raw.items()}
+        frozen_data = {str(k): _freeze_value(v) for k, v in raw.items()}
+        self._data: MappingProxyType[str, Any] = MappingProxyType(frozen_data)
         self._hash: int | None = None
 
     def __getitem__(self, key: str) -> Any:
@@ -66,7 +68,7 @@ class FrozenDict(Mapping[str, Any]):
         return key in self._data
 
     def __repr__(self) -> str:
-        return f"FrozenDict({self._data!r})"
+        return f"FrozenDict({dict(self._data)!r})"
 
     def __copy__(self) -> "FrozenDict":
         return self
@@ -123,8 +125,8 @@ class ConstraintStatus(StrEnum):
     CONFLICTED = "CONFLICTED"
 
 
-# Explicit state transition table governing lifecycle progression
-ALLOWED_TRANSITIONS: dict[ConstraintStatus, frozenset[ConstraintStatus]] = {
+# Explicit state transition table governing lifecycle progression (read-only)
+ALLOWED_TRANSITIONS: MappingProxyType[ConstraintStatus, frozenset[ConstraintStatus]] = MappingProxyType({
     ConstraintStatus.ACTIVE: frozenset({
         ConstraintStatus.REVOKED,
         ConstraintStatus.SUPERSEDED,
@@ -137,7 +139,7 @@ ALLOWED_TRANSITIONS: dict[ConstraintStatus, frozenset[ConstraintStatus]] = {
     }),
     ConstraintStatus.REVOKED: frozenset(),     # Terminal state
     ConstraintStatus.SUPERSEDED: frozenset(),  # Terminal state
-}
+})
 
 
 def validate_transition(

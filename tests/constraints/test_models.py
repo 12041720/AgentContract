@@ -1,6 +1,7 @@
 """Tests for constraint domain models, FrozenDict immutability, and invariants."""
 
 from collections.abc import Mapping
+from types import MappingProxyType
 import pytest
 from pydantic import ValidationError
 
@@ -225,6 +226,58 @@ def test_frozendict_external_input_mutation_isolation():
     assert fd["key"] == "orig"
     assert fd["sub"]["count"] == 1
     assert fd["items"] == (10, 20)
+
+
+def test_frozendict_backing_store_is_immutable():
+    """Round 3 Blocker 1 regression test: FrozenDict._data is an immutable MappingProxyType.
+
+    Proves that direct attribute access to `_data` on a standalone FrozenDict or
+    through a Constraint domain model cannot alter recorded contents.
+    """
+    fd = FrozenDict({"a": 1, "nested": {"sub": "orig"}})
+
+    # 1. Backing store is MappingProxyType
+    assert isinstance(fd._data, MappingProxyType)
+    assert not isinstance(fd._data, dict)
+
+    # 2. Direct attribute assignment to _data is prohibited
+    with pytest.raises(TypeError):
+        fd._data["a"] = 999  # type: ignore[index]
+
+    with pytest.raises(TypeError):
+        fd._data["new_key"] = "tampered"  # type: ignore[index]
+
+    with pytest.raises(TypeError):
+        del fd._data["a"]  # type: ignore[attr-defined]
+
+    # 3. In-place union or dict base methods on _data are prohibited
+    with pytest.raises(TypeError):
+        fd._data |= {"b": 2}  # type: ignore[operator]
+
+    with pytest.raises(TypeError):
+        dict.__setitem__(fd._data, "a", 999)  # type: ignore[arg-type]
+
+    # 4. Nested backing store is also MappingProxyType
+    nested_fd = fd["nested"]
+    assert isinstance(nested_fd, FrozenDict)
+    assert isinstance(nested_fd._data, MappingProxyType)
+    with pytest.raises(TypeError):
+        nested_fd._data["sub"] = "tampered"  # type: ignore[index]
+
+    # 5. Direct access through domain model (e.g. constraint.provenance.metadata._data)
+    constraint = Constraint(
+        id="c-backing-test",
+        name="backing_test",
+        description="Test backing store immutability",
+        strength=ConstraintStrength.HARD,
+        provenance=ConstraintProvenance(
+            source=ConstraintSource.USER,
+            metadata={"recorded_key": "recorded_val"},
+        ),
+    )
+    assert isinstance(constraint.provenance.metadata._data, MappingProxyType)
+    with pytest.raises(TypeError):
+        constraint.provenance.metadata._data["tampered"] = True  # type: ignore[index]
 
 
 def test_deep_immutability_of_constraint_models():
