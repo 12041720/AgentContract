@@ -285,43 +285,40 @@ Report the local Python version and test result.
 > Execution agent: fill this section only after implementation.
 
 **Implementation summary:**  
-- **Environment & Baseline Alignment:** Uninstalled uv-managed Python 3.11 (`cpython-3.11.12-windows-x86_64-none`) per task instructions. Validated development environment on local Python **3.12.9**.
-- **Neutral Shared Immutable Module:** Extracted generic immutable primitives (`FrozenDict`, `_freeze_value`) into `src/agentcontract/common/immutable.py` per the cross-package design rule. Re-exported from `agentcontract.constraints.models` to ensure 100% backward compatibility. Verified all TASK-001 tests pass unchanged.
-- **Trace Domain Models & Enums:** Implemented under `src/agentcontract/trace/models.py`:
-  - Typed identifiers: `TraceId`, `SessionId`, `EventId`, `ToolCallId`.
-  - Normalized enums: `ActorKind` (`USER`, `AGENT`, `TOOL`, `SYSTEM`, `GUARD`, `ENVIRONMENT`), `EventKind` (`USER_MESSAGE`, `AGENT_MESSAGE`, `TOOL_CALL`, `TOOL_RESULT`, `GUARD_DECISION`, `STATE_OBSERVATION`, `ERROR`), and `ToolResultStatus` (`SUCCESS`, `ERROR`, `TIMEOUT`, `CANCELLED`).
-  - Durable models: `TracePointer`, `ToolCall`, `ToolResult`, and `TraceEvent` with `frozen=True` and `extra="forbid"`.
-  - Enforced non-empty string validation on identifiers, explicit rejection of timezone-naive datetimes, UTC normalization for aware datetimes, defensive isolation from external mutations, and payload type correlation (`TOOL_CALL` requires `ToolCall`, `TOOL_RESULT` requires `ToolResult`).
-- **Trace Domain Exceptions:** Implemented typed hierarchy in `src/agentcontract/trace/exceptions.py` (`TraceError`, `TraceValidationError`, `DuplicateEventError`, `InvalidSequenceError`, `EventNotFoundError`, `ToolCorrelationError`, `ParentEventError`).
-- **Append-Oriented TraceStore:** Implemented `src/agentcontract/trace/store.py` enforcing:
-  1. Store-wide unique event IDs.
-  2. Non-negative, strictly monotonic sequences per trace ID.
-  3. Independent sequence namespaces across distinct trace IDs.
-  4. Timezone-aware UTC timestamp validation.
-  5. Parent-event integrity within the same trace.
-  6. Tool call / tool result correlation, single result per tool call, and unique `ToolCallId` per trace.
-  7. Invariant 12: Agent messages do not synthesize or imply success.
-  8. Deterministic querying, filtering by trace/session/actor/event_kind, pointer creation/resolution, and complete JSON round-trip serialization.
-- **Public & Top-Level Exports:** Re-exported public trace symbols in `src/agentcontract/trace/__init__.py` and top-level `src/agentcontract/__init__.py`.
-- **Test Coverage:** Added 31 new tests across `tests/trace/test_models.py` and `tests/trace/test_store.py` covering all 15 scenarios suggested in TASK-002 plus container operations and top-level exports.
+- **Environment & Baseline Alignment:** Development and testing executed exclusively on the user's installed local **Python 3.12.9** baseline (`python --version` -> `Python 3.12.9`).
+- **Resolved Blocker 1 (ToolResult Parent Provenance Integrity):**
+  - Updated `src/agentcontract/trace/store.py` to enforce unambiguous provenance for `TOOL_RESULT` events:
+    - `parent_id` remains optional, but when supplied on a `TOOL_RESULT` it **must point to the `TOOL_CALL` event whose `call_id` matches `tool_result.call_id`**.
+    - If `parent_id` points to a different tool call, `ToolCorrelationError` is raised.
+    - If `parent_id` points to a non-`TOOL_CALL` event (e.g. `USER_MESSAGE` or `AGENT_MESSAGE`), `ParentEventError` is raised.
+    - If `parent_id` is omitted (`None`), it is accepted and correlated by `call_id`.
+  - Added 4 dedicated regression tests in `tests/trace/test_store.py`: `test_tool_result_matching_parent_accepted`, `test_tool_result_parent_pointing_to_different_tool_call_rejected`, `test_tool_result_parent_pointing_to_non_tool_call_event_rejected`, and `test_tool_result_without_parent_accepted`.
+- **Resolved Blocker 2 (ToolResult Output Durable Immutability & Serialization):**
+  - Defined `_freeze_trace_value()` in `src/agentcontract/trace/models.py` to enforce a strict durable trace value domain: JSON-compatible scalars (`None`, `bool`, `int`, `float`, `str`) and recursively frozen containers (`FrozenDict`, `tuple`, `frozenset`).
+  - Unsupported mutable types (`bytearray`, `bytes`), arbitrary custom objects, or nested unsupported values are explicitly rejected with `TraceValidationError`.
+  - Enforced `_freeze_trace_value` on `ToolResult.output`, `ToolResult.metadata`, `ToolCall.arguments`, `TraceEvent.metadata`, and `TraceEvent.payload`.
+  - Configured deterministic JSON serialization (`_serialize_output`, `_serialize_payload`) ensuring stable round-trip reconstruction.
+  - Added dedicated regression tests in `tests/trace/test_models.py`: `test_unsupported_mutable_and_custom_types_rejected_in_output` and `test_accepted_output_domain_json_round_trip`.
+- **Non-blocking Cleanups:**
+  - Added validation in `TracePointer` ensuring `session_id`, when supplied, rejects empty or blank whitespace strings.
+  - Removed unused imports (`Iterable`, `Iterator`, `Mapping`, `GetCoreSchemaHandler`, `core_schema`) from `src/agentcontract/constraints/models.py`.
 
 **Files changed:**  
-- `src/agentcontract/common/__init__.py` (new: exports `FrozenDict`, `_freeze_value`)
-- `src/agentcontract/common/immutable.py` (new: neutral shared immutable mapping backed by `MappingProxyType`)
-- `src/agentcontract/constraints/models.py` (updated: import `FrozenDict` and `_freeze_value` from `agentcontract.common.immutable`)
-- `src/agentcontract/trace/__init__.py` (updated: public trace domain exports)
-- `src/agentcontract/trace/exceptions.py` (new: domain exceptions)
-- `src/agentcontract/trace/models.py` (new: identifiers, enums, durable models)
-- `src/agentcontract/trace/store.py` (new: `TraceStore` append-oriented container with invariants)
-- `src/agentcontract/__init__.py` (updated: top-level package re-exports)
-- `tests/trace/test_models.py` (new: 14 tests for enums, identifiers, immutability, timezone, serialization)
-- `tests/trace/test_store.py` (new: 17 tests covering all 15 scenarios from TASK-002, container operations, and invariant 12)
-- `.agent/tasks/TASK-002.md` (updated: Executor Report)
+- `src/agentcontract/common/__init__.py` (shared immutable exports)
+- `src/agentcontract/common/immutable.py` (neutral shared `FrozenDict`, `_freeze_value`)
+- `src/agentcontract/constraints/models.py` (cleaned unused imports; re-exports from common)
+- `src/agentcontract/trace/__init__.py` (public trace domain exports)
+- `src/agentcontract/trace/exceptions.py` (typed domain exceptions)
+- `src/agentcontract/trace/models.py` (`_freeze_trace_value`, models, enums, serializers)
+- `src/agentcontract/trace/store.py` (`TraceStore` append container with parent correlation checks)
+- `src/agentcontract/__init__.py` (top-level package re-exports)
+- `tests/trace/test_models.py` (17 tests covering models, immutability, blocker 2 domain tests, serialization)
+- `tests/trace/test_store.py` (21 tests covering store scenarios 1-15, blocker 1 provenance tests, container ops)
+- `.agent/tasks/TASK-002.md` (updated Executor Report)
 
 **Tests/checks:**  
 - Python version check: `python --version` -> `Python 3.12.9`.
-- uv Python 3.11 removal: `uv python uninstall 3.11` executed; confirmed uninstalled via `uv python list --managed-python`.
-- Full pytest suite: `python -m pytest -v` -> **64 passed in 0.48s** (100% pass rate: 33 constraint tests + 31 trace tests).
+- Full pytest suite: `python -m pytest -v` -> **71 passed in 0.62s** (100% pass rate: 33 constraint tests + 38 trace tests).
 
 **Known limitations:**  
 - In-memory append-only storage for v0.1 (database persistence via SQLite/PostgreSQL is deferred to later milestones).
@@ -329,10 +326,10 @@ Report the local Python version and test result.
 
 **Commit/PR:**  
 - Branch: `task/TASK-002-trace-model`
-- Commit SHA: `431534b`
+- Commit SHA: `9f60435`
 
 **Questions/blockers:**  
-- None. All acceptance criteria and suggested test scenarios are fully met and verified.
+- None. Both Round 1 blockers and non-blocking cleanups have been implemented, tested with regression suites, and verified on local Python 3.12.9.
 
 ## Main Agent Review
 
