@@ -1,6 +1,7 @@
 """Tests for in-memory ConstraintLedger lifecycle, invariants, and serialization."""
 
 from datetime import datetime, timezone
+import itertools
 import pytest
 
 from agentcontract.constraints.exceptions import (
@@ -10,6 +11,7 @@ from agentcontract.constraints.exceptions import (
 )
 from agentcontract.constraints.ledger import ConstraintLedger, LedgerSnapshot
 from agentcontract.constraints.models import (
+    ALLOWED_TRANSITIONS,
     Constraint,
     ConstraintProvenance,
     ConstraintScope,
@@ -17,6 +19,7 @@ from agentcontract.constraints.models import (
     ConstraintStatus,
     ConstraintStrength,
     FrozenDict,
+    validate_transition,
 )
 
 
@@ -208,7 +211,7 @@ def test_cannot_revoke_or_supersede_terminal_constraint(empty_ledger: Constraint
     # Attempt to revoke an already revoked constraint
     with pytest.raises(InvalidConstraintTransitionError) as exc_info:
         ledger.revoke("c-db-schema", reason="Second revocation attempt")
-    assert "already in terminal status 'REVOKED'" in str(exc_info.value)
+    assert "cannot transition from 'REVOKED' to 'REVOKED'" in str(exc_info.value)
 
     # Attempt to supersede an already revoked constraint
     replacement = Constraint(
@@ -220,7 +223,7 @@ def test_cannot_revoke_or_supersede_terminal_constraint(empty_ledger: Constraint
     )
     with pytest.raises(InvalidConstraintTransitionError) as exc_info:
         ledger.supersede("c-db-schema", replacement)
-    assert "already in terminal status 'REVOKED'" in str(exc_info.value)
+    assert "cannot transition from 'REVOKED' to 'SUPERSEDED'" in str(exc_info.value)
 
     # Now test a superseded constraint
     c2 = Constraint(
@@ -236,7 +239,7 @@ def test_cannot_revoke_or_supersede_terminal_constraint(empty_ledger: Constraint
     # Attempt to revoke the superseded constraint
     with pytest.raises(InvalidConstraintTransitionError) as exc_info:
         ledger.revoke("c-active-2")
-    assert "already in terminal status 'SUPERSEDED'" in str(exc_info.value)
+    assert "cannot transition from 'SUPERSEDED' to 'REVOKED'" in str(exc_info.value)
 
     # Attempt to supersede the already superseded constraint
     replacement_2 = Constraint(
@@ -248,7 +251,7 @@ def test_cannot_revoke_or_supersede_terminal_constraint(empty_ledger: Constraint
     )
     with pytest.raises(InvalidConstraintTransitionError) as exc_info:
         ledger.supersede("c-active-2", replacement_2)
-    assert "already in terminal status 'SUPERSEDED'" in str(exc_info.value)
+    assert "cannot transition from 'SUPERSEDED' to 'SUPERSEDED'" in str(exc_info.value)
 
 
 def test_duplicate_id_rejection(empty_ledger: ConstraintLedger, sample_user_constraint: Constraint):
@@ -487,7 +490,29 @@ def test_not_found_errors(empty_ledger: ConstraintLedger):
         ledger.get_history("non-existent")
 
 
-# --- Lifecycle Hardening Tests (Reviewer Finding 3) ---
+# --- Round 2 Blocker 2: Table-Driven Lifecycle Tests & Explicit Enforcement ---
+
+def test_all_lifecycle_status_pairs_table_driven():
+    """Round 2 Blocker 2 requirement: table-driven test for all 16 status transitions."""
+    all_statuses = list(ConstraintStatus)
+    assert len(all_statuses) == 4
+
+    tested_count = 0
+    for from_status, to_status in itertools.product(all_statuses, all_statuses):
+        tested_count += 1
+        is_allowed = to_status in ALLOWED_TRANSITIONS[from_status]
+
+        if is_allowed:
+            # Must succeed without error
+            validate_transition(from_status, to_status, constraint_id="c-test")
+        else:
+            # Must explicitly fail with InvalidConstraintTransitionError
+            with pytest.raises(InvalidConstraintTransitionError) as exc_info:
+                validate_transition(from_status, to_status, constraint_id="c-test")
+            assert f"cannot transition from '{from_status.value}' to '{to_status.value}'" in str(exc_info.value)
+
+    assert tested_count == 16
+
 
 def test_add_rejects_non_active_initial_states(empty_ledger: ConstraintLedger):
     """New constraints entering ledger must have status ACTIVE."""
@@ -530,9 +555,10 @@ def test_conflicted_lifecycle_transitions(empty_ledger: ConstraintLedger):
     """Explicit test of CONFLICTED lifecycle progression rules:
 
     1. ACTIVE -> CONFLICTED (via mark_conflicted)
-    2. CONFLICTED -> ACTIVE (via resolve_conflict)
-    3. CONFLICTED -> REVOKED (via revoke to cancel conflicting requirement)
-    4. CONFLICTED -> SUPERSEDED (via supersede to harmonize/replace conflicting requirement)
+    2. CONFLICTED -> CONFLICTED is rejected (Round 2 Blocker 2 fix)
+    3. CONFLICTED -> ACTIVE (via resolve_conflict)
+    4. CONFLICTED -> REVOKED (via revoke to cancel conflicting requirement)
+    5. CONFLICTED -> SUPERSEDED (via supersede to harmonize/replace conflicting requirement)
     """
     ledger = empty_ledger
 
@@ -550,8 +576,16 @@ def test_conflicted_lifecycle_transitions(empty_ledger: ConstraintLedger):
         strength=ConstraintStrength.HARD,
         provenance=ConstraintProvenance(source=ConstraintSource.POLICY),
     )
+    c3 = Constraint(
+        id="c-peer-3",
+        name="peer_3",
+        description="Peer 3",
+        strength=ConstraintStrength.HARD,
+        provenance=ConstraintProvenance(source=ConstraintSource.POLICY),
+    )
     ledger.add(c1)
     ledger.add(c2)
+    ledger.add(c3)
 
     # 1. ACTIVE -> CONFLICTED
     conflicted = ledger.mark_conflicted("c-port-80", "c-port-80-alt", reason="Port collision")
@@ -559,37 +593,34 @@ def test_conflicted_lifecycle_transitions(empty_ledger: ConstraintLedger):
     assert conflicted.is_active is False
     assert conflicted.relations.conflicts_with == ("c-port-80-alt",)
 
-    # Cannot resolve conflict on an active constraint
-    with pytest.raises(InvalidConstraintTransitionError):
-        ledger.resolve_conflict("c-port-80-alt")
+    # 2. Round 2 Blocker 2: CONFLICTED -> CONFLICTED must be rejected!
+    with pytest.raises(InvalidConstraintTransitionError) as exc_info:
+        ledger.mark_conflicted("c-port-80", "c-peer-3", reason="Conflict again while conflicted")
+    assert "cannot transition from 'CONFLICTED' to 'CONFLICTED'" in str(exc_info.value)
 
-    # 2. CONFLICTED -> ACTIVE (resolve_conflict)
+    # Cannot resolve conflict on an already active constraint
+    with pytest.raises(InvalidConstraintTransitionError):
+        ledger.resolve_conflict("c-peer-3")
+
+    # 3. CONFLICTED -> ACTIVE (resolve_conflict)
     resolved = ledger.resolve_conflict("c-port-80", reason="Port 80 conflict cleared")
     assert resolved.status == ConstraintStatus.ACTIVE
     assert resolved.is_active is True
     assert resolved.relations.conflicts_with == ()
     assert resolved.relations.metadata["conflict_resolution"] == "Port 80 conflict cleared"
 
-    # Re-mark as conflicted to test CONFLICTED -> REVOKED
+    # Re-mark as conflicted (ACTIVE -> CONFLICTED) to test CONFLICTED -> REVOKED
     ledger.mark_conflicted("c-port-80", "c-port-80-alt", reason="Conflict again")
 
-    # 3. CONFLICTED -> REVOKED
+    # 4. CONFLICTED -> REVOKED
     revoked = ledger.revoke("c-port-80", reason="Revoked to resolve port clash")
     assert revoked.status == ConstraintStatus.REVOKED
     assert revoked.is_terminal is True
     assert revoked.relations.revocation_reason == "Revoked to resolve port clash"
 
-    # 4. CONFLICTED -> SUPERSEDED
-    # Mark c2 as conflicted with something else then supersede it
-    c3 = Constraint(
-        id="c-c3",
-        name="c3",
-        description="c3",
-        strength=ConstraintStrength.HARD,
-        provenance=ConstraintProvenance(source=ConstraintSource.POLICY),
-    )
-    ledger.add(c3)
-    ledger.mark_conflicted("c-port-80-alt", "c-c3", reason="Conflict on c2")
+    # 5. CONFLICTED -> SUPERSEDED
+    # Mark c2 as conflicted with active c3, then supersede c2
+    ledger.mark_conflicted("c-port-80-alt", "c-peer-3", reason="Conflict on c2")
     assert ledger.get("c-port-80-alt").status == ConstraintStatus.CONFLICTED
 
     harmonized_replacement = Constraint(
@@ -605,8 +636,8 @@ def test_conflicted_lifecycle_transitions(empty_ledger: ConstraintLedger):
     assert ledger.get("c-port-80-alt").status == ConstraintStatus.SUPERSEDED
 
 
-def test_mark_conflicted_validation(empty_ledger: ConstraintLedger, sample_user_constraint: Constraint):
-    """Marking conflicted requires active non-terminal constraints on both sides."""
+def test_mark_conflicted_peer_precondition(empty_ledger: ConstraintLedger, sample_user_constraint: Constraint):
+    """Round 2 Blocker 2: Conflicting peer named in conflicts_with must be ACTIVE."""
     ledger = empty_ledger
     ledger.add(sample_user_constraint)
 
@@ -620,21 +651,44 @@ def test_mark_conflicted_validation(empty_ledger: ConstraintLedger, sample_user_
     ledger.add(c_terminal)
     ledger.revoke("c-term")
 
-    # Target is terminal
+    c_conf = Constraint(
+        id="c-conf",
+        name="conf",
+        description="conf",
+        strength=ConstraintStrength.SOFT,
+        provenance=ConstraintProvenance(source=ConstraintSource.POLICY),
+    )
+    c_conf_peer = Constraint(
+        id="c-conf-peer",
+        name="conf_peer",
+        description="conf_peer",
+        strength=ConstraintStrength.SOFT,
+        provenance=ConstraintProvenance(source=ConstraintSource.POLICY),
+    )
+    ledger.add(c_conf)
+    ledger.add(c_conf_peer)
+    ledger.mark_conflicted("c-conf", "c-conf-peer")
+
+    # 1. Peer cannot be terminal (REVOKED)
     with pytest.raises(InvalidConstraintTransitionError) as exc_info:
         ledger.mark_conflicted("c-db-schema", "c-term")
-    assert "Cannot mark constraint as conflicted with terminal constraint" in str(exc_info.value)
+    assert "must be in ACTIVE status, got 'REVOKED'" in str(exc_info.value)
 
-    # Source is terminal
+    # 2. Peer cannot be CONFLICTED
+    with pytest.raises(InvalidConstraintTransitionError) as exc_info:
+        ledger.mark_conflicted("c-db-schema", "c-conf")
+    assert "must be in ACTIVE status, got 'CONFLICTED'" in str(exc_info.value)
+
+    # 3. Source cannot be terminal (REVOKED)
     with pytest.raises(InvalidConstraintTransitionError) as exc_info:
         ledger.mark_conflicted("c-term", "c-db-schema")
-    assert "Cannot mark terminal constraint 'c-term' as conflicted" in str(exc_info.value)
+    assert "cannot transition from 'REVOKED' to 'CONFLICTED'" in str(exc_info.value)
 
 
-# --- Snapshot Immutability Tests (Reviewer Blocker 2) ---
+# --- Snapshot Immutability Tests (Round 2 Blocker 1) ---
 
 def test_snapshot_deep_immutability(empty_ledger: ConstraintLedger, sample_user_constraint: Constraint):
-    """Snapshot collections are structurally immutable."""
+    """Snapshot collections are structurally immutable and reject |= and in-place tampering."""
     ledger = empty_ledger
     ledger.add(sample_user_constraint)
 
@@ -645,10 +699,15 @@ def test_snapshot_deep_immutability(empty_ledger: ConstraintLedger, sample_user_
     with pytest.raises(AttributeError):
         snapshot.constraints.append(sample_user_constraint)  # type: ignore[attr-defined]
 
-    # 2. metadata is a FrozenDict
+    # 2. metadata is a FrozenDict using composition
     assert isinstance(snapshot.metadata, FrozenDict)
+    assert not isinstance(snapshot.metadata, dict)
     with pytest.raises(TypeError):
-        snapshot.metadata["tamper"] = True
+        snapshot.metadata["tamper"] = True  # type: ignore[index]
+    with pytest.raises(TypeError):
+        snapshot.metadata |= {"tamper": True}  # type: ignore[operator]
+    with pytest.raises(TypeError):
+        dict.__setitem__(snapshot.metadata, "tamper", True)  # type: ignore[arg-type]
 
     # 3. Mutating external metadata dict passed to snapshot has no effect
     raw_meta = {"version": "1.0"}

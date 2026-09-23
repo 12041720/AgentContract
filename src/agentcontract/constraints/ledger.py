@@ -16,6 +16,7 @@ from agentcontract.constraints.models import (
     ConstraintId,
     ConstraintStatus,
     FrozenDict,
+    validate_transition,
 )
 
 
@@ -118,8 +119,8 @@ class ConstraintLedger:
     ) -> Constraint:
         """Revoke an active or conflicted constraint.
 
-        Revocation is permitted from ACTIVE or CONFLICTED status. Terminal constraints
-        (REVOKED, SUPERSEDED) cannot be revoked again.
+        Transition must be permitted by ALLOWED_TRANSITIONS (from ACTIVE or CONFLICTED).
+        Terminal constraints (REVOKED, SUPERSEDED) cannot be revoked again.
 
         Args:
             constraint_id: Identifier of the constraint to revoke.
@@ -131,18 +132,10 @@ class ConstraintLedger:
 
         Raises:
             ConstraintNotFoundError: If the constraint does not exist.
-            InvalidConstraintTransitionError: If the constraint is in a terminal or invalid state.
+            InvalidConstraintTransitionError: If the transition is disallowed by ALLOWED_TRANSITIONS.
         """
         existing = self.get(constraint_id)
-        if existing.is_terminal:
-            raise InvalidConstraintTransitionError(
-                f"Cannot revoke constraint '{constraint_id}' because it is already in terminal "
-                f"status '{existing.status.value}'."
-            )
-        if existing.status not in (ConstraintStatus.ACTIVE, ConstraintStatus.CONFLICTED):
-            raise InvalidConstraintTransitionError(
-                f"Cannot revoke constraint '{constraint_id}' from status '{existing.status.value}'."
-            )
+        validate_transition(existing.status, ConstraintStatus.REVOKED, constraint_id)
 
         timestamp = revoked_at or datetime.now(timezone.utc)
         updated_relations = existing.relations.model_copy(
@@ -170,7 +163,7 @@ class ConstraintLedger:
     ) -> Constraint:
         """Supersede an active or conflicted constraint with a newer replacement constraint.
 
-        The existing constraint is marked SUPERSEDED with a reference to the replacement ID.
+        The existing constraint transitions to SUPERSEDED (validated via ALLOWED_TRANSITIONS).
         The replacement must be in ACTIVE status and links back to the superseded ID.
         Full historical provenance is preserved for both records.
 
@@ -185,20 +178,13 @@ class ConstraintLedger:
 
         Raises:
             ConstraintNotFoundError: If `existing_id` does not exist.
-            InvalidConstraintTransitionError: If the existing constraint is in a terminal state,
-                or if the replacement does not have ACTIVE status, or reuses the same ID.
+            InvalidConstraintTransitionError: If existing constraint cannot transition to SUPERSEDED,
+                or if replacement does not have ACTIVE status, or reuses the existing ID.
             DuplicateConstraintError: If replacement.id already exists in the ledger.
         """
         existing = self.get(existing_id)
-        if existing.is_terminal:
-            raise InvalidConstraintTransitionError(
-                f"Cannot supersede constraint '{existing_id}' because it is already in terminal "
-                f"status '{existing.status.value}'."
-            )
-        if existing.status not in (ConstraintStatus.ACTIVE, ConstraintStatus.CONFLICTED):
-            raise InvalidConstraintTransitionError(
-                f"Cannot supersede constraint '{existing_id}' from status '{existing.status.value}'."
-            )
+        validate_transition(existing.status, ConstraintStatus.SUPERSEDED, existing_id)
+
         if replacement.id == existing_id:
             raise InvalidConstraintTransitionError(
                 f"Replacement constraint cannot reuse the existing id '{existing_id}'; "
@@ -256,11 +242,16 @@ class ConstraintLedger:
         *,
         reason: str | None = None,
     ) -> Constraint:
-        """Mark an active constraint as conflicted with another constraint.
+        """Mark an active constraint as conflicted with another active constraint.
+
+        Enforces:
+        - Source constraint must transition according to ALLOWED_TRANSITIONS (ACTIVE -> CONFLICTED).
+          An already-CONFLICTED constraint cannot transition to CONFLICTED again.
+        - Conflicting peer constraint must also be in ACTIVE status.
 
         Args:
             constraint_id: Identifier of the active constraint experiencing a conflict.
-            conflicting_id: Identifier of the conflicting constraint.
+            conflicting_id: Identifier of the conflicting peer constraint.
             reason: Optional description of the conflict.
 
         Returns:
@@ -268,18 +259,20 @@ class ConstraintLedger:
 
         Raises:
             ConstraintNotFoundError: If either constraint does not exist.
-            InvalidConstraintTransitionError: If either constraint is in a terminal status.
+            InvalidConstraintTransitionError: If the transition is disallowed by ALLOWED_TRANSITIONS,
+                or if the conflicting peer is not in ACTIVE status.
         """
         existing = self.get(constraint_id)
         conflicting = self.get(conflicting_id)
 
-        if existing.is_terminal:
+        # Enforce lifecycle transition on source: ACTIVE -> CONFLICTED
+        validate_transition(existing.status, ConstraintStatus.CONFLICTED, constraint_id)
+
+        # Enforce precondition on conflicting peer: must be ACTIVE
+        if conflicting.status != ConstraintStatus.ACTIVE:
             raise InvalidConstraintTransitionError(
-                f"Cannot mark terminal constraint '{constraint_id}' as conflicted."
-            )
-        if conflicting.is_terminal:
-            raise InvalidConstraintTransitionError(
-                f"Cannot mark constraint as conflicted with terminal constraint '{conflicting_id}'."
+                f"Conflicting peer constraint '{conflicting_id}' must be in ACTIVE status, "
+                f"got '{conflicting.status.value}'."
             )
 
         conflicts = list(existing.relations.conflicts_with)
@@ -315,6 +308,8 @@ class ConstraintLedger:
     ) -> Constraint:
         """Resolve a conflict on a conflicted constraint, returning it to ACTIVE status.
 
+        Enforces lifecycle transition according to ALLOWED_TRANSITIONS (CONFLICTED -> ACTIVE).
+
         Args:
             constraint_id: Identifier of the conflicted constraint to reactivate.
             reason: Optional description of how the conflict was resolved.
@@ -324,14 +319,10 @@ class ConstraintLedger:
 
         Raises:
             ConstraintNotFoundError: If constraint does not exist.
-            InvalidConstraintTransitionError: If constraint status is not CONFLICTED.
+            InvalidConstraintTransitionError: If the transition is disallowed by ALLOWED_TRANSITIONS.
         """
         existing = self.get(constraint_id)
-        if existing.status != ConstraintStatus.CONFLICTED:
-            raise InvalidConstraintTransitionError(
-                f"Cannot resolve conflict on constraint '{constraint_id}' with status '{existing.status.value}'; "
-                f"status must be CONFLICTED."
-            )
+        validate_transition(existing.status, ConstraintStatus.ACTIVE, constraint_id)
 
         updated_metadata = dict(existing.relations.metadata)
         if reason:

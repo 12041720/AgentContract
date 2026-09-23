@@ -1,6 +1,6 @@
 """Core domain models for constraints, provenance, and execution scopes."""
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any, TypeAlias
@@ -8,7 +8,10 @@ from pydantic import BaseModel, ConfigDict, Field, GetCoreSchemaHandler, field_v
 from pydantic_core import core_schema
 from typing_extensions import Self
 
-from agentcontract.constraints.exceptions import ConstraintValidationError
+from agentcontract.constraints.exceptions import (
+    ConstraintValidationError,
+    InvalidConstraintTransitionError,
+)
 
 # Stable identifier type alias for constraints (Python 3.11+ compatible)
 ConstraintId: TypeAlias = str
@@ -16,43 +19,67 @@ ConstraintId: TypeAlias = str
 
 def _freeze_value(val: Any) -> Any:
     """Recursively convert nested mutable collections into immutable equivalents."""
-    if isinstance(val, dict):
+    if isinstance(val, (FrozenDict, frozenset)):
+        return val
+    if isinstance(val, Mapping):
         return FrozenDict({str(k): _freeze_value(v) for k, v in val.items()})
     if isinstance(val, (list, tuple)):
         return tuple(_freeze_value(v) for v in val)
-    if isinstance(val, (set, frozenset)):
+    if isinstance(val, set):
         return frozenset(_freeze_value(v) for v in val)
     return val
 
 
-class FrozenDict(dict[str, Any]):
-    """An immutable, deeply frozen dictionary for domain metadata and selectors."""
+class FrozenDict(Mapping[str, Any]):
+    """An immutable mapping that wraps an internal dictionary via composition.
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        raw: dict[str, Any] = dict(*args, **kwargs)
-        frozen_data = {str(k): _freeze_value(v) for k, v in raw.items()}
-        super().__init__(frozen_data)
+    Subclasses Mapping (not dict) so that no mutable methods (such as |=,
+    dict.__setitem__, pop, update, or clear) exist or can bypass immutability.
+    Durable domain metadata and selectors are protected from in-place alteration.
+    """
 
-    def __setitem__(self, key: str, value: Any) -> None:
-        raise TypeError("FrozenDict is immutable; item assignment is prohibited.")
+    __slots__ = ("_data", "_hash")
 
-    def __delitem__(self, key: str) -> None:
-        raise TypeError("FrozenDict is immutable; item deletion is prohibited.")
+    def __init__(
+        self,
+        mapping_or_iterable: Mapping[str, Any] | Iterable[tuple[str, Any]] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        raw: dict[str, Any] = {}
+        if mapping_or_iterable is not None:
+            raw.update(dict(mapping_or_iterable))
+        if kwargs:
+            raw.update(kwargs)
+        self._data: dict[str, Any] = {str(k): _freeze_value(v) for k, v in raw.items()}
+        self._hash: int | None = None
 
-    def pop(self, *args: Any, **kwargs: Any) -> Any:
-        raise TypeError("FrozenDict is immutable; pop operation is prohibited.")
+    def __getitem__(self, key: str) -> Any:
+        return self._data[key]
 
-    def popitem(self) -> tuple[str, Any]:
-        raise TypeError("FrozenDict is immutable; popitem operation is prohibited.")
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._data)
 
-    def clear(self) -> None:
-        raise TypeError("FrozenDict is immutable; clear operation is prohibited.")
+    def __len__(self) -> int:
+        return len(self._data)
 
-    def update(self, *args: Any, **kwargs: Any) -> None:
-        raise TypeError("FrozenDict is immutable; update operation is prohibited.")
+    def __contains__(self, key: object) -> bool:
+        return key in self._data
 
-    def setdefault(self, *args: Any, **kwargs: Any) -> Any:
-        raise TypeError("FrozenDict is immutable; setdefault operation is prohibited.")
+    def __repr__(self) -> str:
+        return f"FrozenDict({self._data!r})"
+
+    def __copy__(self) -> "FrozenDict":
+        return self
+
+    def __deepcopy__(self, memo: Any) -> "FrozenDict":
+        return self
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, FrozenDict):
+            return self._data == other._data
+        if isinstance(other, Mapping):
+            return self._data == dict(other)
+        return False
 
     @classmethod
     def __get_pydantic_core_schema__(
@@ -63,7 +90,7 @@ class FrozenDict(dict[str, Any]):
             cls,
             dict_schema,
             serialization=core_schema.plain_serializer_function_ser_schema(
-                lambda v: dict(v),
+                lambda v: dict(v._data if isinstance(v, FrozenDict) else v),
                 return_schema=core_schema.dict_schema(),
             ),
         )
@@ -111,6 +138,30 @@ ALLOWED_TRANSITIONS: dict[ConstraintStatus, frozenset[ConstraintStatus]] = {
     ConstraintStatus.REVOKED: frozenset(),     # Terminal state
     ConstraintStatus.SUPERSEDED: frozenset(),  # Terminal state
 }
+
+
+def validate_transition(
+    current_status: ConstraintStatus,
+    target_status: ConstraintStatus,
+    constraint_id: ConstraintId | None = None,
+) -> None:
+    """Validate that a lifecycle state transition is allowed by the domain state machine.
+
+    Args:
+        current_status: The current lifecycle status of the constraint.
+        target_status: The attempted target lifecycle status.
+        constraint_id: Optional constraint ID for context in error messages.
+
+    Raises:
+        InvalidConstraintTransitionError: If the transition is not in ALLOWED_TRANSITIONS.
+    """
+    allowed = ALLOWED_TRANSITIONS.get(current_status, frozenset())
+    if target_status not in allowed:
+        cid_context = f" for constraint '{constraint_id}'" if constraint_id else ""
+        raise InvalidConstraintTransitionError(
+            f"Illegal lifecycle transition{cid_context}: cannot transition from "
+            f"'{current_status.value}' to '{target_status.value}'."
+        )
 
 
 class ConstraintProvenance(BaseModel):

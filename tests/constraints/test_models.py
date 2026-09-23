@@ -1,5 +1,6 @@
-"""Tests for constraint domain models and invariants."""
+"""Tests for constraint domain models, FrozenDict immutability, and invariants."""
 
+from collections.abc import Mapping
 import pytest
 from pydantic import ValidationError
 
@@ -103,7 +104,6 @@ def test_agent_inference_cannot_masquerade_as_hard_constraint():
             ),
         )
 
-    # Ensure the domain error or validation message explains the authority violation
     assert "AGENT_INFERENCE cannot be declared with HARD strength" in str(exc_info.value)
 
 
@@ -144,8 +144,91 @@ def test_constraint_immutability():
         constraint.status = ConstraintStatus.REVOKED  # type: ignore[misc]
 
 
-def test_deep_immutability_of_nested_collections():
-    """Blocker 2 regression test: all nested collections must be structurally immutable."""
+# --- Round 2 Blocker 1 Regression Tests: FrozenDict True Immutability ---
+
+def test_frozendict_item_assignment_prohibited():
+    """FrozenDict does not support item assignment or item deletion."""
+    fd = FrozenDict({"a": 1, "b": 2})
+    assert isinstance(fd, Mapping)
+    assert not isinstance(fd, dict)
+
+    with pytest.raises(TypeError):
+        fd["a"] = 10  # type: ignore[index]
+
+    with pytest.raises(TypeError):
+        fd["c"] = 3  # type: ignore[index]
+
+    with pytest.raises(TypeError):
+        del fd["a"]  # type: ignore[attr-defined]
+
+
+def test_frozendict_in_place_union_prohibited():
+    """FrozenDict does not support in-place union (|=)."""
+    fd = FrozenDict({"a": 1})
+    with pytest.raises(TypeError):
+        fd |= {"b": 2}  # type: ignore[operator]
+
+
+def test_frozendict_absence_and_inapplicability_of_mutable_dict_operations():
+    """FrozenDict does not have mutable dict methods, and dict base-class methods cannot apply."""
+    fd = FrozenDict({"a": 1, "b": 2})
+
+    for mut_attr in ("pop", "update", "clear", "setdefault", "popitem"):
+        assert not hasattr(fd, mut_attr)
+        with pytest.raises(AttributeError):
+            getattr(fd, mut_attr)()
+
+    # Base-class dict methods cannot apply to FrozenDict
+    with pytest.raises(TypeError):
+        dict.__setitem__(fd, "c", 3)  # type: ignore[arg-type]
+
+    with pytest.raises(TypeError):
+        dict.update(fd, {"c": 3})  # type: ignore[arg-type]
+
+    with pytest.raises(TypeError):
+        dict.clear(fd)  # type: ignore[arg-type]
+
+
+def test_frozendict_nested_mapping_and_list_freezing():
+    """Nested mappings and lists are recursively converted to FrozenDict and tuples."""
+    raw = {
+        "level1": {
+            "level2_list": [1, 2, {"level3_key": "val"}],
+            "level2_set": {10, 20},
+        }
+    }
+    fd = FrozenDict(raw)
+
+    assert isinstance(fd["level1"], FrozenDict)
+    assert isinstance(fd["level1"]["level2_list"], tuple)
+    assert isinstance(fd["level1"]["level2_list"][2], FrozenDict)
+    assert isinstance(fd["level1"]["level2_set"], frozenset)
+
+    with pytest.raises(TypeError):
+        fd["level1"]["level2_list"][2]["level3_key"] = "tampered"  # type: ignore[index]
+
+
+def test_frozendict_external_input_mutation_isolation():
+    """Mutating the external dict/list passed to FrozenDict does not mutate the FrozenDict."""
+    raw_sub = {"count": 1}
+    raw_list = [10, 20]
+    raw = {"sub": raw_sub, "items": raw_list, "key": "orig"}
+
+    fd = FrozenDict(raw)
+
+    # In-place mutate the external inputs
+    raw["key"] = "hacked"
+    raw_sub["count"] = 999
+    raw_list.append(30)
+
+    # Verify FrozenDict was isolated
+    assert fd["key"] == "orig"
+    assert fd["sub"]["count"] == 1
+    assert fd["items"] == (10, 20)
+
+
+def test_deep_immutability_of_constraint_models():
+    """All nested collections in Constraint are structurally immutable."""
     constraint = Constraint(
         id="c-deep-immut",
         name="deep_immutable",
@@ -173,10 +256,6 @@ def test_deep_immutability_of_nested_collections():
     assert isinstance(constraint.scope.actions, tuple)
     with pytest.raises(AttributeError):
         constraint.scope.paths.append("malicious.py")  # type: ignore[attr-defined]
-    with pytest.raises(AttributeError):
-        constraint.scope.tools.append("drop_db")  # type: ignore[attr-defined]
-    with pytest.raises(AttributeError):
-        constraint.scope.actions.append("delete")  # type: ignore[attr-defined]
 
     # 2. Relation conflicts_with is a tuple
     assert isinstance(constraint.relations.conflicts_with, tuple)
@@ -186,19 +265,17 @@ def test_deep_immutability_of_nested_collections():
     # 3. Provenance metadata is an immutable FrozenDict
     assert isinstance(constraint.provenance.metadata, FrozenDict)
     with pytest.raises(TypeError):
-        constraint.provenance.metadata["tamper"] = True
+        constraint.provenance.metadata["tamper"] = True  # type: ignore[index]
     with pytest.raises(TypeError):
-        constraint.provenance.metadata.pop("priority")
+        constraint.provenance.metadata |= {"tamper": True}  # type: ignore[operator]
     with pytest.raises(TypeError):
-        constraint.provenance.metadata.clear()
-    with pytest.raises(TypeError):
-        constraint.provenance.metadata.update({"tamper": True})
+        dict.__setitem__(constraint.provenance.metadata, "tamper", True)  # type: ignore[arg-type]
 
-    # 4. Nested dicts and lists inside metadata are deeply frozen
+    # 4. Nested dicts inside metadata are deeply frozen
     nested_dict = constraint.provenance.metadata["nested"]
     assert isinstance(nested_dict, FrozenDict)
     with pytest.raises(TypeError):
-        nested_dict["new_key"] = "tampered"
+        nested_dict["new_key"] = "tampered"  # type: ignore[index]
     assert isinstance(nested_dict["sub_key"], tuple)
     with pytest.raises(AttributeError):
         nested_dict["sub_key"].append(999)  # type: ignore[attr-defined]
@@ -206,43 +283,15 @@ def test_deep_immutability_of_nested_collections():
     # 5. Scope selectors are deeply frozen
     assert isinstance(constraint.scope.selectors, FrozenDict)
     with pytest.raises(TypeError):
-        constraint.scope.selectors["branch"] = "hacked"
+        constraint.scope.selectors["branch"] = "hacked"  # type: ignore[index]
     assert isinstance(constraint.scope.selectors["tags"], FrozenDict)
     with pytest.raises(TypeError):
-        constraint.scope.selectors["tags"]["env"] = "staging"
+        constraint.scope.selectors["tags"]["env"] = "staging"  # type: ignore[index]
 
     # 6. Relation metadata is deeply frozen
     assert isinstance(constraint.relations.metadata, FrozenDict)
     with pytest.raises(TypeError):
-        constraint.relations.metadata["rev_policy"] = "relaxed"
-
-
-def test_external_reference_isolation():
-    """Mutating external objects passed into models does not affect the models."""
-    raw_paths = ["a.py", "b.py"]
-    raw_meta = {"key": "original", "sub": {"count": 1}}
-
-    c = Constraint(
-        id="c-isol",
-        name="isolation_check",
-        description="Isolation check",
-        strength=ConstraintStrength.SOFT,
-        provenance=ConstraintProvenance(
-            source=ConstraintSource.POLICY,
-            metadata=raw_meta,
-        ),
-        scope=ConstraintScope(paths=raw_paths),
-    )
-
-    # Mutate the external inputs
-    raw_paths.append("evil.py")
-    raw_meta["key"] = "modified"
-    raw_meta["sub"]["count"] = 999
-
-    # Assert internal model data was untouched
-    assert c.scope.paths == ("a.py", "b.py")
-    assert c.provenance.metadata["key"] == "original"
-    assert c.provenance.metadata["sub"]["count"] == 1
+        constraint.relations.metadata["rev_policy"] = "relaxed"  # type: ignore[index]
 
 
 def test_constraint_serialization_round_trip():
