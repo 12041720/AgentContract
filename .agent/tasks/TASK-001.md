@@ -4,7 +4,7 @@
 **Milestone:** M1 — Executable contract core  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-001-core-ledger`  
-**Main-agent review:** changes requested
+**Main-agent review:** second-round changes requested
 
 ## Objective
 
@@ -232,69 +232,79 @@ If lint/type tooling is added by the executor, also report its results.
 
 > Main agent only.
 
-**Verdict:** CHANGES_REQUESTED
+**Verdict:** CHANGES_REQUESTED — ROUND 2
 
-**Reviewed implementation:** `0ce2fd897ba5e407407586fe67db987b3e182f6d`
+**Reviewed implementation:** `85f0195326a5dbba7f51ddf4863e0ba550affe28`
 
-**Findings:**
+**Round-1 fixes verified positively:**
+- Python 3.11-only syntax issue was fixed with a 3.11-compatible type alias.
+- Executor reports the full suite passing on Python 3.11.12 and Python 3.12.9.
+- Tuple conversion and recursive freezing significantly improved defensive isolation.
+- Initial/replacement lifecycle-state rejection is substantially clearer.
+- CONFLICTED resolution paths were explicitly documented and tested.
 
-### BLOCKER 1 — Python 3.11 compatibility is broken
+### BLOCKER 1 — FrozenDict is still mutable
 
-The project contract and `pyproject.toml` require Python 3.11+, but `models.py` declares:
+The current implementation subclasses Python `dict` and overrides common mutator methods. That does not make the object truly immutable.
+
+A direct reproduction against this design shows ordinary in-place union still mutates it:
 
 ```python
-type ConstraintId = str
+fd = FrozenDict({"a": 1})
+fd |= {"b": 2}
+assert fd["b"] == 2  # mutation succeeds
 ```
 
-PEP 695 `type` alias syntax requires Python 3.12. The executor reported tests only on Python 3.12.9, so the required Python 3.11 acceptance criterion was not actually verified.
+Because the class is a `dict` subclass, base-class mutators can also bypass overrides:
+
+```python
+dict.__setitem__(fd, "c", 3)
+```
+
+This means provenance/scope/relation/snapshot history can still be changed through an external reference after being recorded, so the core auditability invariant is not yet satisfied.
 
 **Required fix:**
-- Replace the 3.12-only alias syntax with a Python 3.11-compatible typed alias, e.g. `ConstraintId: TypeAlias = str` (or an equivalent well-typed 3.11-compatible definition).
-- Add a CI/tox/nox or other reproducible check that exercises Python 3.11. At minimum, the executor must run the full test suite under Python 3.11 and report it.
+- Do not implement immutable metadata by subclassing mutable `dict`.
+- Prefer an immutable `Mapping` implementation that uses composition rather than inheritance from `dict`, with no exposed mutable backing store.
+- Preserve Pydantic validation + JSON serialization/deserialization.
+- Add regression tests for at least:
+  - item assignment;
+  - `|=`;
+  - absence/inapplicability of mutable dict operations;
+  - nested mapping/list freezing;
+  - external input mutation isolation;
+  - serialization round-trip.
 
-### BLOCKER 2 — durable models are only shallow-frozen
+### BLOCKER 2 — transition table is not the actual enforcement source
 
-`ConfigDict(frozen=True)` prevents assignment to model attributes, but nested mutable values remain mutable. Current durable models expose mutable containers such as:
-- `ConstraintProvenance.metadata: dict`
-- `ConstraintScope.paths/tools/actions: list`
-- `ConstraintScope.selectors: dict`
-- `ConstraintRelation.conflicts_with: list`
-- `ConstraintRelation.metadata: dict`
-- `LedgerSnapshot.constraints: list`
-- `LedgerSnapshot.metadata: dict`
+`ALLOWED_TRANSITIONS` is defined, but Ledger transition methods do not consistently validate against it.
 
-As a result, callers can mutate data in-place after the constraint has been added to the ledger, e.g. append a path or alter provenance metadata, silently changing historical state. This violates the architecture requirement that provenance/history be preserved and makes future SpecGuard decisions non-auditable.
+In particular, `mark_conflicted()` currently rejects only terminal source/target constraints. Therefore an already-CONFLICTED source can be passed to `mark_conflicted()` again, effectively allowing:
 
-**Required fix:**
-- Make durable nested state structurally immutable or defensively isolated. Prefer immutable field types for durable domain data (e.g. tuples/frozensets and an immutable/validated representation for structured mappings), or implement defensive deep-copy/freeze semantics with tests that prove the ledger's stored history cannot be mutated through an external reference.
-- Preserve clean JSON serialization/deserialization.
-- Add tests that attempt in-place mutation of scope, provenance metadata, relation metadata/conflict collections, and snapshot data, and prove historical ledger state cannot be changed.
+```text
+CONFLICTED -> CONFLICTED
+```
 
-### REQUIRED HARDENING — lifecycle semantics around CONFLICTED
+even though `ALLOWED_TRANSITIONS[CONFLICTED]` does not contain `CONFLICTED`.
 
-The current implementation treats `CONFLICTED` as neither active nor terminal. Therefore:
-- `add()` can accept a pre-conflicted constraint;
-- `revoke()` / `supersede()` can transition a conflicted constraint because they reject only terminal states;
-- `supersede()` can accept a replacement in `CONFLICTED` state and silently force it to `ACTIVE`.
-
-This is ambiguous state-machine behavior and will matter directly to SpecGuard.
+The method documentation/test description says marking conflicted requires active constraints, but the implementation does not enforce `existing.status == ACTIVE` (nor require the conflicting peer to be ACTIVE).
 
 **Required fix:**
-- Define the allowed lifecycle transitions explicitly in code/tests.
-- New constraints and superseding replacements should normally enter the ledger as `ACTIVE`; reject incompatible pre-set lifecycle states instead of silently normalizing them.
-- Decide and document whether `CONFLICTED -> REVOKED/SUPERSEDED` is legal; whichever rule is chosen must be explicit and tested.
+- Make lifecycle enforcement use one explicit helper/table as the source of truth, e.g. `_assert_transition(current, target)`.
+- Every status-changing operation must validate through that mechanism.
+- `mark_conflicted` must enforce the chosen legal precondition (for the current design: ACTIVE -> CONFLICTED).
+- Decide whether the peer named in `conflicts_with` must also be ACTIVE; document the rule and test it.
+- Add a table-driven test that enumerates all status pairs and proves allowed transitions are accepted while disallowed transitions fail explicitly.
 
-**What was good:**
-- Domain boundaries are appropriately narrow and vendor-neutral.
-- Provenance/source/strength distinctions are well modeled.
-- Typed exceptions, supersession lineage, round-trip serialization, and failure-path tests are good foundations.
-- No LLM/network/database scope creep was introduced.
+**Additional review note (non-blocking if resolved by the transition refactor):**
+- Avoid having `ALLOWED_TRANSITIONS` merely document behavior while individual methods independently reproduce lifecycle logic; that will drift as more states are introduced.
 
 **Required re-check before resubmission:**
-- Full test suite on Python 3.11 and current development Python.
-- New immutability regression tests.
-- New lifecycle transition-table tests.
-- Update Executor Report with the new commit SHA and exact checks run.
+- Full test suite on Python 3.11 and Python 3.12+.
+- New immutable-mapping bypass tests, including `|=`.
+- Table-driven lifecycle tests covering every status pair.
+- Update Executor Report with the new commit SHA and exact checks.
 
 **Next instruction:**
 Fix TASK-001 on the same branch `task/TASK-001-core-ledger`. Do not start TASK-002.
+
