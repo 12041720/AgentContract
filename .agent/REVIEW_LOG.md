@@ -44,3 +44,23 @@ Next:
 **Next:** execution agent fixes TASK-001 on `task/TASK-001-core-ledger`; TASK-002 remains blocked.
 
 ---
+
+## 2026-09-23 — TASK-001 second implementation review
+
+**Implementation reviewed:** `85f0195326a5dbba7f51ddf4863e0ba550affe28`
+
+**Verdict:** CHANGES_REQUESTED — ROUND 2
+
+**Verified improvements:**
+- Python 3.11-compatible type alias adopted.
+- Executor reports passing test suites on Python 3.11.12 and 3.12.9.
+- tuple/deep-freezing work improved nested isolation.
+- CONFLICTED lifecycle intent is now documented and partially tested.
+
+**Remaining blockers:**
+- `FrozenDict` subclasses `dict` and remains mutable through operations such as `|=` and base-class mutators; durable history therefore is not truly immutable.
+- `ALLOWED_TRANSITIONS` is not the single enforcement source; `mark_conflicted` can currently permit state behavior not represented by the transition table.
+
+**Next:** execution agent must replace the mutable-dict subclass approach, centralize transition validation, add bypass/table-driven tests, and resubmit TASK-001.
+
+---
