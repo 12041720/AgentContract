@@ -29,7 +29,7 @@
 
 ## Current design decisions
 
-1. Core logic is Python 3.11+ and vendor-neutral.
+1. Core logic is developed against the user's installed local Python **3.12.9** and remains vendor-neutral. Do not install alternate Python interpreters solely for compatibility testing.
 2. Pydantic models are used at system boundaries and for durable domain state.
 3. Constraint tracking and evidence verification are separate subsystems connected through shared provenance/trace identifiers.
 4. Hard constraints must be enforceable without asking the same LLM that generated the action to self-police.
