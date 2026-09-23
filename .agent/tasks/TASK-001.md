@@ -150,22 +150,67 @@ If lint/type tooling is added by the executor, also report its results.
 > Execution agent: fill this section only after implementation.
 
 **Implementation summary:**  
-TBD
+- Implemented core constraint domain models in `src/agentcontract/constraints/models.py`:
+  - `Constraint`, `ConstraintProvenance`, `ConstraintScope`, `ConstraintRelation`.
+  - Typed `StrEnum` definitions: `ConstraintSource` (USER, POLICY, REPOSITORY, TOOL, AGENT_INFERENCE), `ConstraintStrength` (HARD, SOFT, ASSUMPTION), `ConstraintStatus` (ACTIVE, REVOKED, SUPERSEDED, CONFLICTED).
+  - Enforced Invariant 8 via model validation: an `AGENT_INFERENCE` cannot be declared with `HARD` strength, guaranteeing assumptions remain distinguishable from user authority.
+  - Frozen Pydantic models preventing accidental mutation and ensuring immutable value semantics.
+- Implemented typed domain exceptions in `src/agentcontract/constraints/exceptions.py`:
+  - `ConstraintError`, `ConstraintNotFoundError`, `DuplicateConstraintError`, `InvalidConstraintTransitionError`, `ConstraintValidationError`.
+- Implemented in-memory, version-preserving `ConstraintLedger` and `LedgerSnapshot` in `src/agentcontract/constraints/ledger.py`:
+  - `add`: registers active constraints with duplicate ID checks.
+  - `get`: retrieves any constraint by ID across all lifecycle statuses.
+  - `list_active`: returns only active constraints, excluding revoked/superseded entries.
+  - `list_all`: returns full constraint history.
+  - `revoke`: marks active constraints as revoked with reason and timestamp while preserving provenance and scope. Explicitly rejects transitions on terminal constraints.
+  - `supersede`: marks an active constraint as superseded, activates replacement, links forward/backward lineage (`supersedes` / `superseded_by`), and preserves original records and provenance. Rejects transitions on terminal constraints, duplicate IDs, or identical IDs.
+  - `mark_conflicted`: tracks conflicting constraints and updates status to `CONFLICTED`.
+  - `get_history`: computes full ordered supersession lineage from root to latest replacement.
+  - `snapshot`, `to_dict`, `to_json`, `from_snapshot`, `from_dict`, `from_json`: robust JSON/dict serialization round-trips preserving all fields, IDs, statuses, relations, scopes, and provenances.
+- Exported public constraint API in `src/agentcontract/constraints/__init__.py` and root package `src/agentcontract/__init__.py`.
+- Configured pytest `pythonpath = ["src"]` in `pyproject.toml`.
+- Implemented comprehensive unit tests covering all 8 recommended scenarios plus edge cases (22 tests total).
 
 **Files changed:**  
-TBD
+- `src/agentcontract/constraints/models.py` (new)
+- `src/agentcontract/constraints/ledger.py` (new)
+- `src/agentcontract/constraints/exceptions.py` (new)
+- `src/agentcontract/constraints/__init__.py` (updated)
+- `src/agentcontract/__init__.py` (updated)
+- `pyproject.toml` (updated with pythonpath)
+- `tests/__init__.py` (new)
+- `tests/constraints/__init__.py` (new)
+- `tests/constraints/test_models.py` (new)
+- `tests/constraints/test_ledger.py` (new)
+- `.agent/tasks/TASK-001.md` (updated Executor Report)
 
 **Tests/checks:**  
-TBD
+- `python -m pytest -v`: 22 passed in 0.39s (100% pass rate).
+- Validated Python 3.12.9 environment compatibility.
+- Scenarios tested:
+  1. Add explicit hard user constraint ("do not modify DB schema").
+  2. Add agent assumption and demonstrate it remains distinguishable from user authority.
+  3. Revoke active constraint, check list_active vs get, verify provenance/scope preservation.
+  4. Supersede "must use Redis" with "PostgreSQL allowed", verify old record remains queryable and history links both.
+  5. Attempt to revoke/supersede already terminal (revoked or superseded) constraints and assert explicit `InvalidConstraintTransitionError`.
+  6. Duplicate ID rejection on add and supersede.
+  7. Serialization round-trip (`to_json` -> `from_json`, `to_dict` -> `from_dict`) verifying semantic state equality.
+  8. Active listing excludes revoked and superseded entries.
+  9. Multi-hop supersession lineage traversal (A -> B -> C).
+  10. Conflict tracking and validation.
+  11. Empty ID/name validation and model immutability.
+  12. Top-level package export checks.
 
 **Known limitations:**  
-TBD
+- In-memory only for v0.1 (as specified by TASK-001 scope; persistent storage like SQLite/PostgreSQL is deferred to later milestones).
+- SpecGuard rules and NL constraint extraction are not included (out of scope per task specification).
 
 **Commit/PR:**  
-TBD
+- Branch: `task/TASK-001-core-ledger`
+- Commit SHA: `0ce2fd8`
 
 **Questions/blockers:**  
-TBD
+- None. All acceptance criteria and suggested test cases for TASK-001 are met and verified.
 
 ## Main Agent Review
 
