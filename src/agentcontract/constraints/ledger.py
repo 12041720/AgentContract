@@ -11,14 +11,16 @@ from agentcontract.constraints.exceptions import (
     InvalidConstraintTransitionError,
 )
 from agentcontract.constraints.models import (
+    ALLOWED_TRANSITIONS,
     Constraint,
     ConstraintId,
     ConstraintStatus,
+    FrozenDict,
 )
 
 
 class LedgerSnapshot(BaseModel):
-    """Durable, serializable snapshot of constraint ledger state."""
+    """Durable, structurally immutable snapshot of constraint ledger state."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -26,12 +28,12 @@ class LedgerSnapshot(BaseModel):
         default="1.0",
         description="Schema format version for the ledger serialization format.",
     )
-    constraints: list[Constraint] = Field(
-        default_factory=list,
+    constraints: tuple[Constraint, ...] = Field(
+        default_factory=tuple,
         description="All recorded constraints in the ledger, preserving full history.",
     )
-    metadata: dict[str, Any] = Field(
-        default_factory=dict,
+    metadata: FrozenDict = Field(
+        default_factory=FrozenDict,
         description="Optional ledger-level metadata.",
     )
 
@@ -39,7 +41,7 @@ class LedgerSnapshot(BaseModel):
 class ConstraintLedger:
     """In-memory, version-preserving ledger governing active and historical constraints.
 
-    Enforces unique identifiers, immutable provenance across transitions,
+    Enforces unique identifiers, deep immutability across transitions,
     explicit lifecycle progression (active -> revoked / superseded / conflicted),
     and reliable serialization round-tripping.
     """
@@ -53,6 +55,8 @@ class ConstraintLedger:
     def add(self, constraint: Constraint) -> Constraint:
         """Add a new constraint to the ledger.
 
+        New constraints must enter the ledger with ACTIVE status.
+
         Args:
             constraint: The constraint model to register.
 
@@ -61,15 +65,16 @@ class ConstraintLedger:
 
         Raises:
             DuplicateConstraintError: If a constraint with the same ID already exists.
-            InvalidConstraintTransitionError: If the constraint is introduced with a terminal status.
+            InvalidConstraintTransitionError: If the constraint does not have ACTIVE status.
         """
         if constraint.id in self._constraints:
             raise DuplicateConstraintError(
                 f"Constraint with id '{constraint.id}' already exists in ledger."
             )
-        if constraint.is_terminal:
+        if constraint.status != ConstraintStatus.ACTIVE:
             raise InvalidConstraintTransitionError(
-                f"Cannot add new constraint '{constraint.id}' with terminal status '{constraint.status.value}'."
+                f"New constraint '{constraint.id}' must enter ledger with status ACTIVE, "
+                f"got '{constraint.status.value}'."
             )
 
         self._constraints[constraint.id] = constraint
@@ -96,7 +101,7 @@ class ConstraintLedger:
     def list_active(self) -> list[Constraint]:
         """Return all currently active constraints.
 
-        Terminal (REVOKED, SUPERSEDED) and non-active constraints are excluded.
+        Terminal (REVOKED, SUPERSEDED) and conflicted constraints are excluded.
         """
         return [c for c in self._constraints.values() if c.is_active]
 
@@ -111,7 +116,10 @@ class ConstraintLedger:
         reason: str | None = None,
         revoked_at: datetime | None = None,
     ) -> Constraint:
-        """Revoke an active constraint.
+        """Revoke an active or conflicted constraint.
+
+        Revocation is permitted from ACTIVE or CONFLICTED status. Terminal constraints
+        (REVOKED, SUPERSEDED) cannot be revoked again.
 
         Args:
             constraint_id: Identifier of the constraint to revoke.
@@ -123,13 +131,17 @@ class ConstraintLedger:
 
         Raises:
             ConstraintNotFoundError: If the constraint does not exist.
-            InvalidConstraintTransitionError: If the constraint is already terminal.
+            InvalidConstraintTransitionError: If the constraint is in a terminal or invalid state.
         """
         existing = self.get(constraint_id)
         if existing.is_terminal:
             raise InvalidConstraintTransitionError(
                 f"Cannot revoke constraint '{constraint_id}' because it is already in terminal "
                 f"status '{existing.status.value}'."
+            )
+        if existing.status not in (ConstraintStatus.ACTIVE, ConstraintStatus.CONFLICTED):
+            raise InvalidConstraintTransitionError(
+                f"Cannot revoke constraint '{constraint_id}' from status '{existing.status.value}'."
             )
 
         timestamp = revoked_at or datetime.now(timezone.utc)
@@ -156,15 +168,15 @@ class ConstraintLedger:
         *,
         superseded_at: datetime | None = None,
     ) -> Constraint:
-        """Supersede an active constraint with a newer replacement constraint.
+        """Supersede an active or conflicted constraint with a newer replacement constraint.
 
         The existing constraint is marked SUPERSEDED with a reference to the replacement ID.
-        The replacement is activated with a reference back to the superseded ID.
+        The replacement must be in ACTIVE status and links back to the superseded ID.
         Full historical provenance is preserved for both records.
 
         Args:
-            existing_id: Identifier of the active constraint being superseded.
-            replacement: New replacement Constraint to activate.
+            existing_id: Identifier of the active or conflicted constraint being superseded.
+            replacement: New replacement Constraint (must be in ACTIVE status).
             superseded_at: Optional transition timestamp (defaults to current UTC time).
 
         Returns:
@@ -173,8 +185,8 @@ class ConstraintLedger:
 
         Raises:
             ConstraintNotFoundError: If `existing_id` does not exist.
-            InvalidConstraintTransitionError: If the existing constraint is already terminal,
-                or if the replacement constraint attempts to use the same ID or has a terminal status.
+            InvalidConstraintTransitionError: If the existing constraint is in a terminal state,
+                or if the replacement does not have ACTIVE status, or reuses the same ID.
             DuplicateConstraintError: If replacement.id already exists in the ledger.
         """
         existing = self.get(existing_id)
@@ -182,6 +194,10 @@ class ConstraintLedger:
             raise InvalidConstraintTransitionError(
                 f"Cannot supersede constraint '{existing_id}' because it is already in terminal "
                 f"status '{existing.status.value}'."
+            )
+        if existing.status not in (ConstraintStatus.ACTIVE, ConstraintStatus.CONFLICTED):
+            raise InvalidConstraintTransitionError(
+                f"Cannot supersede constraint '{existing_id}' from status '{existing.status.value}'."
             )
         if replacement.id == existing_id:
             raise InvalidConstraintTransitionError(
@@ -192,9 +208,10 @@ class ConstraintLedger:
             raise DuplicateConstraintError(
                 f"Replacement constraint with id '{replacement.id}' already exists in ledger."
             )
-        if replacement.is_terminal:
+        if replacement.status != ConstraintStatus.ACTIVE:
             raise InvalidConstraintTransitionError(
-                f"Replacement constraint cannot have terminal status '{replacement.status.value}'."
+                f"Replacement constraint '{replacement.id}' must have status ACTIVE, "
+                f"got '{replacement.status.value}'."
             )
 
         timestamp = superseded_at or datetime.now(timezone.utc)
@@ -242,7 +259,7 @@ class ConstraintLedger:
         """Mark an active constraint as conflicted with another constraint.
 
         Args:
-            constraint_id: Identifier of the constraint experiencing a conflict.
+            constraint_id: Identifier of the active constraint experiencing a conflict.
             conflicting_id: Identifier of the conflicting constraint.
             reason: Optional description of the conflict.
 
@@ -251,15 +268,18 @@ class ConstraintLedger:
 
         Raises:
             ConstraintNotFoundError: If either constraint does not exist.
-            InvalidConstraintTransitionError: If the constraint is already terminal.
+            InvalidConstraintTransitionError: If either constraint is in a terminal status.
         """
         existing = self.get(constraint_id)
-        # Ensure conflicting constraint exists as well
-        _ = self.get(conflicting_id)
+        conflicting = self.get(conflicting_id)
 
         if existing.is_terminal:
             raise InvalidConstraintTransitionError(
                 f"Cannot mark terminal constraint '{constraint_id}' as conflicted."
+            )
+        if conflicting.is_terminal:
+            raise InvalidConstraintTransitionError(
+                f"Cannot mark constraint as conflicted with terminal constraint '{conflicting_id}'."
             )
 
         conflicts = list(existing.relations.conflicts_with)
@@ -273,8 +293,8 @@ class ConstraintLedger:
         now = datetime.now(timezone.utc)
         updated_relations = existing.relations.model_copy(
             update={
-                "conflicts_with": conflicts,
-                "metadata": updated_metadata,
+                "conflicts_with": tuple(conflicts),
+                "metadata": FrozenDict(updated_metadata),
             }
         )
         conflicted = existing.model_copy(
@@ -286,6 +306,53 @@ class ConstraintLedger:
         )
         self._constraints[constraint_id] = conflicted
         return conflicted
+
+    def resolve_conflict(
+        self,
+        constraint_id: ConstraintId,
+        *,
+        reason: str | None = None,
+    ) -> Constraint:
+        """Resolve a conflict on a conflicted constraint, returning it to ACTIVE status.
+
+        Args:
+            constraint_id: Identifier of the conflicted constraint to reactivate.
+            reason: Optional description of how the conflict was resolved.
+
+        Returns:
+            The updated Constraint record in ACTIVE status.
+
+        Raises:
+            ConstraintNotFoundError: If constraint does not exist.
+            InvalidConstraintTransitionError: If constraint status is not CONFLICTED.
+        """
+        existing = self.get(constraint_id)
+        if existing.status != ConstraintStatus.CONFLICTED:
+            raise InvalidConstraintTransitionError(
+                f"Cannot resolve conflict on constraint '{constraint_id}' with status '{existing.status.value}'; "
+                f"status must be CONFLICTED."
+            )
+
+        updated_metadata = dict(existing.relations.metadata)
+        if reason:
+            updated_metadata["conflict_resolution"] = reason
+
+        now = datetime.now(timezone.utc)
+        updated_relations = existing.relations.model_copy(
+            update={
+                "conflicts_with": (),
+                "metadata": FrozenDict(updated_metadata),
+            }
+        )
+        reactivated = existing.model_copy(
+            update={
+                "status": ConstraintStatus.ACTIVE,
+                "relations": updated_relations,
+                "updated_at": now,
+            }
+        )
+        self._constraints[constraint_id] = reactivated
+        return reactivated
 
     def get_history(self, constraint_id: ConstraintId) -> list[Constraint]:
         """Return the full lineage chain of supersessions for a constraint.
@@ -329,10 +396,10 @@ class ConstraintLedger:
         return chain
 
     def snapshot(self, metadata: dict[str, Any] | None = None) -> LedgerSnapshot:
-        """Create a durable, serializable snapshot of the ledger."""
+        """Create a durable, serializable, immutable snapshot of the ledger."""
         return LedgerSnapshot(
-            constraints=list(self._constraints.values()),
-            metadata=metadata or {},
+            constraints=tuple(self._constraints.values()),
+            metadata=FrozenDict(metadata or {}),
         )
 
     def to_dict(self) -> dict[str, Any]:

@@ -12,6 +12,7 @@ from agentcontract.constraints.models import (
     ConstraintSource,
     ConstraintStatus,
     ConstraintStrength,
+    FrozenDict,
 )
 
 
@@ -49,6 +50,7 @@ def test_create_explicit_user_hard_constraint():
     assert constraint.source == ConstraintSource.USER
     assert constraint.provenance.source_text == "Do not modify the database schema under any circumstances."
     assert "schema.sql" in constraint.scope.paths
+    assert isinstance(constraint.scope.paths, tuple)
 
 
 def test_agent_assumption_distinguishable_from_user_authority():
@@ -142,6 +144,107 @@ def test_constraint_immutability():
         constraint.status = ConstraintStatus.REVOKED  # type: ignore[misc]
 
 
+def test_deep_immutability_of_nested_collections():
+    """Blocker 2 regression test: all nested collections must be structurally immutable."""
+    constraint = Constraint(
+        id="c-deep-immut",
+        name="deep_immutable",
+        description="Deep immutability test",
+        strength=ConstraintStrength.HARD,
+        provenance=ConstraintProvenance(
+            source=ConstraintSource.USER,
+            metadata={"priority": "high", "nested": {"sub_key": [1, 2, 3]}},
+        ),
+        scope=ConstraintScope(
+            paths=["src/", "tests/"],
+            tools=["edit", "run"],
+            actions=["modify"],
+            selectors={"branch": "main", "tags": {"env": "prod"}},
+        ),
+        relations=ConstraintRelation(
+            conflicts_with=["c-other-1", "c-other-2"],
+            metadata={"rev_policy": "strict"},
+        ),
+    )
+
+    # 1. Scope sequence collections are tuples (no in-place append or mutation)
+    assert isinstance(constraint.scope.paths, tuple)
+    assert isinstance(constraint.scope.tools, tuple)
+    assert isinstance(constraint.scope.actions, tuple)
+    with pytest.raises(AttributeError):
+        constraint.scope.paths.append("malicious.py")  # type: ignore[attr-defined]
+    with pytest.raises(AttributeError):
+        constraint.scope.tools.append("drop_db")  # type: ignore[attr-defined]
+    with pytest.raises(AttributeError):
+        constraint.scope.actions.append("delete")  # type: ignore[attr-defined]
+
+    # 2. Relation conflicts_with is a tuple
+    assert isinstance(constraint.relations.conflicts_with, tuple)
+    with pytest.raises(AttributeError):
+        constraint.relations.conflicts_with.append("c-evil")  # type: ignore[attr-defined]
+
+    # 3. Provenance metadata is an immutable FrozenDict
+    assert isinstance(constraint.provenance.metadata, FrozenDict)
+    with pytest.raises(TypeError):
+        constraint.provenance.metadata["tamper"] = True
+    with pytest.raises(TypeError):
+        constraint.provenance.metadata.pop("priority")
+    with pytest.raises(TypeError):
+        constraint.provenance.metadata.clear()
+    with pytest.raises(TypeError):
+        constraint.provenance.metadata.update({"tamper": True})
+
+    # 4. Nested dicts and lists inside metadata are deeply frozen
+    nested_dict = constraint.provenance.metadata["nested"]
+    assert isinstance(nested_dict, FrozenDict)
+    with pytest.raises(TypeError):
+        nested_dict["new_key"] = "tampered"
+    assert isinstance(nested_dict["sub_key"], tuple)
+    with pytest.raises(AttributeError):
+        nested_dict["sub_key"].append(999)  # type: ignore[attr-defined]
+
+    # 5. Scope selectors are deeply frozen
+    assert isinstance(constraint.scope.selectors, FrozenDict)
+    with pytest.raises(TypeError):
+        constraint.scope.selectors["branch"] = "hacked"
+    assert isinstance(constraint.scope.selectors["tags"], FrozenDict)
+    with pytest.raises(TypeError):
+        constraint.scope.selectors["tags"]["env"] = "staging"
+
+    # 6. Relation metadata is deeply frozen
+    assert isinstance(constraint.relations.metadata, FrozenDict)
+    with pytest.raises(TypeError):
+        constraint.relations.metadata["rev_policy"] = "relaxed"
+
+
+def test_external_reference_isolation():
+    """Mutating external objects passed into models does not affect the models."""
+    raw_paths = ["a.py", "b.py"]
+    raw_meta = {"key": "original", "sub": {"count": 1}}
+
+    c = Constraint(
+        id="c-isol",
+        name="isolation_check",
+        description="Isolation check",
+        strength=ConstraintStrength.SOFT,
+        provenance=ConstraintProvenance(
+            source=ConstraintSource.POLICY,
+            metadata=raw_meta,
+        ),
+        scope=ConstraintScope(paths=raw_paths),
+    )
+
+    # Mutate the external inputs
+    raw_paths.append("evil.py")
+    raw_meta["key"] = "modified"
+    raw_meta["sub"]["count"] = 999
+
+    # Assert internal model data was untouched
+    assert c.scope.paths == ("a.py", "b.py")
+    assert c.provenance.metadata["key"] == "original"
+    assert c.provenance.metadata["sub"]["count"] == 1
+
+
 def test_constraint_serialization_round_trip():
     """A constraint serializes to JSON and deserializes identically."""
     original = Constraint(
@@ -178,4 +281,6 @@ def test_constraint_serialization_round_trip():
     assert reconstructed.id == original.id
     assert reconstructed.provenance.source == ConstraintSource.REPOSITORY
     assert reconstructed.scope.selectors == {"env": "prod"}
-    assert reconstructed.relations.conflicts_with == ["c-other"]
+    assert reconstructed.relations.conflicts_with == ("c-other",)
+    assert isinstance(reconstructed.scope.selectors, FrozenDict)
+    assert isinstance(reconstructed.relations.conflicts_with, tuple)

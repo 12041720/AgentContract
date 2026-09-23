@@ -16,6 +16,7 @@ from agentcontract.constraints.ledger import (
     LedgerSnapshot,
 )
 from agentcontract.constraints.models import (
+    ALLOWED_TRANSITIONS,
     Constraint,
     ConstraintId,
     ConstraintProvenance,
@@ -24,9 +25,11 @@ from agentcontract.constraints.models import (
     ConstraintSource,
     ConstraintStatus,
     ConstraintStrength,
+    FrozenDict,
 )
 
 __all__ = [
+    "ALLOWED_TRANSITIONS",
     "Constraint",
     "ConstraintError",
     "ConstraintId",
@@ -40,6 +43,7 @@ __all__ = [
     "ConstraintStrength",
     "ConstraintValidationError",
     "DuplicateConstraintError",
+    "FrozenDict",
     "InvalidConstraintTransitionError",
     "LedgerSnapshot",
 ]

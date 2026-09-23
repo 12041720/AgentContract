@@ -16,6 +16,7 @@ from agentcontract.constraints.models import (
     ConstraintSource,
     ConstraintStatus,
     ConstraintStrength,
+    FrozenDict,
 )
 
 
@@ -36,6 +37,7 @@ def sample_user_constraint() -> Constraint:
             source_location="turn:1",
             source_text="Do not touch the database schema.",
             author="lead_dev",
+            metadata={"priority": "P0"},
         ),
         scope=ConstraintScope(
             target_type="database",
@@ -312,6 +314,7 @@ def test_serialization_and_deserialization_round_trip(empty_ledger: ConstraintLe
         provenance=ConstraintProvenance(
             source=ConstraintSource.AGENT_INFERENCE,
             source_text="Found POSIX paths",
+            metadata={"inferred_from": "Dockerfile"},
         ),
     )
     ledger.add(assumption)
@@ -417,40 +420,6 @@ def test_active_listing_excludes_revoked_and_superseded(empty_ledger: Constraint
     assert {c.id for c in ledger.list_all()} == {"c-active-1", "c-will-revoke", "c-will-supersede", "c-replacement"}
 
 
-def test_conflict_tracking(empty_ledger: ConstraintLedger):
-    """Active constraints can be marked as conflicted without being discarded."""
-    ledger = empty_ledger
-
-    c1 = Constraint(
-        id="c-port-80",
-        name="port_80",
-        description="Bind to port 80",
-        strength=ConstraintStrength.HARD,
-        provenance=ConstraintProvenance(source=ConstraintSource.USER),
-    )
-    c2 = Constraint(
-        id="c-port-443",
-        name="port_443",
-        description="Bind to port 443",
-        strength=ConstraintStrength.HARD,
-        provenance=ConstraintProvenance(source=ConstraintSource.POLICY),
-    )
-    ledger.add(c1)
-    ledger.add(c2)
-
-    conflicted = ledger.mark_conflicted("c-port-80", "c-port-443", reason="Port clash")
-
-    assert conflicted.status == ConstraintStatus.CONFLICTED
-    assert "c-port-443" in conflicted.relations.conflicts_with
-    assert conflicted.is_active is False
-    assert conflicted.is_terminal is False
-
-    # Conflicted constraint is excluded from list_active
-    active_ids = [c.id for c in ledger.list_active()]
-    assert "c-port-80" not in active_ids
-    assert "c-port-443" in active_ids
-
-
 def test_chain_of_supersessions_lineage(empty_ledger: ConstraintLedger):
     """Lineage correctly traces multi-hop supersessions (A -> B -> C)."""
     ledger = empty_ledger
@@ -518,22 +487,174 @@ def test_not_found_errors(empty_ledger: ConstraintLedger):
         ledger.get_history("non-existent")
 
 
-def test_cannot_add_terminal_constraint(empty_ledger: ConstraintLedger):
-    """Adding a pre-terminated constraint directly via add() is disallowed."""
+# --- Lifecycle Hardening Tests (Reviewer Finding 3) ---
+
+def test_add_rejects_non_active_initial_states(empty_ledger: ConstraintLedger):
+    """New constraints entering ledger must have status ACTIVE."""
     ledger = empty_ledger
 
-    revoked_c = Constraint(
-        id="c-pre-revoked",
-        name="pre_revoked",
-        description="Pre-revoked",
-        strength=ConstraintStrength.SOFT,
-        status=ConstraintStatus.REVOKED,
+    for bad_status in (ConstraintStatus.REVOKED, ConstraintStatus.SUPERSEDED, ConstraintStatus.CONFLICTED):
+        bad_c = Constraint(
+            id=f"c-{bad_status.value.lower()}",
+            name=f"bad_{bad_status.value.lower()}",
+            description="Testing non-active add rejection",
+            strength=ConstraintStrength.SOFT,
+            status=bad_status,
+            provenance=ConstraintProvenance(source=ConstraintSource.POLICY),
+        )
+        with pytest.raises(InvalidConstraintTransitionError) as exc_info:
+            ledger.add(bad_c)
+        assert f"must enter ledger with status ACTIVE, got '{bad_status.value}'" in str(exc_info.value)
+
+
+def test_supersede_rejects_non_active_replacement_states(empty_ledger: ConstraintLedger, sample_user_constraint: Constraint):
+    """Replacement constraint must enter with status ACTIVE."""
+    ledger = empty_ledger
+    ledger.add(sample_user_constraint)
+
+    for bad_status in (ConstraintStatus.REVOKED, ConstraintStatus.SUPERSEDED, ConstraintStatus.CONFLICTED):
+        bad_replacement = Constraint(
+            id=f"c-repl-{bad_status.value.lower()}",
+            name=f"repl_{bad_status.value.lower()}",
+            description="Testing non-active replacement rejection",
+            strength=ConstraintStrength.SOFT,
+            status=bad_status,
+            provenance=ConstraintProvenance(source=ConstraintSource.POLICY),
+        )
+        with pytest.raises(InvalidConstraintTransitionError) as exc_info:
+            ledger.supersede("c-db-schema", bad_replacement)
+        assert f"must have status ACTIVE, got '{bad_status.value}'" in str(exc_info.value)
+
+
+def test_conflicted_lifecycle_transitions(empty_ledger: ConstraintLedger):
+    """Explicit test of CONFLICTED lifecycle progression rules:
+
+    1. ACTIVE -> CONFLICTED (via mark_conflicted)
+    2. CONFLICTED -> ACTIVE (via resolve_conflict)
+    3. CONFLICTED -> REVOKED (via revoke to cancel conflicting requirement)
+    4. CONFLICTED -> SUPERSEDED (via supersede to harmonize/replace conflicting requirement)
+    """
+    ledger = empty_ledger
+
+    c1 = Constraint(
+        id="c-port-80",
+        name="port_80",
+        description="Bind to port 80",
+        strength=ConstraintStrength.HARD,
         provenance=ConstraintProvenance(source=ConstraintSource.USER),
     )
+    c2 = Constraint(
+        id="c-port-80-alt",
+        name="port_80_alt",
+        description="Bind other service to port 80",
+        strength=ConstraintStrength.HARD,
+        provenance=ConstraintProvenance(source=ConstraintSource.POLICY),
+    )
+    ledger.add(c1)
+    ledger.add(c2)
 
+    # 1. ACTIVE -> CONFLICTED
+    conflicted = ledger.mark_conflicted("c-port-80", "c-port-80-alt", reason="Port collision")
+    assert conflicted.status == ConstraintStatus.CONFLICTED
+    assert conflicted.is_active is False
+    assert conflicted.relations.conflicts_with == ("c-port-80-alt",)
+
+    # Cannot resolve conflict on an active constraint
+    with pytest.raises(InvalidConstraintTransitionError):
+        ledger.resolve_conflict("c-port-80-alt")
+
+    # 2. CONFLICTED -> ACTIVE (resolve_conflict)
+    resolved = ledger.resolve_conflict("c-port-80", reason="Port 80 conflict cleared")
+    assert resolved.status == ConstraintStatus.ACTIVE
+    assert resolved.is_active is True
+    assert resolved.relations.conflicts_with == ()
+    assert resolved.relations.metadata["conflict_resolution"] == "Port 80 conflict cleared"
+
+    # Re-mark as conflicted to test CONFLICTED -> REVOKED
+    ledger.mark_conflicted("c-port-80", "c-port-80-alt", reason="Conflict again")
+
+    # 3. CONFLICTED -> REVOKED
+    revoked = ledger.revoke("c-port-80", reason="Revoked to resolve port clash")
+    assert revoked.status == ConstraintStatus.REVOKED
+    assert revoked.is_terminal is True
+    assert revoked.relations.revocation_reason == "Revoked to resolve port clash"
+
+    # 4. CONFLICTED -> SUPERSEDED
+    # Mark c2 as conflicted with something else then supersede it
+    c3 = Constraint(
+        id="c-c3",
+        name="c3",
+        description="c3",
+        strength=ConstraintStrength.HARD,
+        provenance=ConstraintProvenance(source=ConstraintSource.POLICY),
+    )
+    ledger.add(c3)
+    ledger.mark_conflicted("c-port-80-alt", "c-c3", reason="Conflict on c2")
+    assert ledger.get("c-port-80-alt").status == ConstraintStatus.CONFLICTED
+
+    harmonized_replacement = Constraint(
+        id="c-port-unified",
+        name="port_unified",
+        description="Use dynamic ports instead",
+        strength=ConstraintStrength.HARD,
+        provenance=ConstraintProvenance(source=ConstraintSource.USER),
+    )
+    superseded = ledger.supersede("c-port-80-alt", harmonized_replacement)
+    assert superseded.id == "c-port-unified"
+    assert superseded.status == ConstraintStatus.ACTIVE
+    assert ledger.get("c-port-80-alt").status == ConstraintStatus.SUPERSEDED
+
+
+def test_mark_conflicted_validation(empty_ledger: ConstraintLedger, sample_user_constraint: Constraint):
+    """Marking conflicted requires active non-terminal constraints on both sides."""
+    ledger = empty_ledger
+    ledger.add(sample_user_constraint)
+
+    c_terminal = Constraint(
+        id="c-term",
+        name="term",
+        description="term",
+        strength=ConstraintStrength.SOFT,
+        provenance=ConstraintProvenance(source=ConstraintSource.POLICY),
+    )
+    ledger.add(c_terminal)
+    ledger.revoke("c-term")
+
+    # Target is terminal
     with pytest.raises(InvalidConstraintTransitionError) as exc_info:
-        ledger.add(revoked_c)
-    assert "Cannot add new constraint" in str(exc_info.value)
+        ledger.mark_conflicted("c-db-schema", "c-term")
+    assert "Cannot mark constraint as conflicted with terminal constraint" in str(exc_info.value)
+
+    # Source is terminal
+    with pytest.raises(InvalidConstraintTransitionError) as exc_info:
+        ledger.mark_conflicted("c-term", "c-db-schema")
+    assert "Cannot mark terminal constraint 'c-term' as conflicted" in str(exc_info.value)
+
+
+# --- Snapshot Immutability Tests (Reviewer Blocker 2) ---
+
+def test_snapshot_deep_immutability(empty_ledger: ConstraintLedger, sample_user_constraint: Constraint):
+    """Snapshot collections are structurally immutable."""
+    ledger = empty_ledger
+    ledger.add(sample_user_constraint)
+
+    snapshot = ledger.snapshot(metadata={"environment": "production"})
+
+    # 1. constraints collection is a tuple
+    assert isinstance(snapshot.constraints, tuple)
+    with pytest.raises(AttributeError):
+        snapshot.constraints.append(sample_user_constraint)  # type: ignore[attr-defined]
+
+    # 2. metadata is a FrozenDict
+    assert isinstance(snapshot.metadata, FrozenDict)
+    with pytest.raises(TypeError):
+        snapshot.metadata["tamper"] = True
+
+    # 3. Mutating external metadata dict passed to snapshot has no effect
+    raw_meta = {"version": "1.0"}
+    snap2 = ledger.snapshot(metadata=raw_meta)
+    raw_meta["version"] = "2.0"
+    assert snap2.metadata["version"] == "1.0"
 
 
 def test_ledger_initialization_with_iterable(sample_user_constraint: Constraint):
@@ -561,35 +682,6 @@ def test_corrupted_snapshot_with_duplicate_id_rejected(sample_user_constraint: C
     assert "duplicate constraint id" in str(exc_info.value)
 
 
-def test_conflict_edge_cases(empty_ledger: ConstraintLedger, sample_user_constraint: Constraint):
-    """Conflict marking validates constraint existence and terminal status."""
-    ledger = empty_ledger
-    ledger.add(sample_user_constraint)
-
-    # Conflicting target does not exist
-    with pytest.raises(ConstraintNotFoundError):
-        ledger.mark_conflicted("c-db-schema", "c-missing")
-
-    # Constraint to mark does not exist
-    with pytest.raises(ConstraintNotFoundError):
-        ledger.mark_conflicted("c-missing", "c-db-schema")
-
-    # Marking conflict on already revoked constraint
-    ledger.revoke("c-db-schema")
-    c_other = Constraint(
-        id="c-other",
-        name="other",
-        description="Other",
-        strength=ConstraintStrength.SOFT,
-        provenance=ConstraintProvenance(source=ConstraintSource.POLICY),
-    )
-    ledger.add(c_other)
-
-    with pytest.raises(InvalidConstraintTransitionError) as exc_info:
-        ledger.mark_conflicted("c-db-schema", "c-other")
-    assert "Cannot mark terminal constraint" in str(exc_info.value)
-
-
 def test_top_level_package_exports():
     """Verify package imports successfully from root agentcontract package."""
     from agentcontract import (
@@ -611,4 +703,3 @@ def test_top_level_package_exports():
     assert RootSource is ConstraintSource
     assert RootStatus is ConstraintStatus
     assert RootStrength is ConstraintStrength
-

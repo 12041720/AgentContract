@@ -1,15 +1,72 @@
-"""Core domain models for constraints and provenance."""
+"""Core domain models for constraints, provenance, and execution scopes."""
 
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from enum import StrEnum
-from typing import Any
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from typing import Any, TypeAlias
+from pydantic import BaseModel, ConfigDict, Field, GetCoreSchemaHandler, field_validator, model_validator
+from pydantic_core import core_schema
 from typing_extensions import Self
 
 from agentcontract.constraints.exceptions import ConstraintValidationError
 
-# Stable identifier type alias for constraints
-type ConstraintId = str
+# Stable identifier type alias for constraints (Python 3.11+ compatible)
+ConstraintId: TypeAlias = str
+
+
+def _freeze_value(val: Any) -> Any:
+    """Recursively convert nested mutable collections into immutable equivalents."""
+    if isinstance(val, dict):
+        return FrozenDict({str(k): _freeze_value(v) for k, v in val.items()})
+    if isinstance(val, (list, tuple)):
+        return tuple(_freeze_value(v) for v in val)
+    if isinstance(val, (set, frozenset)):
+        return frozenset(_freeze_value(v) for v in val)
+    return val
+
+
+class FrozenDict(dict[str, Any]):
+    """An immutable, deeply frozen dictionary for domain metadata and selectors."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        raw: dict[str, Any] = dict(*args, **kwargs)
+        frozen_data = {str(k): _freeze_value(v) for k, v in raw.items()}
+        super().__init__(frozen_data)
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        raise TypeError("FrozenDict is immutable; item assignment is prohibited.")
+
+    def __delitem__(self, key: str) -> None:
+        raise TypeError("FrozenDict is immutable; item deletion is prohibited.")
+
+    def pop(self, *args: Any, **kwargs: Any) -> Any:
+        raise TypeError("FrozenDict is immutable; pop operation is prohibited.")
+
+    def popitem(self) -> tuple[str, Any]:
+        raise TypeError("FrozenDict is immutable; popitem operation is prohibited.")
+
+    def clear(self) -> None:
+        raise TypeError("FrozenDict is immutable; clear operation is prohibited.")
+
+    def update(self, *args: Any, **kwargs: Any) -> None:
+        raise TypeError("FrozenDict is immutable; update operation is prohibited.")
+
+    def setdefault(self, *args: Any, **kwargs: Any) -> Any:
+        raise TypeError("FrozenDict is immutable; setdefault operation is prohibited.")
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls, source_type: Any, handler: GetCoreSchemaHandler
+    ) -> core_schema.CoreSchema:
+        dict_schema = handler(dict[str, Any])
+        return core_schema.no_info_after_validator_function(
+            cls,
+            dict_schema,
+            serialization=core_schema.plain_serializer_function_ser_schema(
+                lambda v: dict(v),
+                return_schema=core_schema.dict_schema(),
+            ),
+        )
 
 
 class ConstraintSource(StrEnum):
@@ -39,6 +96,23 @@ class ConstraintStatus(StrEnum):
     CONFLICTED = "CONFLICTED"
 
 
+# Explicit state transition table governing lifecycle progression
+ALLOWED_TRANSITIONS: dict[ConstraintStatus, frozenset[ConstraintStatus]] = {
+    ConstraintStatus.ACTIVE: frozenset({
+        ConstraintStatus.REVOKED,
+        ConstraintStatus.SUPERSEDED,
+        ConstraintStatus.CONFLICTED,
+    }),
+    ConstraintStatus.CONFLICTED: frozenset({
+        ConstraintStatus.ACTIVE,      # Conflict resolved / cleared
+        ConstraintStatus.REVOKED,     # Conflict resolved by cancellation
+        ConstraintStatus.SUPERSEDED,  # Conflict resolved by replacing with a harmonized rule
+    }),
+    ConstraintStatus.REVOKED: frozenset(),     # Terminal state
+    ConstraintStatus.SUPERSEDED: frozenset(),  # Terminal state
+}
+
+
 class ConstraintProvenance(BaseModel):
     """Durable origin and authority evidence for a constraint."""
 
@@ -64,8 +138,8 @@ class ConstraintProvenance(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc),
         description="UTC timestamp when provenance was recorded.",
     )
-    metadata: dict[str, Any] = Field(
-        default_factory=dict,
+    metadata: FrozenDict = Field(
+        default_factory=FrozenDict,
         description="Arbitrary structured provenance attributes.",
     )
 
@@ -79,20 +153,20 @@ class ConstraintScope(BaseModel):
         default=None,
         description="Category of target (e.g., 'filesystem', 'database', 'tool', 'network', 'generic').",
     )
-    paths: list[str] = Field(
-        default_factory=list,
+    paths: tuple[str, ...] = Field(
+        default_factory=tuple,
         description="File or resource paths governed by this constraint.",
     )
-    tools: list[str] = Field(
-        default_factory=list,
+    tools: tuple[str, ...] = Field(
+        default_factory=tuple,
         description="Tool or API identifiers governed by this constraint.",
     )
-    actions: list[str] = Field(
-        default_factory=list,
+    actions: tuple[str, ...] = Field(
+        default_factory=tuple,
         description="Action types governed by this constraint (e.g., 'write', 'execute', 'delete').",
     )
-    selectors: dict[str, Any] = Field(
-        default_factory=dict,
+    selectors: FrozenDict = Field(
+        default_factory=FrozenDict,
         description="Extensible structured criteria for domain-specific matching.",
     )
     description: str | None = Field(
@@ -126,12 +200,12 @@ class ConstraintRelation(BaseModel):
         default=None,
         description="UTC timestamp when the constraint was superseded.",
     )
-    conflicts_with: list[str] = Field(
-        default_factory=list,
+    conflicts_with: tuple[str, ...] = Field(
+        default_factory=tuple,
         description="IDs of other constraints currently in conflict with this one.",
     )
-    metadata: dict[str, Any] = Field(
-        default_factory=dict,
+    metadata: FrozenDict = Field(
+        default_factory=FrozenDict,
         description="Additional relation or transition metadata.",
     )
 
