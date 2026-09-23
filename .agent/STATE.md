@@ -17,14 +17,14 @@
 - Work branch: `task/TASK-001-core-ledger`
 - Status: **CHANGES_REQUESTED**
 - Owner: Execution agent
-- Main-agent review: TASK-001 changes requested after review of `0ce2fd897ba5e407407586fe67db987b3e182f6d`
+- Main-agent review: TASK-001 second-round changes requested after review of `85f0195326a5dbba7f51ddf4863e0ba550affe28`
 
 ## Main-agent checkpoint
 
 - Repository initialized on 2026-09-22.
 - Persistent main-agent/executor protocol established.
 - High-level architecture fixed for v0.1.
-- TASK-001 implementation was reviewed; blockers were found in Python 3.11 compatibility and deep immutability. No implementation task has been accepted yet.
+- TASK-001 round-2 implementation was reviewed. Python 3.11 compatibility improved, but immutable metadata and lifecycle transition enforcement still have blockers. No implementation task has been accepted yet.
 
 ## Current design decisions
 
