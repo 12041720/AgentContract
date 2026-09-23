@@ -15,9 +15,9 @@
 - Task: **TASK-002 — Unified trace and provenance model**
 - Task file: `.agent/tasks/TASK-002.md`
 - Work branch: `task/TASK-002-trace-model`
-- Status: **READY_FOR_EXECUTOR**
+- Status: **CHANGES_REQUESTED**
 - Owner: Execution agent
-- Main-agent review: TASK-001 accepted and merged; TASK-002 ready for execution
+- Main-agent review: TASK-002 changes requested after review of `431534bd21ab62751a63b47db19d6368c5828a08`
 
 ## Main-agent checkpoint
 
@@ -25,7 +25,7 @@
 - Persistent main-agent/executor protocol established.
 - High-level architecture fixed for v0.1.
 - TASK-001 accepted after final hardening and integrated to `main` as `48a7ae1cc07025a400b11804c298c2970cfc5107`.
-- TASK-002 task contract has been created and is now active.
+- TASK-002 first implementation was reviewed; two trace-integrity blockers remain around ToolResult provenance and durable output immutability.
 
 ## Current design decisions
 
