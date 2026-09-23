@@ -67,7 +67,10 @@ If chat instructions and these files conflict, stop and surface the conflict to 
 
 ## Engineering rules
 
-- Python 3.11+.
+- Development baseline is the user's installed local Python: **Python 3.12.9**.
+- Do not install or download alternate Python versions solely to satisfy compatibility checks.
+- Run the required test suite on the local development interpreter. Compatibility matrices are not required unless the user explicitly asks for them.
+- If a tool such as uv previously downloaded an extra interpreter only for compatibility testing, remove that managed interpreter after confirming it is not the user's system Python.
 - Prefer standard library plus Pydantic for domain models.
 - Keep the core independent of any specific LLM vendor.
 - Deterministic verification should be preferred over LLM judgement whenever possible.
