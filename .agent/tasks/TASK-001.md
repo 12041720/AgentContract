@@ -160,38 +160,38 @@ If lint/type tooling is added by the executor, also report its results.
   - Replaced lists with tuples and introduced initial `FrozenDict`.
   - Defined initial `ALLOWED_TRANSITIONS`.
 - **Review Fixes — Round 2 (Iteration 3, `b152216`):**
-  - **Fixed Blocker 1 (True Immutability via Composition Mapping):**
-    - Refactored `FrozenDict` from a `dict` subclass to a `collections.abc.Mapping` implementation using composition (`_data: dict[str, Any]` private backing store).
-    - Completely eliminated mutable dict methods (`pop`, `update`, `clear`, `setdefault`, `popitem`) and operators (`|=` raises `TypeError`, `dict.__setitem__` raises `TypeError`).
-    - Implemented recursive deep freezing (`_freeze_value`) for nested mappings, lists, and sets.
-    - Preserved Pydantic v2 schema generation and JSON serialization round-trips via `__get_pydantic_core_schema__`.
-    - Added extensive regression tests covering item assignment, `|=`, base-class dict method inapplicability, absence of mutable operations, nested freezing, and external input isolation.
-  - **Fixed Blocker 2 (Unified Lifecycle Transition Enforcement via `validate_transition`):**
-    - Established `validate_transition(current, target, constraint_id)` as the single source of truth for lifecycle transitions directly using `ALLOWED_TRANSITIONS`.
-    - Updated every status-changing operation in `ConstraintLedger` (`revoke`, `supersede`, `mark_conflicted`, `resolve_conflict`) to validate through `validate_transition`.
-    - Enforced that `mark_conflicted()` rejects source constraints that are already `CONFLICTED` (`CONFLICTED -> CONFLICTED` disallowed by `ALLOWED_TRANSITIONS`).
-    - Decided, documented, and enforced the rule for `mark_conflicted()`: the conflicting peer constraint named in `conflicts_with` must also be currently in `ACTIVE` status (rejecting terminal or conflicted peers).
-    - Added table-driven tests exhaustively enumerating all 16 `(from_status, to_status)` pairs across `ConstraintStatus`, asserting that allowed transitions pass and disallowed transitions explicitly raise `InvalidConstraintTransitionError`.
+  - Refactored `FrozenDict` to a `collections.abc.Mapping` composition implementation.
+  - Established `validate_transition()` as single source of truth; enforced `CONFLICTED -> CONFLICTED` rejection and peer active precondition.
+  - Added 16-state table-driven lifecycle tests.
+- **Review Fixes — Round 3 Final Hardening (Iteration 4, `a3953f9`):**
+  - **Fixed Blocker 1 (Backing Store Immutability via MappingProxyType):**
+    - Wrapped `FrozenDict._data` inside `types.MappingProxyType` over the recursively deep-frozen dict.
+    - Ensured no attribute reachable from `FrozenDict` or through domain models (e.g. `constraint.provenance.metadata._data`) exposes a mutable collection. Direct item assignment (`_data["a"] = ...`), deletion, in-place union (`|=`), or `dict.__setitem__` directly on `_data` explicitly raises `TypeError`.
+    - Added dedicated regression test `test_frozendict_backing_store_is_immutable` in `test_models.py`.
+  - **Fixed Blocker 2 (Structurally Read-Only Transition Table):**
+    - Wrapped `ALLOWED_TRANSITIONS` inside `types.MappingProxyType`, making the state machine transition table structurally read-only at runtime.
+    - External attempts to alter state transitions at runtime (`ALLOWED_TRANSITIONS[s] = ...`, `del`, `|=`) raise `TypeError`, and target sets remain immutable `frozenset`s.
+    - Added dedicated regression test `test_allowed_transitions_table_is_structurally_immutable` in `test_ledger.py`.
 
 **Files changed:**  
-- `src/agentcontract/constraints/models.py` (updated: `FrozenDict` as composition-based `Mapping`, `_freeze_value`, `ALLOWED_TRANSITIONS`, `validate_transition`)
-- `src/agentcontract/constraints/ledger.py` (updated: all lifecycle transitions route through `validate_transition`, peer active precondition in `mark_conflicted`)
+- `src/agentcontract/constraints/models.py` (updated: `FrozenDict._data` wrapped in `MappingProxyType`, `ALLOWED_TRANSITIONS` wrapped in `MappingProxyType`)
+- `src/agentcontract/constraints/ledger.py` (updated: unified transition validation, immutable snapshot)
 - `src/agentcontract/constraints/exceptions.py` (typed domain exceptions)
-- `src/agentcontract/constraints/__init__.py` (exported `validate_transition`, `FrozenDict`, `ALLOWED_TRANSITIONS`, and core domain types)
+- `src/agentcontract/constraints/__init__.py` (exported public types, `FrozenDict`, `ALLOWED_TRANSITIONS`, `validate_transition`)
 - `src/agentcontract/__init__.py` (root package exports)
 - `pyproject.toml` (pytest `pythonpath = ["src"]`)
-- `tests/constraints/test_models.py` (updated: added `FrozenDict` true immutability, `|=` rejection, `dict.__setitem__` rejection, absence of mutable methods, nested freezing, external isolation)
-- `tests/constraints/test_ledger.py` (updated: table-driven status pair tests for all 16 combinations, peer active precondition tests, snapshot immutability)
+- `tests/constraints/test_models.py` (updated: added `test_frozendict_backing_store_is_immutable`, `FrozenDict` true immutability, `|=` rejection, `dict.__setitem__` rejection, absence of mutable methods, nested freezing, external isolation)
+- `tests/constraints/test_ledger.py` (updated: added `test_allowed_transitions_table_is_structurally_immutable`, table-driven status pair tests for all 16 combinations, peer active precondition tests, snapshot immutability)
 - `.agent/tasks/TASK-001.md` (updated Executor Report)
 
 **Tests/checks:**  
 - **Python 3.11.12 Check:**
   - Command: `uv run --python 3.11 --with pytest python -m pytest -v`
-  - Result: 31 passed in 0.63s (100% pass rate).
+  - Result: 33 passed in 0.93s (100% pass rate).
 - **Python 3.12.9 Check:**
   - Command: `python -m pytest -v`
-  - Result: 31 passed in 0.67s (100% pass rate).
-- **Test Scenarios (31 tests total):**
+  - Result: 33 passed in 0.45s (100% pass rate).
+- **Test Scenarios (33 tests total):**
   1. Add and retrieve explicit hard user constraint.
   2. Agent assumption distinguishable from user authority in ledger.
   3. Revoke active constraint, check list_active vs get, verify provenance/scope preservation.
@@ -203,26 +203,28 @@ If lint/type tooling is added by the executor, also report its results.
   9. Multi-hop supersession lineage traversal (A -> B -> C).
   10. Not found error handling for lookup, revoke, supersede, and history.
   11. Table-driven test for all 16 `(from_status, to_status)` pairs in `ALLOWED_TRANSITIONS`.
-  12. `add` rejects non-active initial states (rejects REVOKED, SUPERSEDED, CONFLICTED).
-  13. `supersede` rejects non-active replacement states.
-  14. `CONFLICTED` lifecycle transitions: ACTIVE -> CONFLICTED, CONFLICTED -> ACTIVE (`resolve_conflict`), CONFLICTED -> REVOKED, CONFLICTED -> SUPERSEDED, and rejection of CONFLICTED -> CONFLICTED.
-  15. `mark_conflicted` peer precondition: rejects non-active peers (REVOKED, CONFLICTED) and terminal sources.
-  16. Snapshot deep immutability: `constraints` tuple and `metadata` FrozenDict reject in-place tampering (`|=`, `dict.__setitem__`, append).
-  17. Ledger initialization with iterable of constraints.
-  18. Corrupted snapshot duplicate ID rejection.
-  19. Top-level package exports.
-  20. Add explicit hard user constraint (models test).
-  21. Agent assumption distinguishable from user authority (models test).
-  22. Agent inference prohibited from HARD authority.
-  23. Non-empty ID and name validation.
-  24. Constraint model shallow immutability (`frozen=True`).
-  25. FrozenDict item assignment and item deletion prohibited.
-  26. FrozenDict in-place union (`|=`) prohibited.
-  27. FrozenDict absence and inapplicability of mutable dict operations (`pop`, `update`, `clear`, `setdefault`, `popitem`, `dict.__setitem__`).
-  28. FrozenDict recursive nested mapping and list freezing.
-  29. FrozenDict external input mutation isolation.
-  30. Deep immutability of constraint models (tuples and FrozenDict).
-  31. Constraint model serialization round-trip.
+  12. `ALLOWED_TRANSITIONS` table is structurally read-only (`MappingProxyType`, rejects item assignment, `del`, `|=`).
+  13. `add` rejects non-active initial states (rejects REVOKED, SUPERSEDED, CONFLICTED).
+  14. `supersede` rejects non-active replacement states.
+  15. `CONFLICTED` lifecycle transitions: ACTIVE -> CONFLICTED, CONFLICTED -> ACTIVE (`resolve_conflict`), CONFLICTED -> REVOKED, CONFLICTED -> SUPERSEDED, and rejection of CONFLICTED -> CONFLICTED.
+  16. `mark_conflicted` peer precondition: rejects non-active peers (REVOKED, CONFLICTED) and terminal sources.
+  17. Snapshot deep immutability: `constraints` tuple and `metadata` FrozenDict reject in-place tampering (`|=`, `dict.__setitem__`, append).
+  18. Ledger initialization with iterable of constraints.
+  19. Corrupted snapshot duplicate ID rejection.
+  20. Top-level package exports.
+  21. Add explicit hard user constraint (models test).
+  22. Agent assumption distinguishable from user authority (models test).
+  23. Agent inference prohibited from HARD authority.
+  24. Non-empty ID and name validation.
+  25. Constraint model shallow immutability (`frozen=True`).
+  26. FrozenDict item assignment and item deletion prohibited.
+  27. FrozenDict in-place union (`|=`) prohibited.
+  28. FrozenDict absence and inapplicability of mutable dict operations (`pop`, `update`, `clear`, `setdefault`, `popitem`, `dict.__setitem__`).
+  29. FrozenDict recursive nested mapping and list freezing.
+  30. FrozenDict external input mutation isolation.
+  31. FrozenDict backing store `_data` is an immutable `MappingProxyType` (rejects direct assignment, deletion, `|=`, `dict.__setitem__`).
+  32. Deep immutability of constraint models (tuples and FrozenDict).
+  33. Constraint model serialization round-trip.
 
 **Known limitations:**  
 - In-memory only for v0.1 (as specified by TASK-001 scope; persistent storage like SQLite/PostgreSQL is deferred to later milestones).
@@ -230,10 +232,10 @@ If lint/type tooling is added by the executor, also report its results.
 
 **Commit/PR:**  
 - Branch: `task/TASK-001-core-ledger`
-- Commit SHA: `b152216`
+- Commit SHA: `a3953f9`
 
 **Questions/blockers:**  
-- None. Both Round 2 blockers (true immutability of FrozenDict without dict inheritance, and unified transition table enforcement with table-driven tests) have been implemented, verified, and pass on Python 3.11 and 3.12.
+- None. Both Round 3 final hardening blockers (backing store immutability via `MappingProxyType` and structurally read-only transition table) have been implemented, tested with regression suites, and verified across Python 3.11 and 3.12.
 
 ## Main Agent Review
 
