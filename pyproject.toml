@@ -7,7 +7,7 @@ name = "agentcontract"
 version = "0.1.0"
 description = "Runtime constraint tracking and evidence-grounded verification for long-horizon agents"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [
   { name = "AgentContract contributors" }
