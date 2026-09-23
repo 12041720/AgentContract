@@ -150,44 +150,48 @@ If lint/type tooling is added by the executor, also report its results.
 > Execution agent: fill this section only after implementation.
 
 **Implementation summary:**  
-- Implemented core constraint domain models in `src/agentcontract/constraints/models.py`:
-  - `Constraint`, `ConstraintProvenance`, `ConstraintScope`, `ConstraintRelation`.
-  - Typed `StrEnum` definitions: `ConstraintSource` (USER, POLICY, REPOSITORY, TOOL, AGENT_INFERENCE), `ConstraintStrength` (HARD, SOFT, ASSUMPTION), `ConstraintStatus` (ACTIVE, REVOKED, SUPERSEDED, CONFLICTED).
-  - Enforced Invariant 8 via model validation: an `AGENT_INFERENCE` cannot be declared with `HARD` strength, guaranteeing assumptions remain distinguishable from user authority.
-  - Frozen Pydantic models preventing accidental mutation and ensuring immutable value semantics.
-- Implemented typed domain exceptions in `src/agentcontract/constraints/exceptions.py`:
-  - `ConstraintError`, `ConstraintNotFoundError`, `DuplicateConstraintError`, `InvalidConstraintTransitionError`, `ConstraintValidationError`.
-- Implemented in-memory, version-preserving `ConstraintLedger` and `LedgerSnapshot` in `src/agentcontract/constraints/ledger.py`:
-  - `add`: registers active constraints with duplicate ID checks.
-  - `get`: retrieves any constraint by ID across all lifecycle statuses.
-  - `list_active`: returns only active constraints, excluding revoked/superseded entries.
-  - `list_all`: returns full constraint history.
-  - `revoke`: marks active constraints as revoked with reason and timestamp while preserving provenance and scope. Explicitly rejects transitions on terminal constraints.
-  - `supersede`: marks an active constraint as superseded, activates replacement, links forward/backward lineage (`supersedes` / `superseded_by`), and preserves original records and provenance. Rejects transitions on terminal constraints, duplicate IDs, or identical IDs.
-  - `mark_conflicted`: tracks conflicting constraints and updates status to `CONFLICTED`.
-  - `get_history`: computes full ordered supersession lineage from root to latest replacement.
-  - `snapshot`, `to_dict`, `to_json`, `from_snapshot`, `from_dict`, `from_json`: robust JSON/dict serialization round-trips preserving all fields, IDs, statuses, relations, scopes, and provenances.
-- Exported public constraint API in `src/agentcontract/constraints/__init__.py` and root package `src/agentcontract/__init__.py`.
-- Configured pytest `pythonpath = ["src"]` in `pyproject.toml`.
-- Implemented comprehensive unit tests covering all 8 recommended scenarios plus edge cases (22 tests total).
+- **Initial Implementation (Iteration 1, `0ce2fd8`):**
+  - Core domain models: `Constraint`, `ConstraintProvenance`, `ConstraintScope`, `ConstraintRelation`.
+  - Enums: `ConstraintSource`, `ConstraintStrength`, `ConstraintStatus`.
+  - Invariant 8 enforcement: `AGENT_INFERENCE` prohibited from `HARD` strength.
+  - In-memory version-preserving `ConstraintLedger` with `add`, `get`, `list_active`, `list_all`, `revoke`, `supersede`, `mark_conflicted`, `get_history`, `snapshot`, `to_json`/`from_json`, `to_dict`/`from_dict`.
+- **Review Fixes & Hardening (Iteration 2, `85f0195`):**
+  - **Fixed Blocker 1 (Python 3.11 Compatibility):** Replaced PEP 695 `type ConstraintId = str` with `ConstraintId: TypeAlias = str` (`from typing import TypeAlias`). Verified full test suite runs cleanly on both Python 3.11.12 and Python 3.12.9.
+  - **Fixed Blocker 2 (Deep Immutability & Defensive Isolation):**
+    - Implemented `FrozenDict(dict[str, Any])` with custom Pydantic core schema (`__get_pydantic_core_schema__`) and recursive deep-freezing (`_freeze_value`) for nested dictionaries, lists, and sets.
+    - Replaced mutable lists with immutable tuples for sequence fields: `ConstraintScope.paths`, `ConstraintScope.tools`, `ConstraintScope.actions`, `ConstraintRelation.conflicts_with`, and `LedgerSnapshot.constraints`.
+    - Typed metadata and selectors fields as `FrozenDict`: `ConstraintProvenance.metadata`, `ConstraintScope.selectors`, `ConstraintRelation.metadata`, and `LedgerSnapshot.metadata`.
+    - Added extensive regression tests ensuring that in-place mutation of collections, dict items, or external input references cannot alter stored ledger/snapshot state.
+  - **Fixed Required Hardening (Explicit Lifecycle State Machine):**
+    - Defined explicit transition table `ALLOWED_TRANSITIONS` in `models.py`.
+    - `ledger.add`: Enforced that new constraints must enter as `ACTIVE`; rejected pre-set `REVOKED`, `SUPERSEDED`, or `CONFLICTED` constraints with `InvalidConstraintTransitionError`.
+    - `ledger.supersede`: Enforced that replacement constraints must enter as `ACTIVE`; rejected non-active replacements.
+    - Formalized and implemented `CONFLICTED` transition rules:
+      - `CONFLICTED -> REVOKED` is legal (resolves conflict by cancelling one of the conflicting requirements).
+      - `CONFLICTED -> SUPERSEDED` is legal (resolves conflict by superseding with a harmonized requirement).
+      - `CONFLICTED -> ACTIVE` is legal via new `ledger.resolve_conflict(constraint_id, reason=...)`.
+    - Disallowed marking conflict on or with terminal (`REVOKED`/`SUPERSEDED`) constraints.
+    - Re-confirmed terminal states (`REVOKED`, `SUPERSEDED`) strictly reject all further transitions.
 
 **Files changed:**  
-- `src/agentcontract/constraints/models.py` (new)
-- `src/agentcontract/constraints/ledger.py` (new)
-- `src/agentcontract/constraints/exceptions.py` (new)
-- `src/agentcontract/constraints/__init__.py` (updated)
-- `src/agentcontract/__init__.py` (updated)
-- `pyproject.toml` (updated with pythonpath)
-- `tests/__init__.py` (new)
-- `tests/constraints/__init__.py` (new)
-- `tests/constraints/test_models.py` (new)
-- `tests/constraints/test_ledger.py` (new)
+- `src/agentcontract/constraints/models.py` (updated: `TypeAlias`, `FrozenDict`, `_freeze_value`, `ALLOWED_TRANSITIONS`, tuple/FrozenDict fields)
+- `src/agentcontract/constraints/ledger.py` (updated: lifecycle checks in `add`/`revoke`/`supersede`/`mark_conflicted`, added `resolve_conflict`, immutable `LedgerSnapshot`)
+- `src/agentcontract/constraints/exceptions.py` (typed exceptions)
+- `src/agentcontract/constraints/__init__.py` (exported `FrozenDict`, `ALLOWED_TRANSITIONS`, and core domain types)
+- `src/agentcontract/__init__.py` (root package exports)
+- `pyproject.toml` (pytest `pythonpath = ["src"]`)
+- `tests/constraints/test_models.py` (updated: added deep immutability and external reference isolation tests)
+- `tests/constraints/test_ledger.py` (updated: added lifecycle transition tests for CONFLICTED/active/terminal states, snapshot immutability)
 - `.agent/tasks/TASK-001.md` (updated Executor Report)
 
 **Tests/checks:**  
-- `python -m pytest -v`: 22 passed in 0.39s (100% pass rate).
-- Validated Python 3.12.9 environment compatibility.
-- Scenarios tested:
+- **Python 3.11.12 Check:**
+  - Command: `uv run --python 3.11 --with pytest python -m pytest -v`
+  - Result: 26 passed in 0.34s (100% pass rate).
+- **Python 3.12.9 Check:**
+  - Command: `python -m pytest -v`
+  - Result: 26 passed in 0.48s (100% pass rate).
+- **Scenarios & Hardening Tested (26 tests total):**
   1. Add explicit hard user constraint ("do not modify DB schema").
   2. Add agent assumption and demonstrate it remains distinguishable from user authority.
   3. Revoke active constraint, check list_active vs get, verify provenance/scope preservation.
@@ -197,9 +201,21 @@ If lint/type tooling is added by the executor, also report its results.
   7. Serialization round-trip (`to_json` -> `from_json`, `to_dict` -> `from_dict`) verifying semantic state equality.
   8. Active listing excludes revoked and superseded entries.
   9. Multi-hop supersession lineage traversal (A -> B -> C).
-  10. Conflict tracking and validation.
-  11. Empty ID/name validation and model immutability.
-  12. Top-level package export checks.
+  10. Not found error handling for lookup, revoke, supersede, and history.
+  11. `add` rejects non-active initial states (rejects REVOKED, SUPERSEDED, CONFLICTED).
+  12. `supersede` rejects non-active replacement states (rejects REVOKED, SUPERSEDED, CONFLICTED replacements).
+  13. `CONFLICTED` lifecycle transitions: ACTIVE -> CONFLICTED, CONFLICTED -> ACTIVE (`resolve_conflict`), CONFLICTED -> REVOKED, CONFLICTED -> SUPERSEDED.
+  14. `mark_conflicted` validation: rejects marking on or with terminal constraints.
+  15. Snapshot deep immutability: `snapshot.constraints` tuple and `snapshot.metadata` FrozenDict reject in-place tampering.
+  16. Ledger initialization with iterable of constraints.
+  17. Corrupted snapshot duplicate ID rejection.
+  18. Top-level package exports.
+  19. Agent inference prohibited from HARD authority.
+  20. Non-empty ID and name validation.
+  21. Constraint model shallow immutability (`frozen=True`).
+  22. Deep immutability of nested collections (`paths`, `tools`, `actions`, `conflicts_with` tuples; `metadata`, `selectors` `FrozenDict`; nested dicts/lists).
+  23. External reference isolation (mutating inputs before/after creation leaves model unaffected).
+  24. Constraint model serialization round-trip preserving `FrozenDict` and tuples.
 
 **Known limitations:**  
 - In-memory only for v0.1 (as specified by TASK-001 scope; persistent storage like SQLite/PostgreSQL is deferred to later milestones).
@@ -207,10 +223,10 @@ If lint/type tooling is added by the executor, also report its results.
 
 **Commit/PR:**  
 - Branch: `task/TASK-001-core-ledger`
-- Commit SHA: `0ce2fd8`
+- Commit SHA: `85f0195`
 
 **Questions/blockers:**  
-- None. All acceptance criteria and suggested test cases for TASK-001 are met and verified.
+- None. All CHANGES_REQUESTED items (Python 3.11 compatibility, deep immutability, explicit CONFLICTED lifecycle transitions) have been fully implemented, hardened, and verified across Python 3.11 and 3.12.
 
 ## Main Agent Review
 
