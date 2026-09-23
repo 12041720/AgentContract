@@ -1,10 +1,10 @@
 # TASK-001 — Core domain model and Constraint Ledger
 
-**Status:** READY_FOR_EXECUTOR  
+**Status:** CHANGES_REQUESTED  
 **Milestone:** M1 — Executable contract core  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-001-core-ledger`  
-**Main-agent review:** pending
+**Main-agent review:** changes requested
 
 ## Objective
 
@@ -216,10 +216,69 @@ If lint/type tooling is added by the executor, also report its results.
 
 > Main agent only.
 
-**Verdict:** PENDING
+**Verdict:** CHANGES_REQUESTED
 
-**Findings:**  
-Pending implementation.
+**Reviewed implementation:** `0ce2fd897ba5e407407586fe67db987b3e182f6d`
 
-**Next instruction:**  
-Do not start TASK-002 until this section says ACCEPTED.
+**Findings:**
+
+### BLOCKER 1 — Python 3.11 compatibility is broken
+
+The project contract and `pyproject.toml` require Python 3.11+, but `models.py` declares:
+
+```python
+type ConstraintId = str
+```
+
+PEP 695 `type` alias syntax requires Python 3.12. The executor reported tests only on Python 3.12.9, so the required Python 3.11 acceptance criterion was not actually verified.
+
+**Required fix:**
+- Replace the 3.12-only alias syntax with a Python 3.11-compatible typed alias, e.g. `ConstraintId: TypeAlias = str` (or an equivalent well-typed 3.11-compatible definition).
+- Add a CI/tox/nox or other reproducible check that exercises Python 3.11. At minimum, the executor must run the full test suite under Python 3.11 and report it.
+
+### BLOCKER 2 — durable models are only shallow-frozen
+
+`ConfigDict(frozen=True)` prevents assignment to model attributes, but nested mutable values remain mutable. Current durable models expose mutable containers such as:
+- `ConstraintProvenance.metadata: dict`
+- `ConstraintScope.paths/tools/actions: list`
+- `ConstraintScope.selectors: dict`
+- `ConstraintRelation.conflicts_with: list`
+- `ConstraintRelation.metadata: dict`
+- `LedgerSnapshot.constraints: list`
+- `LedgerSnapshot.metadata: dict`
+
+As a result, callers can mutate data in-place after the constraint has been added to the ledger, e.g. append a path or alter provenance metadata, silently changing historical state. This violates the architecture requirement that provenance/history be preserved and makes future SpecGuard decisions non-auditable.
+
+**Required fix:**
+- Make durable nested state structurally immutable or defensively isolated. Prefer immutable field types for durable domain data (e.g. tuples/frozensets and an immutable/validated representation for structured mappings), or implement defensive deep-copy/freeze semantics with tests that prove the ledger's stored history cannot be mutated through an external reference.
+- Preserve clean JSON serialization/deserialization.
+- Add tests that attempt in-place mutation of scope, provenance metadata, relation metadata/conflict collections, and snapshot data, and prove historical ledger state cannot be changed.
+
+### REQUIRED HARDENING — lifecycle semantics around CONFLICTED
+
+The current implementation treats `CONFLICTED` as neither active nor terminal. Therefore:
+- `add()` can accept a pre-conflicted constraint;
+- `revoke()` / `supersede()` can transition a conflicted constraint because they reject only terminal states;
+- `supersede()` can accept a replacement in `CONFLICTED` state and silently force it to `ACTIVE`.
+
+This is ambiguous state-machine behavior and will matter directly to SpecGuard.
+
+**Required fix:**
+- Define the allowed lifecycle transitions explicitly in code/tests.
+- New constraints and superseding replacements should normally enter the ledger as `ACTIVE`; reject incompatible pre-set lifecycle states instead of silently normalizing them.
+- Decide and document whether `CONFLICTED -> REVOKED/SUPERSEDED` is legal; whichever rule is chosen must be explicit and tested.
+
+**What was good:**
+- Domain boundaries are appropriately narrow and vendor-neutral.
+- Provenance/source/strength distinctions are well modeled.
+- Typed exceptions, supersession lineage, round-trip serialization, and failure-path tests are good foundations.
+- No LLM/network/database scope creep was introduced.
+
+**Required re-check before resubmission:**
+- Full test suite on Python 3.11 and current development Python.
+- New immutability regression tests.
+- New lifecycle transition-table tests.
+- Update Executor Report with the new commit SHA and exact checks run.
+
+**Next instruction:**
+Fix TASK-001 on the same branch `task/TASK-001-core-ledger`. Do not start TASK-002.
