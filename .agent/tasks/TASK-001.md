@@ -4,7 +4,7 @@
 **Milestone:** M1 — Executable contract core  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-001-core-ledger`  
-**Main-agent review:** second-round changes requested
+**Main-agent review:** third-round changes requested
 
 ## Objective
 
@@ -239,79 +239,73 @@ If lint/type tooling is added by the executor, also report its results.
 
 > Main agent only.
 
-**Verdict:** CHANGES_REQUESTED — ROUND 2
+**Verdict:** CHANGES_REQUESTED — ROUND 3 (FINAL HARDENING)
 
-**Reviewed implementation:** `85f0195326a5dbba7f51ddf4863e0ba550affe28`
+**Reviewed implementation:** `b1522169346945cb22a4be62bcf1cb2c2b0731a8`
 
-**Round-1 fixes verified positively:**
-- Python 3.11-only syntax issue was fixed with a 3.11-compatible type alias.
-- Executor reports the full suite passing on Python 3.11.12 and Python 3.12.9.
-- Tuple conversion and recursive freezing significantly improved defensive isolation.
-- Initial/replacement lifecycle-state rejection is substantially clearer.
-- CONFLICTED resolution paths were explicitly documented and tested.
+**Accepted improvements from this round:**
+- `FrozenDict` no longer subclasses `dict`; `|=`, `dict.__setitem__`, and normal mutable-dict methods are no longer valid public mutation paths.
+- Nested values are recursively frozen and serialization round-trips are preserved.
+- `validate_transition()` is now the central lifecycle enforcement helper.
+- `revoke`, `supersede`, `mark_conflicted`, and `resolve_conflict` route status changes through the transition table.
+- The full 4x4 lifecycle matrix is covered by table-driven tests.
+- `CONFLICTED -> CONFLICTED` is explicitly rejected and conflicting peers must be ACTIVE.
 
-### BLOCKER 1 — FrozenDict is still mutable
+### BLOCKER 1 — FrozenDict still exposes a mutable backing dictionary
 
-The current implementation subclasses Python `dict` and overrides common mutator methods. That does not make the object truly immutable.
+The implementation now uses composition, but stores:
 
-A direct reproduction against this design shows ordinary in-place union still mutates it:
+```python
+self._data: dict[str, Any] = {...}
+```
+
+External callers can still mutate durable state directly:
 
 ```python
 fd = FrozenDict({"a": 1})
-fd |= {"b": 2}
-assert fd["b"] == 2  # mutation succeeds
+fd._data["a"] = 999
 ```
 
-Because the class is a `dict` subclass, base-class mutators can also bypass overrides:
+The same applies through models such as:
 
 ```python
-dict.__setitem__(fd, "c", 3)
+constraint.provenance.metadata._data["tampered"] = True
 ```
 
-This means provenance/scope/relation/snapshot history can still be changed through an external reference after being recorded, so the core auditability invariant is not yet satisfied.
+This silently alters historical/provenance state after it has been recorded. The underscore naming convention is not an immutability guarantee, and Round 2 explicitly required **no exposed mutable backing store**.
 
 **Required fix:**
-- Do not implement immutable metadata by subclassing mutable `dict`.
-- Prefer an immutable `Mapping` implementation that uses composition rather than inheritance from `dict`, with no exposed mutable backing store.
-- Preserve Pydantic validation + JSON serialization/deserialization.
-- Add regression tests for at least:
-  - item assignment;
-  - `|=`;
-  - absence/inapplicability of mutable dict operations;
-  - nested mapping/list freezing;
-  - external input mutation isolation;
-  - serialization round-trip.
+- Store the backing mapping itself in an immutable/read-only container, preferably `types.MappingProxyType` over an already deep-frozen private dict, or another composition that cannot be mutated through the exposed attribute.
+- Ensure no attribute reachable from the public `FrozenDict` object exposes a mutable collection that can change logical contents.
+- Add a regression test proving direct access to the backing attribute cannot mutate contents.
 
-### BLOCKER 2 — transition table is not the actual enforcement source
+### BLOCKER 2 — public lifecycle transition table is mutable
 
-`ALLOWED_TRANSITIONS` is defined, but Ledger transition methods do not consistently validate against it.
+`ALLOWED_TRANSITIONS` is now the authoritative source of truth, which is good, but it is declared as a normal mutable dictionary and exported publicly:
 
-In particular, `mark_conflicted()` currently rejects only terminal source/target constraints. Therefore an already-CONFLICTED source can be passed to `mark_conflicted()` again, effectively allowing:
-
-```text
-CONFLICTED -> CONFLICTED
+```python
+ALLOWED_TRANSITIONS: dict[...] = {...}
 ```
 
-even though `ALLOWED_TRANSITIONS[CONFLICTED]` does not contain `CONFLICTED`.
+External code can therefore rewrite lifecycle semantics at runtime:
 
-The method documentation/test description says marking conflicted requires active constraints, but the implementation does not enforce `existing.status == ACTIVE` (nor require the conflicting peer to be ACTIVE).
+```python
+ALLOWED_TRANSITIONS[ConstraintStatus.REVOKED] = frozenset({ConstraintStatus.ACTIVE})
+```
+
+After that, `validate_transition()` accepts a transition that the domain model intends to forbid.
 
 **Required fix:**
-- Make lifecycle enforcement use one explicit helper/table as the source of truth, e.g. `_assert_transition(current, target)`.
-- Every status-changing operation must validate through that mechanism.
-- `mark_conflicted` must enforce the chosen legal precondition (for the current design: ACTIVE -> CONFLICTED).
-- Decide whether the peer named in `conflicts_with` must also be ACTIVE; document the rule and test it.
-- Add a table-driven test that enumerates all status pairs and proves allowed transitions are accepted while disallowed transitions fail explicitly.
+- Make the transition table structurally read-only, e.g. `MappingProxyType` or another immutable mapping.
+- Keep each target collection immutable (`frozenset` is already appropriate).
+- Add a regression test proving callers cannot alter the state machine at runtime.
 
-**Additional review note (non-blocking if resolved by the transition refactor):**
-- Avoid having `ALLOWED_TRANSITIONS` merely document behavior while individual methods independently reproduce lifecycle logic; that will drift as more states are introduced.
-
-**Required re-check before resubmission:**
-- Full test suite on Python 3.11 and Python 3.12+.
-- New immutable-mapping bypass tests, including `|=`.
-- Table-driven lifecycle tests covering every status pair.
+**Required re-check before final resubmission:**
+- Full suite on Python 3.11 and Python 3.12+.
+- Regression test for `FrozenDict` backing-store access.
+- Regression test for transition-table mutation.
 - Update Executor Report with the new commit SHA and exact checks.
 
 **Next instruction:**
-Fix TASK-001 on the same branch `task/TASK-001-core-ledger`. Do not start TASK-002.
+Apply these two narrow hardening fixes on `task/TASK-001-core-ledger`. Do not start TASK-002. If these fixes pass review, TASK-001 is expected to be accepted and merged.
 
