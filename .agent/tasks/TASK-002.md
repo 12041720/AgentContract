@@ -1,10 +1,10 @@
 # TASK-002 — Unified Trace and Provenance Model
 
-**Status:** READY_FOR_EXECUTOR  
+**Status:** CHANGES_REQUESTED  
 **Milestone:** M1 — Executable contract core  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-002-trace-model`  
-**Main-agent review:** pending
+**Main-agent review:** changes requested
 
 ## Objective
 
@@ -285,31 +285,137 @@ Report the local Python version and test result.
 > Execution agent: fill this section only after implementation.
 
 **Implementation summary:**  
-TBD
+- **Environment & Baseline Alignment:** Uninstalled uv-managed Python 3.11 (`cpython-3.11.12-windows-x86_64-none`) per task instructions. Validated development environment on local Python **3.12.9**.
+- **Neutral Shared Immutable Module:** Extracted generic immutable primitives (`FrozenDict`, `_freeze_value`) into `src/agentcontract/common/immutable.py` per the cross-package design rule. Re-exported from `agentcontract.constraints.models` to ensure 100% backward compatibility. Verified all TASK-001 tests pass unchanged.
+- **Trace Domain Models & Enums:** Implemented under `src/agentcontract/trace/models.py`:
+  - Typed identifiers: `TraceId`, `SessionId`, `EventId`, `ToolCallId`.
+  - Normalized enums: `ActorKind` (`USER`, `AGENT`, `TOOL`, `SYSTEM`, `GUARD`, `ENVIRONMENT`), `EventKind` (`USER_MESSAGE`, `AGENT_MESSAGE`, `TOOL_CALL`, `TOOL_RESULT`, `GUARD_DECISION`, `STATE_OBSERVATION`, `ERROR`), and `ToolResultStatus` (`SUCCESS`, `ERROR`, `TIMEOUT`, `CANCELLED`).
+  - Durable models: `TracePointer`, `ToolCall`, `ToolResult`, and `TraceEvent` with `frozen=True` and `extra="forbid"`.
+  - Enforced non-empty string validation on identifiers, explicit rejection of timezone-naive datetimes, UTC normalization for aware datetimes, defensive isolation from external mutations, and payload type correlation (`TOOL_CALL` requires `ToolCall`, `TOOL_RESULT` requires `ToolResult`).
+- **Trace Domain Exceptions:** Implemented typed hierarchy in `src/agentcontract/trace/exceptions.py` (`TraceError`, `TraceValidationError`, `DuplicateEventError`, `InvalidSequenceError`, `EventNotFoundError`, `ToolCorrelationError`, `ParentEventError`).
+- **Append-Oriented TraceStore:** Implemented `src/agentcontract/trace/store.py` enforcing:
+  1. Store-wide unique event IDs.
+  2. Non-negative, strictly monotonic sequences per trace ID.
+  3. Independent sequence namespaces across distinct trace IDs.
+  4. Timezone-aware UTC timestamp validation.
+  5. Parent-event integrity within the same trace.
+  6. Tool call / tool result correlation, single result per tool call, and unique `ToolCallId` per trace.
+  7. Invariant 12: Agent messages do not synthesize or imply success.
+  8. Deterministic querying, filtering by trace/session/actor/event_kind, pointer creation/resolution, and complete JSON round-trip serialization.
+- **Public & Top-Level Exports:** Re-exported public trace symbols in `src/agentcontract/trace/__init__.py` and top-level `src/agentcontract/__init__.py`.
+- **Test Coverage:** Added 31 new tests across `tests/trace/test_models.py` and `tests/trace/test_store.py` covering all 15 scenarios suggested in TASK-002 plus container operations and top-level exports.
 
 **Files changed:**  
-TBD
+- `src/agentcontract/common/__init__.py` (new: exports `FrozenDict`, `_freeze_value`)
+- `src/agentcontract/common/immutable.py` (new: neutral shared immutable mapping backed by `MappingProxyType`)
+- `src/agentcontract/constraints/models.py` (updated: import `FrozenDict` and `_freeze_value` from `agentcontract.common.immutable`)
+- `src/agentcontract/trace/__init__.py` (updated: public trace domain exports)
+- `src/agentcontract/trace/exceptions.py` (new: domain exceptions)
+- `src/agentcontract/trace/models.py` (new: identifiers, enums, durable models)
+- `src/agentcontract/trace/store.py` (new: `TraceStore` append-oriented container with invariants)
+- `src/agentcontract/__init__.py` (updated: top-level package re-exports)
+- `tests/trace/test_models.py` (new: 14 tests for enums, identifiers, immutability, timezone, serialization)
+- `tests/trace/test_store.py` (new: 17 tests covering all 15 scenarios from TASK-002, container operations, and invariant 12)
+- `.agent/tasks/TASK-002.md` (updated: Executor Report)
 
 **Tests/checks:**  
-TBD
+- Python version check: `python --version` -> `Python 3.12.9`.
+- uv Python 3.11 removal: `uv python uninstall 3.11` executed; confirmed uninstalled via `uv python list --managed-python`.
+- Full pytest suite: `python -m pytest -v` -> **64 passed in 0.48s** (100% pass rate: 33 constraint tests + 31 trace tests).
 
 **Known limitations:**  
-TBD
+- In-memory append-only storage for v0.1 (database persistence via SQLite/PostgreSQL is deferred to later milestones).
+- External framework/telemetry adapters (OpenTelemetry, LangGraph, etc.) are deferred to TASK-008 per scope boundaries.
 
 **Commit/PR:**  
-TBD
+- Branch: `task/TASK-002-trace-model`
+- Commit SHA: `431534b`
 
 **Questions/blockers:**  
-TBD
+- None. All acceptance criteria and suggested test scenarios are fully met and verified.
 
 ## Main Agent Review
 
 > Main agent only.
 
-**Verdict:** PENDING
+**Verdict:** CHANGES_REQUESTED
 
-**Findings:**  
-Pending implementation.
+**Reviewed implementation:** `431534bd21ab62751a63b47db19d6368c5828a08`
 
-**Next instruction:**  
-Do not start TASK-003 until this section says ACCEPTED.
+**What is accepted so far:**
+- Local Python 3.12.9 baseline is correctly used; the uv-managed Python 3.11 environment was removed as requested.
+- The shared immutable primitive was cleanly moved to `agentcontract.common` while preserving TASK-001 compatibility.
+- Event/actor/status enums and the ToolCall / ToolResult split are appropriate.
+- Per-trace sequence monotonicity, global event-ID uniqueness, parent trace checks, tool-call uniqueness, result uniqueness, filtering, pointer resolution, and round-trip reconstruction are well structured.
+- TASK-001 tests remain green according to the executor report; full suite is reported as 64 passed.
+
+### BLOCKER 1 — ToolResult can carry contradictory provenance
+
+The store correlates a TOOL_RESULT to a prior tool call by `ToolResult.call_id`, and independently validates `parent_id` only as “an earlier event in the same trace”.
+
+Therefore this inconsistent event is currently accepted:
+
+```text
+event A: TOOL_CALL call_id="call-A"
+event B: TOOL_CALL call_id="call-B"
+
+result event:
+  parent_id = event A
+  ToolResult.call_id = "call-B"
+```
+
+Both references are individually valid, but together they disagree about which action produced the result. EvidenceGate will later rely on provenance edges, so the trace layer must not permit contradictory correlation paths.
+
+**Required fix:**
+- Define one clear rule for TOOL_RESULT parent semantics.
+- Recommended rule: `parent_id` remains optional, but when supplied on a TOOL_RESULT it **must point to the TOOL_CALL event whose `ToolCall.call_id` equals `ToolResult.call_id`**.
+- Reject parent references to a different tool call or to a non-tool-call event for TOOL_RESULT.
+- Add tests for:
+  - matching parent + call_id accepted;
+  - parent points to different tool call rejected;
+  - parent points to non-TOOL_CALL event rejected.
+- If you choose instead to make matching `parent_id` mandatory for TOOL_RESULT, document that decision and update tests consistently.
+
+### BLOCKER 2 — ToolResult.output does not guarantee durable immutability / serialization
+
+`ToolResult.output` is declared as `Any | None`, and `_freeze_value()` only freezes mappings, list/tuple, and set/frozenset.
+
+A built-in mutable value such as `bytearray` is retained by reference:
+
+```python
+raw = bytearray(b"abc")
+result = ToolResult(
+    call_id="c1",
+    status=ToolResultStatus.SUCCESS,
+    output=raw,
+)
+raw[0] = ord("z")
+# result.output has now changed after the fact
+```
+
+Other arbitrary mutable/custom objects can have the same problem, and arbitrary `Any` values also undermine the promise that the durable trace always JSON round-trips.
+
+**Required fix:**
+- Define the supported durable trace-value domain explicitly.
+- Prefer accepting JSON-like scalar values plus recursively frozen containers (e.g. `None | bool | int | float | str | FrozenDict | tuple[...] | frozenset[...]` if sets are intentionally supported), and reject unsupported arbitrary mutable/custom objects with `TraceValidationError`.
+- Alternatively normalize binary/unknown outputs into an explicit immutable representation, but do not silently retain arbitrary mutable object references.
+- Ensure all accepted output values serialize and reconstruct predictably.
+- Add regression tests at minimum for:
+  - `bytearray` or another unsupported mutable built-in being rejected or normalized immutably;
+  - nested lists/dicts remaining frozen;
+  - accepted output domain JSON round-trip;
+  - unsupported custom object rejection.
+
+**Non-blocking cleanup:**
+- `TracePointer.session_id` is optional but currently does not reject a blank string. Aligning it with the other identifier validation would improve consistency.
+- Some imports left in `constraints/models.py` became unused after moving `FrozenDict`; clean them if convenient, but do not expand scope.
+
+**Required re-check:**
+- Use only local Python 3.12.9.
+- Run `python --version` and `python -m pytest`.
+- Do not reinstall Python 3.11 or any alternate interpreter.
+- Update Executor Report with the new commit SHA and exact test result.
+
+**Next instruction:**
+Fix these two blockers on `task/TASK-002-trace-model`. Do not start TASK-003.
+
