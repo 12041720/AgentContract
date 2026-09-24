@@ -17,7 +17,7 @@
 - Work branch: `task/TASK-002-trace-model`
 - Status: **CHANGES_REQUESTED**
 - Owner: Execution agent
-- Main-agent review: TASK-002 changes requested after review of `431534bd21ab62751a63b47db19d6368c5828a08`
+- Main-agent review: TASK-002 second-round narrow durability fix requested after review of `9f60435eb74a86c2811accc2c57440381ffab9aa`
 
 ## Main-agent checkpoint
 
@@ -25,7 +25,7 @@
 - Persistent main-agent/executor protocol established.
 - High-level architecture fixed for v0.1.
 - TASK-001 accepted after final hardening and integrated to `main` as `48a7ae1cc07025a400b11804c298c2970cfc5107`.
-- TASK-002 first implementation was reviewed; two trace-integrity blockers remain around ToolResult provenance and durable output immutability.
+- TASK-002 round-2 implementation fixed provenance/output mutability blockers; one final durable-value round-trip/type-contract issue remains.
 
 ## Current design decisions
 
