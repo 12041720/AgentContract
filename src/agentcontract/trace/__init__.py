@@ -1,4 +1,54 @@
-"""Normalized trace and provenance domain.
+"""Normalized trace and provenance domain."""
 
-Implementation is reserved for TASK-002.
-"""
+from agentcontract.trace.exceptions import (
+    DuplicateEventError,
+    EventNotFoundError,
+    InvalidSequenceError,
+    ParentEventError,
+    ToolCorrelationError,
+    TraceError,
+    TraceValidationError,
+)
+from agentcontract.trace.models import (
+    ActorKind,
+    EventId,
+    EventKind,
+    SessionId,
+    ToolCall,
+    ToolCallId,
+    ToolResult,
+    ToolResultStatus,
+    TraceDurableValue,
+    TraceEvent,
+    TraceId,
+    TracePointer,
+)
+from agentcontract.trace.store import TraceStore
+
+__all__ = [
+    # Identifiers
+    "TraceId",
+    "SessionId",
+    "EventId",
+    "ToolCallId",
+    # Enums
+    "ActorKind",
+    "EventKind",
+    "ToolResultStatus",
+    # Models & Types
+    "TraceDurableValue",
+    "TracePointer",
+    "ToolCall",
+    "ToolResult",
+    "TraceEvent",
+    # Store
+    "TraceStore",
+    # Exceptions
+    "TraceError",
+    "TraceValidationError",
+    "DuplicateEventError",
+    "InvalidSequenceError",
+    "EventNotFoundError",
+    "ToolCorrelationError",
+    "ParentEventError",
+]

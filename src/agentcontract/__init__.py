@@ -1,5 +1,6 @@
 """AgentContract: reliability primitives for long-horizon tool-using agents."""
 
+from agentcontract.common.immutable import FrozenDict
 from agentcontract.constraints import (
     Constraint,
     ConstraintLedger,
@@ -9,10 +10,24 @@ from agentcontract.constraints import (
     ConstraintStatus,
     ConstraintStrength,
 )
+from agentcontract.trace import (
+    ActorKind,
+    EventKind,
+    ToolCall,
+    ToolResult,
+    ToolResultStatus,
+    TraceDurableValue,
+    TraceEvent,
+    TracePointer,
+    TraceStore,
+)
 
 __version__ = "0.1.0"
 
 __all__ = [
+    # Common
+    "FrozenDict",
+    # Constraints
     "Constraint",
     "ConstraintLedger",
     "ConstraintProvenance",
@@ -20,5 +35,16 @@ __all__ = [
     "ConstraintSource",
     "ConstraintStatus",
     "ConstraintStrength",
+    # Trace
+    "ActorKind",
+    "EventKind",
+    "ToolCall",
+    "ToolResult",
+    "ToolResultStatus",
+    "TraceDurableValue",
+    "TraceEvent",
+    "TracePointer",
+    "TraceStore",
+    # Meta
     "__version__",
 ]
