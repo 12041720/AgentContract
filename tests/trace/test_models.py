@@ -382,7 +382,7 @@ def test_top_level_package_exports_trace():
 # --- BLOCKER 2 Regression Tests: ToolResult.output Immutability and Domain ---
 
 def test_unsupported_mutable_and_custom_types_rejected_in_output():
-    """BLOCKER 2: Unsupported mutable types (bytearray, bytes) and custom objects must be rejected."""
+    """BLOCKER: Unsupported mutable types, sets, non-finite floats, and custom objects must be rejected."""
     # bytearray rejected
     with pytest.raises(ValidationError) as exc_info:
         ToolResult(
@@ -400,6 +400,51 @@ def test_unsupported_mutable_and_custom_types_rejected_in_output():
             output=b"raw bytes",
         )
     assert "Unsupported trace value of type 'bytes'" in str(exc_info.value)
+
+    # set rejected
+    with pytest.raises(ValidationError) as exc_info:
+        ToolResult(
+            call_id="c-set",
+            status=ToolResultStatus.SUCCESS,
+            output={"tag1", "tag2"},
+        )
+    assert "sets are not supported as durable trace values" in str(exc_info.value)
+
+    # frozenset rejected
+    with pytest.raises(ValidationError) as exc_info:
+        ToolResult(
+            call_id="c-frozenset",
+            status=ToolResultStatus.SUCCESS,
+            output=frozenset(["tag1", "tag2"]),
+        )
+    assert "sets are not supported as durable trace values" in str(exc_info.value)
+
+    # NaN rejected
+    with pytest.raises(ValidationError) as exc_info:
+        ToolResult(
+            call_id="c-nan",
+            status=ToolResultStatus.SUCCESS,
+            output=float("nan"),
+        )
+    assert "Non-finite float" in str(exc_info.value)
+
+    # Infinity rejected
+    with pytest.raises(ValidationError) as exc_info:
+        ToolResult(
+            call_id="c-inf",
+            status=ToolResultStatus.SUCCESS,
+            output=float("inf"),
+        )
+    assert "Non-finite float" in str(exc_info.value)
+
+    # -Infinity rejected
+    with pytest.raises(ValidationError) as exc_info:
+        ToolResult(
+            call_id="c-neginf",
+            status=ToolResultStatus.SUCCESS,
+            output=float("-inf"),
+        )
+    assert "Non-finite float" in str(exc_info.value)
 
     # arbitrary object instance rejected
     with pytest.raises(ValidationError) as exc_info:
@@ -431,9 +476,27 @@ def test_unsupported_mutable_and_custom_types_rejected_in_output():
         )
     assert "Unsupported trace value of type 'bytearray'" in str(exc_info.value)
 
+    # deeply nested set rejected
+    with pytest.raises(ValidationError) as exc_info:
+        ToolResult(
+            call_id="c-nested-set",
+            status=ToolResultStatus.SUCCESS,
+            output={"data": (1, {"tags": {"a", "b"}})},
+        )
+    assert "sets are not supported as durable trace values" in str(exc_info.value)
+
+    # deeply nested NaN rejected
+    with pytest.raises(ValidationError) as exc_info:
+        ToolResult(
+            call_id="c-nested-nan",
+            status=ToolResultStatus.SUCCESS,
+            output={"scores": [1.0, float("nan")]},
+        )
+    assert "Non-finite float" in str(exc_info.value)
+
 
 def test_accepted_output_domain_json_round_trip():
-    """BLOCKER 2: Accepted output domain values (scalars, FrozenDict, tuple, frozenset) serialize predictably."""
+    """BLOCKER: Accepted output domain values (scalars, FrozenDict, tuple) round-trip with exact semantic equality."""
     cases = [
         None,
         True,
@@ -445,7 +508,7 @@ def test_accepted_output_domain_json_round_trip():
         {"name": "agent", "count": 10, "nested": {"valid": True}},
         [1, "two", 3.0, None],
         (10, 20, 30),
-        frozenset(["tag1", "tag2"]),
+        {"items": [1, {"nested_key": 2.5}], "flag": True},
     ]
 
     for expected_val in cases:
@@ -459,15 +522,102 @@ def test_accepted_output_domain_json_round_trip():
 
         assert rebuilt.call_id == tr.call_id
         assert rebuilt.status == tr.status
+        # Exact semantic equality: no weakened assertions or type loss
+        assert rebuilt.output == tr.output
         if isinstance(expected_val, (list, tuple)):
             assert rebuilt.output == tuple(expected_val)
-        elif isinstance(expected_val, (set, frozenset)):
-            # Sets/frozensets serialize to sorted lists in JSON, which deserialize to tuples in output domain
-            assert set(rebuilt.output) == set(expected_val)
         elif isinstance(expected_val, dict):
-            assert rebuilt.output == FrozenDict(expected_val)
+            assert isinstance(rebuilt.output, FrozenDict)
         else:
             assert rebuilt.output == expected_val
+
+
+def test_trace_event_durable_payload_domain_and_round_trip():
+    """TraceEvent.payload supports the durable value domain and preserves exact semantic equality."""
+    accepted_payloads = [
+        None,
+        True,
+        False,
+        0,
+        12345,
+        -99,
+        3.14159,
+        "plain text payload",
+        {"agent": "coder", "step": 1, "nested": {"ok": True}},
+        [1, "two", 3.0, None],
+        (10, 20, 30),
+        {"data": [1, {"k": 2.5}], "active": False},
+    ]
+
+    for payload_val in accepted_payloads:
+        event = TraceEvent(
+            event_id="evt-payload-test",
+            trace_id="tr-test",
+            sequence=0,
+            actor=ActorKind.AGENT,
+            event_kind=EventKind.AGENT_MESSAGE,
+            payload=payload_val,
+        )
+        json_repr = event.model_dump_json()
+        rebuilt = TraceEvent.model_validate_json(json_repr)
+
+        assert rebuilt.event_id == event.event_id
+        assert rebuilt.event_kind == event.event_kind
+        assert rebuilt.payload == event.payload
+        if isinstance(payload_val, (list, tuple)):
+            assert rebuilt.payload == tuple(payload_val)
+        elif isinstance(payload_val, dict):
+            assert isinstance(rebuilt.payload, FrozenDict)
+        else:
+            assert rebuilt.payload == payload_val
+
+
+def test_trace_event_payload_unsupported_types_rejected():
+    """TraceEvent.payload explicitly rejects unsupported types with TraceValidationError."""
+    unsupported_payloads = [
+        {"a", "b"},
+        frozenset(["a", "b"]),
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        bytearray(b"payload"),
+        b"raw bytes",
+        object(),
+        {"nested": {"bad_set": {1, 2}}},
+        {"nested": [float("nan")]},
+    ]
+
+    for bad_payload in unsupported_payloads:
+        with pytest.raises(ValidationError):
+            TraceEvent(
+                event_id="evt-bad-payload",
+                trace_id="tr-test",
+                sequence=0,
+                actor=ActorKind.AGENT,
+                event_kind=EventKind.AGENT_MESSAGE,
+                payload=bad_payload,
+            )
+
+
+def test_tool_call_arguments_unsupported_types_rejected():
+    """ToolCall.arguments rejects non-finite floats, sets, bytes, and invalid types."""
+    unsupported_in_args = [
+        {"tags": {"tag1", "tag2"}},
+        {"tags": frozenset(["tag1", "tag2"])},
+        {"score": float("nan")},
+        {"score": float("inf")},
+        {"data": bytearray(b"bytes")},
+        {"data": b"bytes"},
+        {"obj": object()},
+    ]
+
+    for bad_args in unsupported_in_args:
+        with pytest.raises(ValidationError):
+            ToolCall(
+                call_id="c-bad-args",
+                tool_name="test_tool",
+                arguments=bad_args,
+            )
 
 
 def test_trace_pointer_blank_session_id_rejected():

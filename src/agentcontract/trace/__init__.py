@@ -18,6 +18,7 @@ from agentcontract.trace.models import (
     ToolCallId,
     ToolResult,
     ToolResultStatus,
+    TraceDurableValue,
     TraceEvent,
     TraceId,
     TracePointer,
@@ -34,7 +35,8 @@ __all__ = [
     "ActorKind",
     "EventKind",
     "ToolResultStatus",
-    # Models
+    # Models & Types
+    "TraceDurableValue",
     "TracePointer",
     "ToolCall",
     "ToolResult",

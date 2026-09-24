@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from enum import StrEnum
+import math
 from typing import Any, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 from typing_extensions import Self
@@ -19,6 +20,17 @@ SessionId: TypeAlias = str
 EventId: TypeAlias = str
 ToolCallId: TypeAlias = str
 
+# Durable trace value domain: JSON-compatible scalars and recursively frozen containers
+TraceDurableValue: TypeAlias = (
+    None
+    | bool
+    | int
+    | float
+    | str
+    | FrozenDict
+    | tuple[Any, ...]
+)
+
 
 def _freeze_trace_value(val: Any) -> Any:
     """Recursively validate and freeze trace values into an immutable, JSON-compatible domain.
@@ -27,28 +39,37 @@ def _freeze_trace_value(val: Any) -> Any:
     - None
     - bool
     - int (excluding bool)
-    - float
+    - finite float
     - str
-    - Mapping (recursively frozen into FrozenDict)
-    - list, tuple (recursively frozen into tuple)
-    - set, frozenset (recursively frozen into frozenset)
+    - Mapping / FrozenDict (recursively frozen into FrozenDict)
+    - list / tuple (recursively frozen into tuple)
 
-    Any other type (e.g. bytearray, bytes, custom classes, mutable containers) is rejected
-    with TraceValidationError.
+    Rejected types:
+    - set, frozenset
+    - bytes, bytearray
+    - non-finite float (NaN, Infinity, -Infinity)
+    - custom classes / arbitrary objects
     """
-    if val is None or isinstance(val, (bool, int, float, str)):
+    if val is None or isinstance(val, (bool, int, str)):
         return val
-    if isinstance(val, FrozenDict):
-        return FrozenDict({str(k): _freeze_trace_value(v) for k, v in val.items()})
-    if isinstance(val, Mapping):
+    if isinstance(val, float):
+        if not math.isfinite(val):
+            raise TraceValidationError(
+                f"Non-finite float '{val}' is not supported in durable trace values."
+            )
+        return val
+    if isinstance(val, (FrozenDict, Mapping)):
         return FrozenDict({str(k): _freeze_trace_value(v) for k, v in val.items()})
     if isinstance(val, (list, tuple)):
         return tuple(_freeze_trace_value(v) for v in val)
     if isinstance(val, (set, frozenset)):
-        return frozenset(_freeze_trace_value(v) for v in val)
+        raise TraceValidationError(
+            f"Unsupported trace value of type '{type(val).__name__}': sets are not "
+            f"supported as durable trace values."
+        )
     raise TraceValidationError(
         f"Unsupported trace value of type '{type(val).__name__}': trace values must be "
-        f"scalars (None, bool, int, float, str) or composed of mappings/sequences thereof."
+        f"scalars (None, bool, int, finite float, str) or composed of mappings/sequences thereof."
     )
 
 
@@ -144,9 +165,9 @@ class ToolResult(BaseModel):
 
     call_id: ToolCallId = Field(..., description="Matching tool call identifier.")
     status: ToolResultStatus = Field(..., description="Tool execution outcome status.")
-    output: Any | None = Field(
+    output: TraceDurableValue = Field(
         default=None,
-        description="Immutable structured or raw tool output.",
+        description="Immutable structured or scalar tool output.",
     )
     error: str | None = Field(
         default=None,
@@ -174,7 +195,7 @@ class ToolResult(BaseModel):
             raise TraceValidationError("call_id must not be empty or blank.")
         return stripped
 
-    @field_validator("output", mode="after")
+    @field_validator("output", mode="before")
     @classmethod
     def _freeze_output(cls, val: Any) -> Any:
         return _freeze_trace_value(val)
@@ -184,10 +205,8 @@ class ToolResult(BaseModel):
         def _to_serializable(v: Any) -> Any:
             if isinstance(v, FrozenDict):
                 return {str(k): _to_serializable(item) for k, item in v.items()}
-            if isinstance(v, (list, tuple)):
+            if isinstance(v, tuple):
                 return [_to_serializable(item) for item in v]
-            if isinstance(v, (set, frozenset)):
-                return [_to_serializable(item) for item in sorted(v, key=lambda x: str(x))]
             return v
 
         return _to_serializable(val)
@@ -252,9 +271,9 @@ class TraceEvent(BaseModel):
         default_factory=FrozenDict,
         description="Immutable event attributes and metadata.",
     )
-    payload: ToolCall | ToolResult | FrozenDict | str | None = Field(
+    payload: ToolCall | ToolResult | TraceDurableValue = Field(
         default=None,
-        description="Durable structured or text payload.",
+        description="Durable structured or scalar payload.",
     )
 
     @field_validator("timestamp")
@@ -280,10 +299,8 @@ class TraceEvent(BaseModel):
         def _to_serializable(v: Any) -> Any:
             if isinstance(v, FrozenDict):
                 return {str(k): _to_serializable(item) for k, item in v.items()}
-            if isinstance(v, (list, tuple)):
+            if isinstance(v, tuple):
                 return [_to_serializable(item) for item in v]
-            if isinstance(v, (set, frozenset)):
-                return [_to_serializable(item) for item in sorted(v, key=lambda x: str(x))]
             return v
         return _to_serializable(val)
 
@@ -302,13 +319,7 @@ class TraceEvent(BaseModel):
         elif event_kind in (EventKind.TOOL_RESULT, "TOOL_RESULT"):
             if isinstance(payload, dict) and not isinstance(payload, ToolResult):
                 data["payload"] = ToolResult.model_validate(payload)
-        elif isinstance(payload, Mapping) and not isinstance(payload, FrozenDict):
-            data["payload"] = FrozenDict({str(k): _freeze_trace_value(v) for k, v in payload.items()})
-        elif isinstance(payload, (list, tuple)):
-            data["payload"] = tuple(_freeze_trace_value(v) for v in payload)
-        elif isinstance(payload, (set, frozenset)):
-            data["payload"] = frozenset(_freeze_trace_value(v) for v in payload)
-        elif payload is not None and not isinstance(payload, (ToolCall, ToolResult, FrozenDict)):
+        elif payload is not None:
             data["payload"] = _freeze_trace_value(payload)
 
         return data
@@ -332,15 +343,17 @@ class TraceEvent(BaseModel):
         if self.event_kind == EventKind.TOOL_CALL:
             if not isinstance(self.payload, ToolCall):
                 raise TraceValidationError(
-                    f"TOOL_CALL event requires ToolCall payload, got {type(self.payload)}"
+                    f"TOOL_CALL event requires ToolCall payload, got {type(self.payload).__name__}"
                 )
 
         # Invariant: TOOL_RESULT requires ToolResult payload
-        if self.event_kind == EventKind.TOOL_RESULT:
+        elif self.event_kind == EventKind.TOOL_RESULT:
             if not isinstance(self.payload, ToolResult):
                 raise TraceValidationError(
-                    f"TOOL_RESULT event requires ToolResult payload, got {type(self.payload)}"
+                    f"TOOL_RESULT event requires ToolResult payload, got {type(self.payload).__name__}"
                 )
+        elif self.payload is not None:
+            _freeze_trace_value(self.payload)
 
         return self
 
