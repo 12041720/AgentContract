@@ -12,12 +12,12 @@
 
 ## Current active task
 
-- Task: **TASK-003 — SpecGuard pre/post action validation engine**
-- Task file: `.agent/tasks/TASK-003.md`
-- Work branch: `task/TASK-003-specguard`
-- Status: **CHANGES_REQUESTED**
+- Task: **TASK-004 — Claims, Evidence Graph, and Deterministic EvidenceGate**
+- Task file: `.agent/tasks/TASK-004.md`
+- Work branch: `task/TASK-004-evidence-gate`
+- Status: **READY_FOR_EXECUTOR**
 - Owner: Execution agent
-- Main-agent review: TASK-003 second-round changes requested after review of `9146c0e98e5446762c635252f0bf064e7eea62e9`
+- Main-agent review: TASK-003 accepted and integrated; TASK-004 ready for execution
 
 ## Main-agent checkpoint
 
@@ -26,7 +26,8 @@
 - High-level architecture fixed for v0.1.
 - TASK-001 accepted after final hardening and integrated to `main` as `48a7ae1cc07025a400b11804c298c2970cfc5107`.
 - TASK-002 accepted and integrated to `main` as `2c71b2509dc82a95a2c3ce298602811f549ac1ff`.
-- TASK-003 round-2 implementation fixed the first review blockers; two narrow semantic gaps remain in exact selector equality and REQUIRE/PREFER model validation.
+- TASK-003 accepted and integrated to `main` as `495b23b262d51e076ad2f6c36b81edba4169f4d4`.
+- TASK-004 task contract has been created and is now active.
 
 ## Current design decisions
 
@@ -40,7 +41,7 @@
 
 ## Review gate
 
-The main agent will not activate TASK-004 until TASK-003 satisfies its acceptance criteria and is reviewed.
+The main agent will not activate TASK-005 until TASK-004 satisfies its acceptance criteria and is reviewed.
 
 ## Resume instructions for the main agent
 
