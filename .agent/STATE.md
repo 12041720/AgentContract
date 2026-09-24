@@ -15,9 +15,9 @@
 - Task: **TASK-003 — SpecGuard pre/post action validation engine**
 - Task file: `.agent/tasks/TASK-003.md`
 - Work branch: `task/TASK-003-specguard`
-- Status: **READY_FOR_EXECUTOR**
+- Status: **CHANGES_REQUESTED**
 - Owner: Execution agent
-- Main-agent review: TASK-002 accepted and integrated; TASK-003 ready for execution
+- Main-agent review: TASK-003 changes requested after review of `033eed532a47a9d735b2ea7e3aa4008e4cb5797d`
 
 ## Main-agent checkpoint
 
@@ -26,7 +26,7 @@
 - High-level architecture fixed for v0.1.
 - TASK-001 accepted after final hardening and integrated to `main` as `48a7ae1cc07025a400b11804c298c2970cfc5107`.
 - TASK-002 accepted and integrated to `main` as `2c71b2509dc82a95a2c3ce298602811f549ac1ff`.
-- TASK-003 task contract has been created and is now active.
+- TASK-003 first implementation was reviewed; rule semantics, exact selector matching, post-action effect aggregation, and deterministic ordering need fixes.
 
 ## Current design decisions
 
