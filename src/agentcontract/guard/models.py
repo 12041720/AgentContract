@@ -100,7 +100,9 @@ class Action(BaseModel):
         if isinstance(val, str):
             stripped = val.strip()
             return (stripped,) if stripped else ()
-        if isinstance(val, (list, tuple, set, frozenset)):
+        if isinstance(val, (set, frozenset)):
+            raise GuardValidationError("paths must be an ordered sequence (list or tuple), not a set/frozenset.")
+        if isinstance(val, (list, tuple)):
             result = []
             for item in val:
                 s = str(item).strip()
@@ -244,7 +246,9 @@ class ActionObservation(BaseModel):
         if isinstance(val, str):
             stripped = val.strip()
             return (stripped,) if stripped else ()
-        if isinstance(val, (list, tuple, set, frozenset)):
+        if isinstance(val, (set, frozenset)):
+            raise GuardValidationError("paths must be an ordered sequence (list or tuple), not a set/frozenset.")
+        if isinstance(val, (list, tuple)):
             result = []
             for item in val:
                 s = str(item).strip()
@@ -330,7 +334,9 @@ class GuardDecision(BaseModel):
     def _normalize_tuples(cls, val: Any) -> tuple[Any, ...]:
         if val is None:
             return ()
-        if isinstance(val, (list, tuple, set, frozenset)):
+        if isinstance(val, (set, frozenset)):
+            raise GuardValidationError("decision collections must be ordered sequences (list or tuple), not a set/frozenset.")
+        if isinstance(val, (list, tuple)):
             return tuple(val)
         return (val,)
 

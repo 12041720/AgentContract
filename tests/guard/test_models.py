@@ -219,6 +219,39 @@ def test_action_and_decision_serialization_round_trip():
     assert rebuilt_decision.trace_pointer == action.trace_pointer
 
 
+def test_unordered_sets_rejected_in_models():
+    """BLOCKER 4: Set and frozenset inputs must be explicitly rejected for order-sensitive fields."""
+    # Action.paths rejects set
+    with pytest.raises(ValidationError) as exc_info:
+        Action(action_kind=ActionKind.FILE_WRITE, paths={"a.py", "b.py"})
+    assert "ordered sequence" in str(exc_info.value)
+
+    # Action.paths rejects frozenset
+    with pytest.raises(ValidationError) as exc_info:
+        Action(action_kind=ActionKind.FILE_WRITE, paths=frozenset(["a.py"]))
+    assert "ordered sequence" in str(exc_info.value)
+
+    # ActionObservation.changed_paths rejects set
+    with pytest.raises(ValidationError) as exc_info:
+        ActionObservation(changed_paths={"out.txt"})
+    assert "ordered sequence" in str(exc_info.value)
+
+    # ActionObservation.accessed_paths rejects set
+    with pytest.raises(ValidationError) as exc_info:
+        ActionObservation(accessed_paths={"in.txt"})
+    assert "ordered sequence" in str(exc_info.value)
+
+    # GuardDecision rejects set
+    action = Action(action_kind=ActionKind.FILE_WRITE, target_path="a.py")
+    with pytest.raises(ValidationError) as exc_info:
+        GuardDecision(
+            decision=DecisionKind.ALLOW,
+            action=action,
+            matched_constraint_ids={"c-1", "c-2"},
+        )
+    assert "ordered sequences" in str(exc_info.value)
+
+
 def test_top_level_package_exports_guard():
     """Verify SpecGuard symbols are exported from root agentcontract package."""
     from agentcontract import (
@@ -246,3 +279,4 @@ def test_top_level_package_exports_guard():
     from agentcontract.guard.engine import SpecGuard, match_scope
     assert RootSpecGuard is SpecGuard
     assert RootMatchScope is match_scope
+

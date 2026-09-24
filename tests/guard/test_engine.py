@@ -35,6 +35,7 @@ def _make_constraint(
     status: ConstraintStatus = ConstraintStatus.ACTIVE,
     rule_effect: RuleEffect = RuleEffect.DENY,
     scope: ConstraintScope | None = None,
+    compliance_scope: ConstraintScope | None = None,
     source: ConstraintSource = ConstraintSource.USER,
 ) -> Constraint:
     return Constraint(
@@ -46,6 +47,7 @@ def _make_constraint(
         rule_effect=rule_effect,
         provenance=ConstraintProvenance(source=source),
         scope=scope or ConstraintScope(),
+        compliance_scope=compliance_scope,
     )
 
 
@@ -431,6 +433,47 @@ def test_scenario_10_selector_exact_match_behavior(empty_ledger: ConstraintLedge
     )
     assert guard.evaluate(a_missing_key).is_allowed is True
 
+    # BLOCKER 2: Typed mismatches (1 != "1", True != "True", True != 1) must NOT match
+    ledger_typed = ConstraintLedger()
+    ledger_typed.add(
+        _make_constraint(
+            cid="c-typed-port",
+            name="typed_int_port",
+            strength=ConstraintStrength.HARD,
+            rule_effect=RuleEffect.DENY,
+            scope=ConstraintScope(selectors={"port": 8080, "active": True}),
+        )
+    )
+    guard_typed = SpecGuard(ledger=ledger_typed)
+
+    # Exact typed match (int 8080, bool True) -> BLOCKED
+    a_exact_typed = Action(
+        action_kind=ActionKind.GENERIC,
+        context={"port": 8080, "active": True},
+    )
+    assert guard_typed.evaluate(a_exact_typed).is_blocked is True
+
+    # String "8080" instead of int 8080 -> NOT a match -> ALLOWED
+    a_str_port = Action(
+        action_kind=ActionKind.GENERIC,
+        context={"port": "8080", "active": True},
+    )
+    assert guard_typed.evaluate(a_str_port).is_allowed is True
+
+    # String "True" instead of bool True -> NOT a match -> ALLOWED
+    a_str_bool = Action(
+        action_kind=ActionKind.GENERIC,
+        context={"port": 8080, "active": "True"},
+    )
+    assert guard_typed.evaluate(a_str_bool).is_allowed is True
+
+    # Int 1 instead of bool True -> NOT a match -> ALLOWED
+    a_int_bool = Action(
+        action_kind=ActionKind.GENERIC,
+        context={"port": 8080, "active": 1},
+    )
+    assert guard_typed.evaluate(a_int_bool).is_allowed is True
+
 
 # --- Scenario 11: Decision contains matched constraint IDs ---
 
@@ -533,7 +576,7 @@ def test_scenario_13_trace_pointer_retained_in_decision(empty_ledger: Constraint
 # --- Scenario 14: Post-action observation detects a hard violation ---
 
 def test_scenario_14_post_action_observation_detects_hard_violation(empty_ledger: ConstraintLedger):
-    """Scenario 14: Post-action observation detects an unauthorized file write that was not declared in pre-action."""
+    """Scenario 14: Post-action observation detects unauthorized effects across both writes and reads."""
     ledger = empty_ledger
     ledger.add(
         _make_constraint(
@@ -541,7 +584,16 @@ def test_scenario_14_post_action_observation_detects_hard_violation(empty_ledger
             name="protect_hosts",
             strength=ConstraintStrength.HARD,
             rule_effect=RuleEffect.DENY,
-            scope=ConstraintScope(paths=["/etc/hosts", "etc/hosts"]),
+            scope=ConstraintScope(paths=["/etc/hosts", "etc/hosts"], actions=["write"]),
+        )
+    )
+    ledger.add(
+        _make_constraint(
+            cid="c-no-shadow-read",
+            name="protect_shadow_read",
+            strength=ConstraintStrength.HARD,
+            rule_effect=RuleEffect.DENY,
+            scope=ConstraintScope(paths=["/etc/shadow", "etc/shadow"], actions=["read"]),
         )
     )
 
@@ -557,7 +609,7 @@ def test_scenario_14_post_action_observation_detects_hard_violation(empty_ledger
     pre_decision = guard.evaluate(action)
     assert pre_decision.is_allowed is True
 
-    # Post-action execution actually wrote to /etc/hosts -> BLOCKED
+    # Post-action execution wrote to /etc/hosts -> BLOCKED
     observation = ActionObservation(
         tool_name="bash",
         changed_paths=["/etc/hosts"],
@@ -568,52 +620,109 @@ def test_scenario_14_post_action_observation_detects_hard_violation(empty_ledger
     assert post_decision.is_blocked is True
     assert "c-no-etc-hosts" in post_decision.violating_constraint_ids
 
+    # BLOCKER 3: Safe write and forbidden read in the same observation -> read violation MUST be detected
+    mixed_obs = ActionObservation(
+        tool_name="bash",
+        changed_paths=["tmp/safe_out.txt"],   # Safe write
+        accessed_paths=["/etc/shadow"],       # Forbidden read!
+        exit_code=0,
+    )
+    mixed_decision = guard.evaluate_post_action(action, mixed_obs)
+    assert mixed_decision.decision == DecisionKind.BLOCK
+    assert mixed_decision.is_blocked is True
+    assert "c-no-shadow-read" in mixed_decision.violating_constraint_ids
+    assert "BLOCK" in mixed_decision.reason
+
     # evaluate_observation directly also detects it
-    obs_direct = guard.evaluate_observation(observation)
+    obs_direct = guard.evaluate_observation(mixed_obs)
     assert obs_direct.is_blocked is True
-    assert "c-no-etc-hosts" in obs_direct.violating_constraint_ids
+    assert "c-no-shadow-read" in obs_direct.violating_constraint_ids
 
 
 # --- Additional Scenario: RuleEffect.PREFER and RuleEffect.REQUIRE ---
 
 def test_rule_effect_prefer_and_require_semantics(empty_ledger: ConstraintLedger):
-    """Verify RuleEffect.PREFER produces WARN and RuleEffect.REQUIRE produces BLOCK when triggered."""
+    """Verify RuleEffect.REQUIRE and RuleEffect.PREFER compliance vs applicability semantics."""
     ledger = empty_ledger
 
-    # PREFER constraint produces WARN even when declared with HARD strength
+    # REQUIRE rule: file writes REQUIRE paths to be within sandbox/
     ledger.add(
         _make_constraint(
-            cid="c-prefer-type",
-            name="prefer_pydantic",
+            cid="c-require-sandbox",
+            name="require_sandbox_writes",
             strength=ConstraintStrength.HARD,
-            rule_effect=RuleEffect.PREFER,
-            scope=ConstraintScope(paths=["models.py"]),
+            rule_effect=RuleEffect.REQUIRE,
+            scope=ConstraintScope(actions=["write"]),
+            compliance_scope=ConstraintScope(paths=["sandbox/"]),
         )
     )
 
-    # REQUIRE constraint produces BLOCK when triggered
+    # PREFER rule: actions on sandbox/src/ PREFER using black_formatter
     ledger.add(
         _make_constraint(
-            cid="c-require-audit",
-            name="require_audit",
+            cid="c-prefer-black",
+            name="prefer_black_formatting",
             strength=ConstraintStrength.HARD,
-            rule_effect=RuleEffect.REQUIRE,
-            scope=ConstraintScope(tools=["rm"]),
+            rule_effect=RuleEffect.PREFER,
+            scope=ConstraintScope(paths=["sandbox/src/"]),
+            compliance_scope=ConstraintScope(tools=["black_formatter"]),
         )
     )
 
     guard = SpecGuard(ledger=ledger)
 
-    # Action matches PREFER -> WARN
-    a_pref = Action(action_kind=ActionKind.FILE_WRITE, target_path="models.py")
-    d_pref = guard.evaluate(a_pref)
-    assert d_pref.decision == DecisionKind.WARN
-    assert "c-prefer-type" in d_pref.violating_constraint_ids
-    assert "PREFER" in d_pref.reason
+    # REQUIRE Case 1: Write within sandbox/ satisfies compliance -> ALLOWED
+    a_req_ok = Action(action_kind=ActionKind.FILE_WRITE, target_path="sandbox/main.py")
+    d_req_ok = guard.evaluate(a_req_ok)
+    assert d_req_ok.decision == DecisionKind.ALLOW
+    assert d_req_ok.is_allowed is True
+    assert "c-require-sandbox" in d_req_ok.matched_constraint_ids
+    assert len(d_req_ok.violating_constraint_ids) == 0
 
-    # Action matches REQUIRE -> BLOCK
-    a_req = Action(action_kind=ActionKind.COMMAND_EXEC, tool_name="rm")
-    d_req = guard.evaluate(a_req)
-    assert d_req.decision == DecisionKind.BLOCK
-    assert "c-require-audit" in d_req.violating_constraint_ids
-    assert "REQUIRE" in d_req.reason
+    # REQUIRE Case 2: Write outside sandbox/ violates compliance -> BLOCKED
+    a_req_bad = Action(action_kind=ActionKind.FILE_WRITE, target_path="src/sensitive.py")
+    d_req_bad = guard.evaluate(a_req_bad)
+    assert d_req_bad.decision == DecisionKind.BLOCK
+    assert d_req_bad.is_blocked is True
+    assert "c-require-sandbox" in d_req_bad.violating_constraint_ids
+    assert "does not satisfy compliance scope" in d_req_bad.reason
+
+    # REQUIRE Case 3: Read outside sandbox/ does not trigger write applicability -> ALLOWED
+    a_req_read = Action(action_kind=ActionKind.FILE_READ, target_path="src/sensitive.py")
+    d_req_read = guard.evaluate(a_req_read)
+    # Does not match applicability scope
+    assert "c-require-sandbox" not in d_req_read.matched_constraint_ids
+
+    # PREFER Case 1: Action on src/ uses black_formatter -> preferred condition met -> ALLOWED (no warning)
+    a_pref_ok = Action(
+        action_kind=ActionKind.FILE_WRITE,
+        target_path="sandbox/src/file.py",
+        paths=["sandbox/src/file.py"],
+        tool_name="black_formatter",
+    )
+    d_pref_ok = guard.evaluate(a_pref_ok)
+    # Should not warn for c-prefer-black
+    assert "c-prefer-black" not in d_pref_ok.violating_constraint_ids
+
+    # PREFER Case 2: Action on src/ uses other tool -> preferred condition not met -> WARN
+    a_pref_warn = Action(
+        action_kind=ActionKind.FILE_WRITE,
+        target_path="sandbox/src/file.py",
+        paths=["sandbox/src/file.py"],
+        tool_name="nano",
+    )
+    d_pref_warn = guard.evaluate(a_pref_warn)
+    assert d_pref_warn.decision == DecisionKind.WARN
+    assert "c-prefer-black" in d_pref_warn.violating_constraint_ids
+    assert "deviates from preferred condition" in d_pref_warn.reason
+
+    # PREFER Case 3: Action outside src/ does not trigger preference rule -> ALLOWED
+    a_pref_other = Action(
+        action_kind=ActionKind.FILE_WRITE,
+        target_path="sandbox/docs/readme.md",
+        paths=["sandbox/docs/readme.md"],
+        tool_name="nano",
+    )
+    d_pref_other = guard.evaluate(a_pref_other)
+    assert "c-prefer-black" not in d_pref_other.matched_constraint_ids
+

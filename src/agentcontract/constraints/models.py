@@ -149,10 +149,6 @@ class ConstraintScope(BaseModel):
         default_factory=FrozenDict,
         description="Extensible structured criteria for domain-specific matching.",
     )
-    rule_effect: RuleEffect | None = Field(
-        default=None,
-        description="Optional rule enforcement effect overriding or specifying scope effect.",
-    )
     description: str | None = Field(
         default=None,
         description="Human-readable summary of the constraint scope.",
@@ -229,7 +225,11 @@ class Constraint(BaseModel):
     )
     scope: ConstraintScope = Field(
         default_factory=ConstraintScope,
-        description="Target selectors and execution boundaries.",
+        description="Target selectors and execution boundaries defining when this constraint applies.",
+    )
+    compliance_scope: ConstraintScope | None = Field(
+        default=None,
+        description="Required or preferred target selectors defining compliance condition for REQUIRE and PREFER rules.",
     )
     relations: ConstraintRelation = Field(
         default_factory=ConstraintRelation,
@@ -288,9 +288,7 @@ class Constraint(BaseModel):
 
     @property
     def effective_rule_effect(self) -> RuleEffect:
-        """Return effective rule effect: scope-level override takes precedence over constraint-level default."""
-        if self.scope.rule_effect is not None:
-            return self.scope.rule_effect
+        """Return the authoritative rule effect."""
         return self.rule_effect
 
     @property

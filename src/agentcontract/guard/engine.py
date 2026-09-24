@@ -31,6 +31,34 @@ def _normalize_path_str(p: str) -> str:
     return norm
 
 
+def _exact_value_equal(v1: Any, v2: Any) -> bool:
+    """Exact value matching preserving type semantics (e.g. 1 != '1', True != 1, True != 'True')."""
+    # In Python, bool is a subclass of int (True == 1), so explicitly prohibit bool vs non-bool equality
+    if isinstance(v1, bool) or isinstance(v2, bool):
+        if not (isinstance(v1, bool) and isinstance(v2, bool)):
+            return False
+        return v1 is v2
+
+    # Distinct scalar types (e.g. int vs str, float vs str) must not be equal
+    if type(v1) is not type(v2):
+        if isinstance(v1, (int, float)) and isinstance(v2, (int, float)):
+            return v1 == v2
+        return False
+
+    return v1 == v2
+
+
+def _dedup_ordered(items: Iterable[str]) -> tuple[str, ...]:
+    """Deduplicate strings while preserving deterministic encounter order."""
+    seen: set[str] = set()
+    res: list[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            res.append(item)
+    return tuple(res)
+
+
 def match_scope(scope: ConstraintScope, action: Action) -> bool:
     """Deterministically check if an action matches all populated dimensions of a constraint scope.
 
@@ -40,7 +68,7 @@ def match_scope(scope: ConstraintScope, action: Action) -> bool:
     - Populated tools must contain action.tool_name (case-insensitive).
     - Populated actions must contain action.action_kind or action.operation.
     - Populated paths must match at least one path in action.paths (exact, directory prefix, or glob).
-    - Populated selectors must match exact key/value pairs in action.context or action.payload.
+    - Populated selectors must match exact typed key/value pairs in action.context or action.payload.
     """
     # 1. Target Type dimension
     if scope.target_type is not None and scope.target_type.strip():
@@ -133,7 +161,7 @@ def match_scope(scope: ConstraintScope, action: Action) -> bool:
         if not matched_any_path:
             return False
 
-    # 5. Selectors dimension (exact key-value match)
+    # 5. Selectors dimension (exact typed key-value match)
     if scope.selectors:
         action_dict: dict[str, Any] = dict(action.context)
         if isinstance(action.payload, Mapping):
@@ -142,7 +170,8 @@ def match_scope(scope: ConstraintScope, action: Action) -> bool:
         for sel_k, sel_v in scope.selectors.items():
             if sel_k not in action_dict:
                 return False
-            if str(action_dict[sel_k]).strip() != str(sel_v).strip():
+            # Truly exact typed comparison: 1 != "1", True != "True", True != 1
+            if not _exact_value_equal(action_dict[sel_k], sel_v):
                 return False
 
     return True
@@ -186,10 +215,16 @@ class SpecGuard:
         """Evaluate a proposed action against active constraints (pre-action validation).
 
         Precedence: BLOCK > WARN > ALLOW.
-        - HARD constraint violation -> BLOCK
-        - SOFT constraint violation -> WARN
-        - ASSUMPTION violation -> WARN (assumptions never independently BLOCK)
-        - PREFER rule effect -> WARN
+        Rule semantics:
+        - DENY: if applicability scope matches -> violation.
+        - REQUIRE: if applicability matches and compliance_scope does NOT match -> violation.
+                   if compliance_scope matches -> compliant (no violation).
+        - PREFER: if applicability matches and compliance_scope does NOT match -> WARN.
+                  if compliance_scope matches -> compliant (no warning).
+        - Authority levels:
+          - HARD violation -> BLOCK
+          - SOFT violation -> WARN
+          - ASSUMPTION violation -> WARN (assumptions never independently BLOCK)
         - Unknown/unmatched constraints -> ALLOW
         """
         active_constraints = self._resolve_active_constraints(ledger)
@@ -201,14 +236,15 @@ class SpecGuard:
         highest_decision: DecisionKind = DecisionKind.ALLOW
 
         for c in active_constraints:
+            # 1. Applicability check: does this constraint apply to the action?
             if not match_scope(c.scope, action):
                 continue
 
             matched_ids.append(c.id)
-            effect = c.effective_rule_effect
+            effect = c.rule_effect
 
             if effect == RuleEffect.DENY:
-                # Prohibited action matched
+                # Prohibited scope matched -> violation
                 if c.strength == ConstraintStrength.HARD:
                     violating_ids.append(c.id)
                     reasons.append(
@@ -232,26 +268,43 @@ class SpecGuard:
                     if highest_decision != DecisionKind.BLOCK:
                         highest_decision = DecisionKind.WARN
 
-            elif effect == RuleEffect.PREFER:
-                # Advisory preference deviation
-                violating_ids.append(c.id)
-                reasons.append(
-                    f"WARN: Action deviates from PREFER constraint '{c.id}' ({c.name}): {c.description}"
-                )
-                if highest_decision != DecisionKind.BLOCK:
-                    highest_decision = DecisionKind.WARN
-
             elif effect == RuleEffect.REQUIRE:
-                # Requirement rule: matching scope defines the domain where compliance is required
-                violating_ids.append(c.id)
-                if c.strength == ConstraintStrength.HARD:
+                # REQUIRE: if compliance_scope is not satisfied -> violation.
+                # If compliance_scope matches -> compliant, no violation!
+                is_compliant = (
+                    match_scope(c.compliance_scope, action)
+                    if c.compliance_scope is not None
+                    else True
+                )
+                if not is_compliant:
+                    violating_ids.append(c.id)
+                    if c.strength == ConstraintStrength.HARD:
+                        reasons.append(
+                            f"BLOCK: Action triggers REQUIRE constraint '{c.id}' ({c.name}) "
+                            f"but does not satisfy compliance scope: {c.description}"
+                        )
+                        highest_decision = DecisionKind.BLOCK
+                    else:
+                        reasons.append(
+                            f"WARN: Action triggers REQUIRE constraint '{c.id}' ({c.name}) "
+                            f"but does not satisfy compliance scope: {c.description}"
+                        )
+                        if highest_decision != DecisionKind.BLOCK:
+                            highest_decision = DecisionKind.WARN
+
+            elif effect == RuleEffect.PREFER:
+                # PREFER: if preferred/compliance scope is not met -> WARN.
+                # If preferred condition matches -> compliant, no warning!
+                is_preferred = (
+                    match_scope(c.compliance_scope, action)
+                    if c.compliance_scope is not None
+                    else True
+                )
+                if not is_preferred:
+                    violating_ids.append(c.id)
                     reasons.append(
-                        f"BLOCK: Action triggers REQUIRE constraint '{c.id}' ({c.name}): {c.description}"
-                    )
-                    highest_decision = DecisionKind.BLOCK
-                else:
-                    reasons.append(
-                        f"WARN: Action triggers REQUIRE constraint '{c.id}' ({c.name}): {c.description}"
+                        f"WARN: Action triggers PREFER constraint '{c.id}' ({c.name}) "
+                        f"but deviates from preferred condition: {c.description}"
                     )
                     if highest_decision != DecisionKind.BLOCK:
                         highest_decision = DecisionKind.WARN
@@ -262,9 +315,9 @@ class SpecGuard:
         return GuardDecision(
             decision=highest_decision,
             action=action,
-            matched_constraint_ids=tuple(matched_ids),
-            violating_constraint_ids=tuple(violating_ids),
-            reasons=tuple(reasons),
+            matched_constraint_ids=_dedup_ordered(matched_ids),
+            violating_constraint_ids=_dedup_ordered(violating_ids),
+            reasons=_dedup_ordered(reasons),
             trace_pointer=pointer,
         )
 
@@ -275,33 +328,114 @@ class SpecGuard:
         ledger: ConstraintLedger | Iterable[Constraint] | None = None,
         trace_pointer: TracePointer | None = None,
     ) -> GuardDecision:
-        """Validate observed runtime effects against active constraints (post-action validation).
+        """Validate all observed runtime effects against active constraints (post-action validation).
 
-        Synthesizes an observed action using actual executed paths, tool, and outcome,
-        detecting any post-execution constraint violations (e.g. unexpected path writes).
+        Evaluates:
+        1. All changed paths as FILE_WRITE observations.
+        2. All accessed paths as FILE_READ observations.
+        3. The general action execution effect (tool, action kind, payload).
+        Aggregates results deterministically with BLOCK > WARN > ALLOW.
         """
         pointer = trace_pointer or observation.trace_pointer or action.trace_pointer
-
-        # Determine effective observed paths
-        observed_paths = observation.changed_paths or observation.accessed_paths or action.paths
-
-        # Determine effective context
         effective_context = dict(action.context)
         effective_context.update(dict(observation.context))
 
-        observed_action = Action(
+        sub_decisions: list[GuardDecision] = []
+
+        # 1. Evaluate changed paths as FILE_WRITE observations
+        if observation.changed_paths:
+            write_action = Action(
+                action_kind=ActionKind.FILE_WRITE,
+                tool_name=observation.tool_name or action.tool_name,
+                target_type=observation.target_type or action.target_type or "filesystem",
+                target_path=observation.changed_paths[0],
+                paths=observation.changed_paths,
+                operation="write",
+                payload=observation.output if observation.output is not None else action.payload,
+                context=FrozenDict(effective_context),
+                trace_pointer=pointer,
+            )
+            sub_decisions.append(self.evaluate(write_action, ledger=ledger, trace_pointer=pointer))
+
+        # 2. Evaluate accessed paths as FILE_READ observations
+        if observation.accessed_paths:
+            read_action = Action(
+                action_kind=ActionKind.FILE_READ,
+                tool_name=observation.tool_name or action.tool_name,
+                target_type=observation.target_type or action.target_type or "filesystem",
+                target_path=observation.accessed_paths[0],
+                paths=observation.accessed_paths,
+                operation="read",
+                payload=observation.output if observation.output is not None else action.payload,
+                context=FrozenDict(effective_context),
+                trace_pointer=pointer,
+            )
+            sub_decisions.append(self.evaluate(read_action, ledger=ledger, trace_pointer=pointer))
+
+        # 3. Evaluate general tool execution / action kind effect
+        general_paths = observation.changed_paths + observation.accessed_paths
+        if not general_paths:
+            general_paths = action.paths
+
+        general_action = Action(
             action_kind=observation.action_kind or action.action_kind,
             tool_name=observation.tool_name or action.tool_name,
             target_type=observation.target_type or action.target_type,
-            target_path=observed_paths[0] if observed_paths else action.target_path,
-            paths=observed_paths,
+            target_path=general_paths[0] if general_paths else action.target_path,
+            paths=general_paths,
             operation=action.operation,
             payload=observation.output if observation.output is not None else action.payload,
             context=FrozenDict(effective_context),
             trace_pointer=pointer,
         )
+        sub_decisions.append(self.evaluate(general_action, ledger=ledger, trace_pointer=pointer))
 
-        return self.evaluate(observed_action, ledger=ledger, trace_pointer=pointer)
+        # Deterministically aggregate all sub-decisions
+        return self._aggregate_decisions(
+            action=general_action,
+            decisions=sub_decisions,
+            trace_pointer=pointer,
+        )
+
+    def _aggregate_decisions(
+        self,
+        action: Action,
+        decisions: list[GuardDecision],
+        trace_pointer: TracePointer | None = None,
+    ) -> GuardDecision:
+        """Deterministically aggregate multiple decisions with BLOCK > WARN > ALLOW precedence."""
+        highest_decision = DecisionKind.ALLOW
+        all_matched: list[str] = []
+        all_violating: list[str] = []
+        all_reasons: list[str] = []
+
+        for d in decisions:
+            if d.decision == DecisionKind.BLOCK:
+                highest_decision = DecisionKind.BLOCK
+            elif d.decision == DecisionKind.WARN and highest_decision != DecisionKind.BLOCK:
+                highest_decision = DecisionKind.WARN
+
+            all_matched.extend(d.matched_constraint_ids)
+            all_violating.extend(d.violating_constraint_ids)
+            all_reasons.extend(d.reasons)
+
+        dedup_matched = _dedup_ordered(all_matched)
+        dedup_violating = _dedup_ordered(all_violating)
+
+        if dedup_violating:
+            filtered_reasons = [r for r in all_reasons if not r.startswith("Action allowed:")]
+        else:
+            filtered_reasons = all_reasons or ["Action allowed: no active constraints violated."]
+        dedup_reasons = _dedup_ordered(filtered_reasons)
+
+        return GuardDecision(
+            decision=highest_decision,
+            action=action,
+            matched_constraint_ids=dedup_matched,
+            violating_constraint_ids=dedup_violating,
+            reasons=dedup_reasons,
+            trace_pointer=trace_pointer,
+        )
 
     def evaluate_observation(
         self,
@@ -314,7 +448,6 @@ class SpecGuard:
         effective_action = action or Action(
             action_kind=observation.action_kind or ActionKind.GENERIC,
             tool_name=observation.tool_name,
-            paths=observation.changed_paths or observation.accessed_paths,
             target_type=observation.target_type,
             payload=observation.output,
             context=observation.context,
