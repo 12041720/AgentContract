@@ -4,7 +4,7 @@
 **Milestone:** M1 — Executable contract core  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-003-specguard`  
-**Main-agent review:** changes requested
+**Main-agent review:** second-round changes requested
 
 ## Objective
 
@@ -263,111 +263,84 @@ Do not install another Python interpreter for compatibility testing.
 
 > Main agent only.
 
-**Verdict:** CHANGES_REQUESTED
+**Verdict:** CHANGES_REQUESTED — ROUND 2 (NARROW SEMANTICS FIX)
 
-**Reviewed implementation:** `033eed532a47a9d735b2ea7e3aa4008e4cb5797d`
+**Reviewed branch head:** `9146c0e98e5446762c635252f0bf064e7eea62e9`
 
-**Accepted foundation:**
-- Action / ActionObservation / GuardDecision models are a good vendor-neutral base.
-- ACTIVE-only enforcement and BLOCK > WARN > ALLOW aggregation are correctly structured.
-- HARD/SOFT/ASSUMPTION authority handling for DENY rules is appropriate.
-- TracePointer provenance, serialization, tool/action/path matching, and pre/post APIs are in place.
-- Executor reports 99/99 tests passing on local Python 3.12.9.
+**Round-1 fixes verified:**
+- REQUIRE/PREFER now distinguish applicability from compliance.
+- `Constraint.rule_effect` is the single policy-effect source.
+- changed/accessed post-action effects are evaluated separately and aggregated.
+- unordered set/frozenset inputs are rejected for order-sensitive fields.
+- executor reports 100/100 tests passing on local Python 3.12.9.
 
-### BLOCKER 1 — REQUIRE / PREFER semantics are inverted
+### BLOCKER 1 — "exact typed" selector equality is still not exact
 
-Current behavior treats a matching REQUIRE as a violation and a matching PREFER as a warning:
-
-```text
-matches REQUIRE scope -> BLOCK
-matches PREFER scope  -> WARN
-```
-
-But matching the required/preferred condition means the action is compliant. The current engine therefore punishes actions for satisfying the rule.
-
-A single scope also cannot express both:
-- **when** a rule applies; and
-- **what** must/preferably be true.
-
-**Required fix:**
-Use explicit applicability vs compliance semantics. A recommended narrow design:
-
-```text
-Constraint.scope             = applicability / "when"
-Constraint.compliance_scope  = required or preferred condition
-Constraint.rule_effect       = DENY | REQUIRE | PREFER
-```
-
-Semantics:
-
-- `DENY`: if applicability scope matches -> violation.
-- `REQUIRE`: if applicability matches **and compliance_scope does not match** -> violation.
-- `REQUIRE`: if compliance_scope matches -> compliant, no violation.
-- `PREFER`: if applicability matches **and preferred/compliance scope does not match** -> WARN.
-- `PREFER`: if preferred condition matches -> no warning.
-
-Use an equivalent typed design if cleaner, but do not infer compliance from description text.
-
-Keep one authoritative `rule_effect` location. The newly-added `ConstraintScope.rule_effect` override mixes selector data with policy semantics and should be removed unless there is a concrete need for two independent effect sources.
-
-Add tests demonstrating both compliant and violating REQUIRE/PREFER cases.
-
-### BLOCKER 2 — selector "exact match" is not exact
-
-Current code compares:
+Current `_exact_value_equal()` intentionally treats different numeric types as equal:
 
 ```python
-str(action_value).strip() == str(selector_value).strip()
+if type(v1) is not type(v2):
+    if isinstance(v1, (int, float)) and isinstance(v2, (int, float)):
+        return v1 == v2
 ```
 
-This makes different typed values equivalent, for example `1` and `"1"`, or `True` and `"True"`.
-
-TASK-003 requires exact key/value matching.
-
-**Required fix:**
-- Compare normalized durable values directly, preserving type semantics.
-- `1 != "1"`, `True != "True"`.
-- Add regression tests for typed mismatches.
-
-### BLOCKER 3 — post-action validation can silently discard observed effects
-
-Current code selects:
+Therefore:
 
 ```python
-changed_paths or accessed_paths or action.paths
+_exact_value_equal(1, 1.0) is True
 ```
 
-If both `changed_paths` and `accessed_paths` are present, one entire class of observed effects is discarded.
+This contradicts the stated exact typed semantics.
 
-Example:
-- safe file changed;
-- forbidden secret file read;
-- because `changed_paths` is non-empty, the forbidden read is never evaluated.
+The implementation also does not recursively enforce type identity. When two FrozenDict/tuple values have the same outer type, it falls through to Python `==`, so nested values such as `{"x": 1}` and `{"x": 1.0}` can still compare equal.
 
 **Required fix:**
-- Validate all observed effects, not only the first non-empty category.
-- Preserve action/effect semantics sufficiently to distinguish writes from reads.
-- Recommended: evaluate changed paths as FILE_WRITE observations and accessed paths as FILE_READ observations, plus any explicit observed action/tool effect, then aggregate decisions deterministically with BLOCK > WARN > ALLOW.
-- Add a regression test where a safe write and forbidden read occur in the same observation; result must detect the read violation.
+- exact means exact: different durable value types must not compare equal;
+- `1 != 1.0`;
+- recursively compare FrozenDict/mappings and tuples element-by-element with the same exact typed rule;
+- keep bool distinct from int;
+- add tests for scalar int-vs-float and nested mapping/tuple typed mismatches.
 
-### BLOCKER 4 — unordered inputs undermine deterministic decisions
+### BLOCKER 2 — REQUIRE/PREFER without compliance_scope silently become no-op
 
-`Action.paths`, `ActionObservation` paths, and `GuardDecision` ID/reason tuple validators currently accept `set/frozenset` and convert iteration order directly to tuple.
+Current semantics use:
 
-That can make target_path selection, reasons, and serialized decisions nondeterministic across runs.
+```python
+... if c.compliance_scope is not None else True
+```
+
+So a malformed:
+
+```python
+Constraint(rule_effect=REQUIRE, compliance_scope=None)
+```
+
+is always considered compliant. PREFER behaves the same way.
+
+That turns a configuration error into silent ALLOW, which is unsafe and makes rule semantics ambiguous.
 
 **Required fix:**
-- For order-sensitive fields, reject unordered set/frozenset inputs, or normalize them with an explicitly documented deterministic ordering.
-- Prefer rejecting sets for paths/reasons and using ordered sequences.
-- Add regression tests.
+- enforce at the Constraint model boundary that `REQUIRE` and `PREFER` require a non-None `compliance_scope`;
+- `DENY` does not require one;
+- keep backward compatibility for pre-TASK-003 constraints because their default effect is DENY;
+- add model/serialization tests for this invariant.
+
+### REPORT ACCURACY
+
+The Executor Report lists commit `b9b4c05`, but that SHA is not present on the remote branch. The actual remote branch head containing the fixes is:
+
+```text
+9146c0e98e5446762c635252f0bf064e7eea62e9
+```
+
+Update the Executor Report with the actual pushed commit SHA on resubmission.
 
 **Required re-check:**
 - local Python 3.12.9 only;
 - `python --version`;
 - `python -m pytest -v`;
-- existing TASK-001 and TASK-002 tests remain green;
-- update Executor Report with exact result and commit SHA.
+- all TASK-001/TASK-002 tests remain green.
 
 **Next instruction:**
-Fix these issues on `task/TASK-003-specguard`. Do not start TASK-004.
+Apply these two narrow fixes on `task/TASK-003-specguard`. Do not start TASK-004.
 
