@@ -12,12 +12,12 @@
 
 ## Current active task
 
-- Task: **TASK-002 — Unified trace and provenance model**
-- Task file: `.agent/tasks/TASK-002.md`
-- Work branch: `task/TASK-002-trace-model`
-- Status: **CHANGES_REQUESTED**
+- Task: **TASK-003 — SpecGuard pre/post action validation engine**
+- Task file: `.agent/tasks/TASK-003.md`
+- Work branch: `task/TASK-003-specguard`
+- Status: **READY_FOR_EXECUTOR**
 - Owner: Execution agent
-- Main-agent review: TASK-002 second-round narrow durability fix requested after review of `9f60435eb74a86c2811accc2c57440381ffab9aa`
+- Main-agent review: TASK-002 accepted and integrated; TASK-003 ready for execution
 
 ## Main-agent checkpoint
 
@@ -25,7 +25,8 @@
 - Persistent main-agent/executor protocol established.
 - High-level architecture fixed for v0.1.
 - TASK-001 accepted after final hardening and integrated to `main` as `48a7ae1cc07025a400b11804c298c2970cfc5107`.
-- TASK-002 round-2 implementation fixed provenance/output mutability blockers; one final durable-value round-trip/type-contract issue remains.
+- TASK-002 accepted and integrated to `main` as `2c71b2509dc82a95a2c3ce298602811f549ac1ff`.
+- TASK-003 task contract has been created and is now active.
 
 ## Current design decisions
 
@@ -39,7 +40,7 @@
 
 ## Review gate
 
-The main agent will not activate TASK-003 until TASK-002 satisfies its acceptance criteria and is reviewed.
+The main agent will not activate TASK-004 until TASK-003 satisfies its acceptance criteria and is reviewed.
 
 ## Resume instructions for the main agent
 
