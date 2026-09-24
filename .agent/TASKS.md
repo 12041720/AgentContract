@@ -5,8 +5,8 @@ Status values: `PLANNED`, `READY_FOR_EXECUTOR`, `IN_PROGRESS`, `READY_FOR_REVIEW
 | Task | Title | Status | Depends on |
 |---|---|---|---|
 | TASK-001 | Core domain model and Constraint Ledger | ACCEPTED | — |
-| TASK-002 | Unified trace and provenance model | CHANGES_REQUESTED | TASK-001 |
-| TASK-003 | SpecGuard pre/post action validation engine | PLANNED | TASK-001, TASK-002 |
+| TASK-002 | Unified trace and provenance model | ACCEPTED | TASK-001 |
+| TASK-003 | SpecGuard pre/post action validation engine | READY_FOR_EXECUTOR | TASK-001, TASK-002 |
 | TASK-004 | Claims, evidence graph, and deterministic EvidenceGate | PLANNED | TASK-002 |
 | TASK-005 | Agent/tool runtime wrapper and end-to-end demo | PLANNED | TASK-003, TASK-004 |
 | TASK-006 | LLM-assisted requirement/claim extraction adapters | PLANNED | TASK-001, TASK-004 |
