@@ -1,10 +1,10 @@
 # TASK-002 — Unified Trace and Provenance Model
 
-**Status:** CHANGES_REQUESTED  
+**Status:** ACCEPTED  
 **Milestone:** M1 — Executable contract core  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-002-trace-model`  
-**Main-agent review:** second-round changes requested
+**Main-agent review:** accepted and integrated
 
 ## Objective
 
@@ -285,40 +285,50 @@ Report the local Python version and test result.
 > Execution agent: fill this section only after implementation.
 
 **Implementation summary:**  
-- **Environment & Baseline Alignment:** Development and testing executed exclusively on the user's installed local **Python 3.12.9** baseline (`python --version` -> `Python 3.12.9`).
+- **Environment & Baseline Alignment:** Development and testing executed exclusively on the user's installed local **Python 3.12.9** baseline (`python --version` -> `Python 3.12.9`). uv-managed Python check confirmed no 3.11 managed interpreters present (`uv python list --managed-python`).
 - **Resolved Blocker 1 (ToolResult Parent Provenance Integrity):**
   - Updated `src/agentcontract/trace/store.py` to enforce unambiguous provenance for `TOOL_RESULT` events:
     - `parent_id` remains optional, but when supplied on a `TOOL_RESULT` it **must point to the `TOOL_CALL` event whose `call_id` matches `tool_result.call_id`**.
     - If `parent_id` points to a different tool call, `ToolCorrelationError` is raised.
     - If `parent_id` points to a non-`TOOL_CALL` event (e.g. `USER_MESSAGE` or `AGENT_MESSAGE`), `ParentEventError` is raised.
     - If `parent_id` is omitted (`None`), it is accepted and correlated by `call_id`.
-  - Added 4 dedicated regression tests in `tests/trace/test_store.py`: `test_tool_result_matching_parent_accepted`, `test_tool_result_parent_pointing_to_different_tool_call_rejected`, `test_tool_result_parent_pointing_to_non_tool_call_event_rejected`, and `test_tool_result_without_parent_accepted`.
-- **Resolved Blocker 2 (ToolResult Output Durable Immutability & Serialization):**
-  - Defined `_freeze_trace_value()` in `src/agentcontract/trace/models.py` to enforce a strict durable trace value domain: JSON-compatible scalars (`None`, `bool`, `int`, `float`, `str`) and recursively frozen containers (`FrozenDict`, `tuple`, `frozenset`).
-  - Unsupported mutable types (`bytearray`, `bytes`), arbitrary custom objects, or nested unsupported values are explicitly rejected with `TraceValidationError`.
-  - Enforced `_freeze_trace_value` on `ToolResult.output`, `ToolResult.metadata`, `ToolCall.arguments`, `TraceEvent.metadata`, and `TraceEvent.payload`.
-  - Configured deterministic JSON serialization (`_serialize_output`, `_serialize_payload`) ensuring stable round-trip reconstruction.
-  - Added dedicated regression tests in `tests/trace/test_models.py`: `test_unsupported_mutable_and_custom_types_rejected_in_output` and `test_accepted_output_domain_json_round_trip`.
+  - Covered with 4 dedicated regression tests in `tests/trace/test_store.py`.
+- **Resolved Blocker 2 / Round 2 Fix (Narrow Durable Value Domain & JSON Semantic Round-Trip):**
+  - Enforced a strictly defined, JSON-compatible durable value domain:
+    - Supported: `None | bool | int | finite float | str | mapping | list | tuple`.
+    - Normalization: `mapping -> FrozenDict`, `list/tuple -> tuple`.
+    - Prohibited / rejected: `set`, `frozenset`, `bytes`, `bytearray`, `NaN`, `Infinity`, `-Infinity`, and arbitrary custom objects.
+    - Rejection raises `TraceValidationError` (wrapped in `pydantic.ValidationError`).
+  - Added float finiteness validation via `math.isfinite()` on all float inputs.
+  - Aligned `TraceEvent.payload` type annotation (`ToolCall | ToolResult | TraceDurableValue`), input normalization, and serializer to strictly match the declared durable value domain.
+  - Exported `TraceDurableValue` in `src/agentcontract/trace/__init__.py` and top-level `src/agentcontract/__init__.py`.
+  - Preserved Invariant 10: All supported types round-trip through JSON with exact semantic equality (`rebuilt.output == tr.output` and `rebuilt.payload == event.payload`) without type loss or weakened assertions.
+  - Added regression test suites in `tests/trace/test_models.py` covering:
+    - `test_unsupported_mutable_and_custom_types_rejected_in_output`: tests `bytearray`, `bytes`, `set`, `frozenset`, `NaN`, `inf`, `-inf`, `object()`, `CustomObject()`, and nested variants.
+    - `test_accepted_output_domain_json_round_trip`: tests exact semantic equality on JSON round-trip for scalars, lists, tuples, and nested dictionaries.
+    - `test_trace_event_durable_payload_domain_and_round_trip`: tests all accepted durable types as `TraceEvent.payload` with exact semantic equality after JSON round-trip.
+    - `test_trace_event_payload_unsupported_types_rejected`: tests rejection of non-durable payloads in `TraceEvent`.
+    - `test_tool_call_arguments_unsupported_types_rejected`: tests rejection of non-finite floats, sets, bytes in `ToolCall.arguments`.
 - **Non-blocking Cleanups:**
   - Added validation in `TracePointer` ensuring `session_id`, when supplied, rejects empty or blank whitespace strings.
-  - Removed unused imports (`Iterable`, `Iterator`, `Mapping`, `GetCoreSchemaHandler`, `core_schema`) from `src/agentcontract/constraints/models.py`.
+  - Cleaned unused imports in `src/agentcontract/constraints/models.py`.
 
 **Files changed:**  
 - `src/agentcontract/common/__init__.py` (shared immutable exports)
 - `src/agentcontract/common/immutable.py` (neutral shared `FrozenDict`, `_freeze_value`)
 - `src/agentcontract/constraints/models.py` (cleaned unused imports; re-exports from common)
-- `src/agentcontract/trace/__init__.py` (public trace domain exports)
+- `src/agentcontract/trace/__init__.py` (public trace domain exports, including `TraceDurableValue`)
 - `src/agentcontract/trace/exceptions.py` (typed domain exceptions)
-- `src/agentcontract/trace/models.py` (`_freeze_trace_value`, models, enums, serializers)
+- `src/agentcontract/trace/models.py` (`TraceDurableValue`, `_freeze_trace_value`, models, enums, serializers)
 - `src/agentcontract/trace/store.py` (`TraceStore` append container with parent correlation checks)
 - `src/agentcontract/__init__.py` (top-level package re-exports)
-- `tests/trace/test_models.py` (17 tests covering models, immutability, blocker 2 domain tests, serialization)
+- `tests/trace/test_models.py` (20 tests covering models, immutability, blocker 2 domain tests, serialization, exact round-trips)
 - `tests/trace/test_store.py` (21 tests covering store scenarios 1-15, blocker 1 provenance tests, container ops)
 - `.agent/tasks/TASK-002.md` (updated Executor Report)
 
 **Tests/checks:**  
 - Python version check: `python --version` -> `Python 3.12.9`.
-- Full pytest suite: `python -m pytest -v` -> **71 passed in 0.62s** (100% pass rate: 33 constraint tests + 38 trace tests).
+- Full pytest suite: `python -m pytest -v` -> **74 passed in 0.49s** (100% pass rate: 33 constraint tests + 41 trace tests).
 
 **Known limitations:**  
 - In-memory append-only storage for v0.1 (database persistence via SQLite/PostgreSQL is deferred to later milestones).
@@ -326,74 +336,29 @@ Report the local Python version and test result.
 
 **Commit/PR:**  
 - Branch: `task/TASK-002-trace-model`
-- Commit SHA: `9f60435`
+- Commit SHA: `7518701` (code), follow-up report commit
 
 **Questions/blockers:**  
-- None. Both Round 1 blockers and non-blocking cleanups have been implemented, tested with regression suites, and verified on local Python 3.12.9.
+- None. The durable value domain has been narrowed and unified, float finiteness is enforced, sets and non-finite floats are rejected with `TraceValidationError`, `TraceEvent.payload` is aligned, and all accepted values round-trip with exact semantic equality on Python 3.12.9.
 
 ## Main Agent Review
 
 > Main agent only.
 
-**Verdict:** CHANGES_REQUESTED — ROUND 2 (NARROW DURABILITY FIX)
+**Verdict:** ACCEPTED
 
-**Reviewed implementation:** `9f60435eb74a86c2811accc2c57440381ffab9aa`
+**Final implementation reviewed:** `7518701badfd7db18a9994f6eab21987f1282b1d`  
+**Integrated to main:** `2c71b2509dc82a95a2c3ce298602811f549ac1ff`
 
-**Round-1 blockers verified as fixed:**
-- TOOL_RESULT parent provenance is now unambiguous: when `parent_id` is present it must reference the matching TOOL_CALL and matching `call_id`.
-- Unsupported arbitrary mutable/custom output objects such as `bytearray` are rejected.
-- TracePointer blank `session_id` validation is fixed.
-- Executor reports the full suite passing on local Python 3.12.9.
-
-### BLOCKER — declared durable value domain does not actually round-trip semantically
-
-The new `_freeze_trace_value()` claims to support `set/frozenset` as durable values. Serialization converts them into JSON arrays:
-
-```python
-frozenset({"a", "b"}) -> ["a", "b"]
-```
-
-On reconstruction, JSON arrays are processed as list/tuple and become tuples, not frozensets. The new regression test explicitly accepts this type loss by comparing `set(rebuilt.output)` instead of semantic equality.
-
-That conflicts with TASK-002 invariant 10: serialization round-trip must preserve payloads, not silently change their durable type.
-
-There is also a type-contract mismatch in `TraceEvent`:
-- `_normalize_payload()` contains branches intended to support list/tuple/set/frozenset and scalar payloads;
-- but the field annotation remains `ToolCall | ToolResult | FrozenDict | str | None`.
-
-So the normalization logic and the declared public model contract disagree.
-
-A second round-trip edge exists for non-finite floats: `NaN` / `Infinity` are accepted by the current scalar check even though JSON/Pydantic serialization may normalize them in ways that do not preserve the original value.
-
-**Required fix:**
-Choose and document one explicit durable value domain and make validation, type annotations, serializers, and tests agree.
-
-Recommended narrow v0.1 rule:
-- accept only `None | bool | int | finite float | str`;
-- recursively accept mappings and sequences, normalized to `FrozenDict` and tuple;
-- **reject set/frozenset** rather than pretending they are losslessly JSON-durable;
-- reject non-finite floats (`NaN`, `+/-Infinity`);
-- keep arbitrary binary/custom objects rejected.
-
-For `TraceEvent.payload`, either:
-1. intentionally keep the narrower public type `ToolCall | ToolResult | FrozenDict | str | None` and remove unreachable/unsupported sequence/scalar normalization branches; or
-2. expand the declared payload type to the same durable value domain and add tests proving each accepted type can be constructed and round-trips with the same semantics.
-
-Whichever option is chosen, do not have runtime normalization promise types that the Pydantic field contract does not actually accept.
-
-**Required regression tests:**
-- set/frozenset is rejected (recommended) or losslessly tagged/restored if you deliberately support it;
-- `NaN` and `Infinity` are rejected;
-- every documented accepted output type round-trips with semantic equality, without weakening assertions based on type conversion;
-- TraceEvent generic payload tests match its declared type domain;
-- existing 71 tests remain green.
-
-**Required re-check:**
-- local Python 3.12.9 only;
-- `python --version`;
-- `python -m pytest`;
-- update Executor Report with commit SHA and exact result.
+**Acceptance summary:**
+- Unified actor/event/tool trace models are vendor-neutral and immutable.
+- Event identity, sequence ordering, parent references, and tool call/result correlation are enforced.
+- TOOL_RESULT parent provenance cannot contradict `call_id`.
+- Durable trace values use one explicit JSON-safe immutable domain; unsupported mutable/custom values, sets, binary values, NaN, and infinities are rejected.
+- TracePointer, deterministic filtering, serialization/deserialization, and exact semantic round-trips are implemented.
+- TASK-001 compatibility is preserved through the shared immutable primitive.
+- Executor reports **74 tests passed** on local Python 3.12.9.
 
 **Next instruction:**
-Apply this narrow durability/type-contract fix on `task/TASK-002-trace-model`. Do not start TASK-003. If this closes cleanly, TASK-002 should be ready for acceptance.
+TASK-002 is complete. Proceed only with TASK-003 referenced by `.agent/STATE.md`.
 
