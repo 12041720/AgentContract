@@ -15,9 +15,9 @@
 - Task: **TASK-004 — Claims, Evidence Graph, and Deterministic EvidenceGate**
 - Task file: `.agent/tasks/TASK-004.md`
 - Work branch: `task/TASK-004-evidence-gate`
-- Status: **READY_FOR_EXECUTOR**
+- Status: **CHANGES_REQUESTED**
 - Owner: Execution agent
-- Main-agent review: TASK-003 accepted and integrated; TASK-004 ready for execution
+- Main-agent review: TASK-004 changes requested after review of `129f9ca7d81b923c7d13e7980b454c15b70af5c7`
 
 ## Main-agent checkpoint
 
@@ -27,7 +27,7 @@
 - TASK-001 accepted after final hardening and integrated to `main` as `48a7ae1cc07025a400b11804c298c2970cfc5107`.
 - TASK-002 accepted and integrated to `main` as `2c71b2509dc82a95a2c3ce298602811f549ac1ff`.
 - TASK-003 accepted and integrated to `main` as `495b23b262d51e076ad2f6c36b81edba4169f4d4`.
-- TASK-004 task contract has been created and is now active.
+- TASK-004 first implementation was reviewed; claim identity, FILE_EXISTS evidence strictness, FrozenDict hashing, and EvidenceGraph update semantics need fixes.
 
 ## Current design decisions
 
