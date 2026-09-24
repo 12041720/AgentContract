@@ -72,6 +72,18 @@ class FrozenDict(Mapping[str, Any]):
             return self._data == dict(other)
         return False
 
+    def __hash__(self) -> int:
+        if self._hash is None:
+            items = []
+            for k, v in sorted(self._data.items()):
+                try:
+                    h = hash(v)
+                except TypeError:
+                    h = hash(id(v))
+                items.append((k, h))
+            self._hash = hash(tuple(items))
+        return self._hash
+
     @classmethod
     def __get_pydantic_core_schema__(
         cls, source_type: Any, handler: GetCoreSchemaHandler

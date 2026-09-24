@@ -11,6 +11,19 @@ from agentcontract.constraints import (
     ConstraintStrength,
     RuleEffect,
 )
+from agentcontract.evidence import (
+    Claim,
+    ClaimEvaluation,
+    ClaimNotFoundError,
+    ClaimType,
+    ClaimVerdict,
+    EvidenceError,
+    EvidenceGate,
+    EvidenceGraph,
+    EvidenceRef,
+    EvidenceRelation,
+    EvidenceValidationError,
+)
 from agentcontract.guard import (
     Action,
     ActionKind,
@@ -68,6 +81,18 @@ __all__ = [
     "TraceEvent",
     "TracePointer",
     "TraceStore",
+    # Evidence
+    "Claim",
+    "ClaimEvaluation",
+    "ClaimNotFoundError",
+    "ClaimType",
+    "ClaimVerdict",
+    "EvidenceError",
+    "EvidenceGate",
+    "EvidenceGraph",
+    "EvidenceRef",
+    "EvidenceRelation",
+    "EvidenceValidationError",
     # Meta
     "__version__",
 ]
