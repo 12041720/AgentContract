@@ -201,22 +201,67 @@ Do not install another Python interpreter for compatibility testing.
 > Execution agent: fill this section only after implementation.
 
 **Implementation summary:**  
-TBD
+- **Environment & Baseline Alignment:** Development and testing executed exclusively on the user's installed local **Python 3.12.9** baseline (`python --version` -> `Python 3.12.9`).
+- **Domain Models & Rule Semantics:**
+  - Introduced `RuleEffect` (`DENY`, `REQUIRE`, `PREFER`) in `src/agentcontract/constraints/models.py`. Added `rule_effect: RuleEffect = RuleEffect.DENY` to `Constraint` and `ConstraintScope` with `effective_rule_effect` property, preserving 100% backward compatibility and serialization round-trip integrity for TASK-001.
+  - Implemented immutable, serializable models in `src/agentcontract/guard/models.py`:
+    - `DecisionKind`: `ALLOW`, `WARN`, `BLOCK`.
+    - `ActionKind`: `TOOL_CALL`, `FILE_READ`, `FILE_WRITE`, `FILE_DELETE`, `COMMAND_EXEC`, `NETWORK_REQUEST`, `STATE_CHANGE`, `GENERIC`.
+    - `Action`: normalized vendor-neutral action representation with path synchronization, context freezing, durable payload integration, and constructors `from_tool_call()` and `from_trace_event()`.
+    - `ActionObservation`: post-action runtime effect container with `from_tool_result()`.
+    - `GuardDecision`: immutable verdict model recording decision, action, `matched_constraint_ids`, `violating_constraint_ids`, deterministic `reasons`, optional `TracePointer`, and convenience accessors (`is_allowed`, `is_warned`, `is_blocked`, `reason`, `constraint_ids`).
+- **Validation Engine & Matching Logic (`src/agentcontract/guard/engine.py`):**
+  - Implemented `match_scope(scope, action)` across all 5 dimensions:
+    - `target_type`: case-insensitive match when populated.
+    - `tools`: case-insensitive normalized tool name match when populated.
+    - `actions`: matches normalized action kind, operation verbs (`write`, `delete`, `read`, `exec`, etc.), and custom verbs.
+    - `paths`: normalized cross-platform path matching supporting exact paths, directory tree prefixes (`migrations/`), and glob patterns (`*.sql`).
+    - `selectors`: exact key/value matching against action context and structured payload.
+  - Implemented `SpecGuard`:
+    - `evaluate(action, ledger=..., trace_pointer=...)` (pre-action API):
+      - Enforces **only ACTIVE** constraints (`is_active is True`); REVOKED, SUPERSEDED, and CONFLICTED constraints are excluded.
+      - HARD violation -> `BLOCK`.
+      - SOFT violation -> `WARN`.
+      - ASSUMPTION violation -> `WARN` (assumptions never independently produce `BLOCK`).
+      - PREFER rule effect -> `WARN`.
+      - Deterministic precedence: `BLOCK > WARN > ALLOW`.
+      - Unmatched constraints do not silently block (default is `ALLOW`).
+      - Identifies triggering constraint IDs and reasons; retains `TracePointer`.
+    - `evaluate_post_action(action, observation, ledger=...)` and `evaluate_observation(observation, ledger=...)` (post-action API):
+      - Validates observed runtime effects (e.g. actual changed paths, actual tool) against active constraints, detecting undeclared hard violations.
+- **Top-Level Exports & Clean Packaging:**
+  - Exported guard primitives in `src/agentcontract/guard/__init__.py` and top-level `src/agentcontract/__init__.py`.
+  - Added package `__init__.py` in `tests/trace/` and `tests/guard/` for clean pytest collection.
 
 **Files changed:**  
-TBD
+- `src/agentcontract/constraints/models.py` (added `RuleEffect`, `rule_effect` field, `effective_rule_effect` property)
+- `src/agentcontract/constraints/__init__.py` (exported `RuleEffect`)
+- `src/agentcontract/guard/exceptions.py` (new: `GuardError`, `GuardValidationError`)
+- `src/agentcontract/guard/models.py` (new: `Action`, `ActionKind`, `ActionObservation`, `DecisionKind`, `GuardDecision`)
+- `src/agentcontract/guard/engine.py` (new: `match_scope`, `SpecGuard`)
+- `src/agentcontract/guard/__init__.py` (new: package exports)
+- `src/agentcontract/__init__.py` (re-exported guard primitives and `RuleEffect`)
+- `tests/trace/__init__.py` (new: test package marker)
+- `tests/guard/__init__.py` (new: test package marker)
+- `tests/guard/test_models.py` (new: 10 tests for guard models, immutability, constructors, serialization)
+- `tests/guard/test_engine.py` (new: 15 tests covering Scenarios 1-15: hard block, soft warn, assumption downgrade, precedence, matching, post-action observation)
+- `.agent/tasks/TASK-003.md` (updated Executor Report)
 
 **Tests/checks:**  
-TBD
+- Python version check: `python --version` -> `Python 3.12.9`.
+- Full pytest suite: `python -m pytest -v` -> **99 passed in 0.52s** (100% pass rate: 33 constraint tests + 41 trace tests + 25 guard tests).
+- All 15 required test scenarios verified.
 
 **Known limitations:**  
-TBD
+- Pre/post validation is synchronous for v0.1 in-memory execution; async workflow runtime is scheduled for TASK-007.
+- Shell command semantic parsing relies on normalized inputs/operations provided to `Action` rather than full bash AST parsing.
 
 **Commit/PR:**  
-TBD
+- Branch: `task/TASK-003-specguard`
+- Commit SHA: `033eed5` (code and tests), follow-up report commit
 
 **Questions/blockers:**  
-TBD
+- None. All acceptance criteria and 15 required test scenarios are met and verified on local Python 3.12.9.
 
 ## Main Agent Review
 
