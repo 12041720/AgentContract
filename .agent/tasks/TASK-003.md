@@ -202,50 +202,36 @@ Do not install another Python interpreter for compatibility testing.
 
 **Implementation summary:**  
 - **Environment & Baseline Alignment:** Development and testing executed exclusively on the user's installed local **Python 3.12.9** baseline (`python --version` -> `Python 3.12.9`).
-- **Fix BLOCKER 1 — REQUIRE / PREFER Semantics with Explicit Applicability vs Compliance Scopes:**
-  - Removed duplicate `rule_effect` override from `ConstraintScope`. `Constraint.rule_effect` is the single authoritative source of policy semantics (`DENY`, `REQUIRE`, `PREFER`).
-  - Added `compliance_scope: ConstraintScope | None = None` to `Constraint`.
-  - In `SpecGuard.evaluate`:
-    - `DENY`: If applicability `scope` matches -> violation (`BLOCK` if HARD, `WARN` if SOFT or ASSUMPTION).
-    - `REQUIRE`: If applicability `scope` matches:
-      - If `compliance_scope` matches -> compliant, no violation.
-      - If `compliance_scope` does not match -> violation (`BLOCK` if HARD, `WARN` if SOFT or ASSUMPTION).
-    - `PREFER`: If applicability `scope` matches:
-      - If `compliance_scope` matches -> compliant, no warning.
-      - If `compliance_scope` does not match -> warning (`WARN`).
-    - Non-applicable actions (`scope` does not match) remain allowed and are not evaluated against `compliance_scope`.
-    - Purely typed scope and rule-effect matching without any natural language description inference.
-- **Fix BLOCKER 2 — True Exact Selector Key/Value Matching:**
-  - Replaced stringified comparison (`str(a) == str(b)`) in `match_scope` with typed `_exact_value_equal(v1, v2)`.
-  - Enforced strict type preservation: `type(v1) is type(v2)` ensures `1 != "1"`, `True != "True"`, and `True != 1` (bool is not conflated with int).
-  - Recursively compares nested collections and handles finite floats / None / bool / int / str.
-- **Fix BLOCKER 3 — Post-Action Validation of All Observed Effects:**
-  - Refactored `evaluate_post_action` and `evaluate_observation` to evaluate all observed runtime effects rather than selecting only the first non-empty path category.
-  - Distinguishes observed writes from observed reads:
-    - Every path in `changed_paths` is evaluated as an observed `ActionKind.FILE_WRITE`.
-    - Every path in `accessed_paths` is evaluated as an observed `ActionKind.FILE_READ`.
-    - Any general tool effect is evaluated as an observed `ActionKind.TOOL_CALL`.
-  - Aggregates all sub-decisions deterministically with `BLOCK > WARN > ALLOW`, ensuring mixed observations (e.g., safe write + forbidden read) correctly identify and surface the read violation.
-- **Fix BLOCKER 4 — Enforce Deterministic Ordering by Rejecting Unordered Sets:**
-  - In `Action._normalize_paths`, `ActionObservation._normalize_paths`, and `GuardDecision._normalize_tuples`, explicitly check for and reject `(set, frozenset)` with `GuardValidationError` (`"must be an ordered sequence (list or tuple), not a set/frozenset"`).
-  - Defined `GuardValidationError(GuardError, ValueError)` ensuring standard Pydantic `ValidationError` wrapping during model validation.
-  - Prevents nondeterministic path ordering, target path selection, and reason sequencing.
+- **Fix Round 1 & Round 2 BLOCKER 1 — Truly Exact Typed Selector Equality (Scalar and Nested):**
+  - Updated `_exact_value_equal` in `src/agentcontract/guard/engine.py` to enforce strict type identity (`type(v1) is not type(v2) -> False`).
+  - Prohibits int vs float equivalence: `1 != 1.0` (and `1 != "1"`, `True != 1`, `True != "True"`).
+  - Recursively compares nested `Mapping` (`FrozenDict`, `dict`) and sequence (`list`, `tuple`) objects element-by-element with the same strict typed rules, preventing nested equivalence (such as `{"retries": 1}` vs `{"retries": 1.0}` or `[1, 2]` vs `[1, 2.0]`).
+  - Added extensive test coverage for scalar int-vs-float and nested mapping/sequence typed mismatches in `tests/guard/test_engine.py` (`test_scenario_10_selector_exact_match_behavior`).
+- **Fix Round 1 & Round 2 BLOCKER 2 — Explicit compliance_scope Invariant for REQUIRE and PREFER:**
+  - In `Constraint._validate_invariants` (`src/agentcontract/constraints/models.py`), enforced that `REQUIRE` and `PREFER` constraints require a non-None `compliance_scope`, raising `ConstraintValidationError` when None.
+  - Preserved 100% backward compatibility for pre-TASK-003 constraints: default `rule_effect=RuleEffect.DENY` allows `compliance_scope=None`.
+  - In `SpecGuard.evaluate` (`src/agentcontract/guard/engine.py`), updated defensive fallback so any missing `compliance_scope` evaluates to `False` (never silently compliant).
+  - Added model validation tests and JSON serialization round-trip tests in `tests/constraints/test_models.py` (`test_require_and_prefer_constraints_require_compliance_scope` and `test_require_and_prefer_serialization_round_trip`).
+- **Fix Round 1 BLOCKER 3 — Post-Action Validation of All Observed Effects:**
+  - Evaluates all observed runtime effects: `changed_paths` as `FILE_WRITE`, `accessed_paths` as `FILE_READ`, and general tool effects as `TOOL_CALL`, aggregating deterministically with `BLOCK > WARN > ALLOW`.
+- **Fix Round 1 BLOCKER 4 — Enforce Deterministic Ordering by Rejecting Unordered Sets:**
+  - Rejects `set`/`frozenset` inputs for order-sensitive sequences with `GuardValidationError` (`(GuardError, ValueError)`).
 - **Top-Level Exports & Clean Packaging:**
-  - Maintained top-level exports in `src/agentcontract/__init__.py` and `src/agentcontract/guard/__init__.py`.
-  - Added package markers in `tests/trace/__init__.py` and `tests/guard/__init__.py` to eliminate pytest module naming collisions.
+  - Exported guard primitives in `src/agentcontract/__init__.py` and `src/agentcontract/guard/__init__.py`.
 
 **Files changed:**  
-- `src/agentcontract/constraints/models.py` (added `compliance_scope`, simplified single authoritative `rule_effect` on `Constraint`)
+- `src/agentcontract/constraints/models.py` (enforced `compliance_scope` requirement for `REQUIRE`/`PREFER` in `_validate_invariants`)
+- `src/agentcontract/guard/engine.py` (implemented recursive strict typed equality in `_exact_value_equal`, defensive fallback in `evaluate`)
 - `src/agentcontract/guard/exceptions.py` (inherited `GuardValidationError` from `GuardError, ValueError`)
 - `src/agentcontract/guard/models.py` (rejected `set`/`frozenset` inputs for order-sensitive sequences)
-- `src/agentcontract/guard/engine.py` (implemented `_exact_value_equal`, fixed REQUIRE/PREFER semantics, validated all post-action observed effects with write/read separation)
-- `tests/guard/test_engine.py` (added tests for exact selector type mismatch, mixed post-action read/write violation, REQUIRE/PREFER compliance vs applicability semantics)
-- `tests/guard/test_models.py` (added tests for rejecting unordered set/frozenset inputs across models)
+- `tests/constraints/test_models.py` (added tests for REQUIRE/PREFER compliance_scope invariant and serialization)
+- `tests/guard/test_engine.py` (added tests for scalar int-vs-float and nested mapping/sequence typed mismatches)
+- `tests/guard/test_models.py` (tests for rejecting unordered set/frozenset inputs across models)
 - `.agent/tasks/TASK-003.md` (updated Executor Report)
 
 **Tests/checks:**  
 - Python version check: `python --version` -> `Python 3.12.9`.
-- Full pytest suite: `python -m pytest -v` -> **100 passed in 0.68s** (100% pass rate: 33 constraint tests + 41 trace tests + 26 guard tests).
+- Full pytest suite: `python -m pytest -v` -> **102 passed in 0.75s** (100% pass rate: 35 constraint tests + 41 trace tests + 26 guard tests).
 - All 15 required test scenarios verified green, including TASK-001 and TASK-002 suites.
 
 **Known limitations:**  
@@ -254,10 +240,10 @@ Do not install another Python interpreter for compatibility testing.
 
 **Commit/PR:**  
 - Branch: `task/TASK-003-specguard`
-- Commit SHA: `b9b4c05` (follow-up commit resolving Round 1 review blockers)
+- Commit SHA: pending commit & push update
 
 **Questions/blockers:**  
-- None. All 4 blockers from Round 1 Main Agent Review are resolved, verified, and tested on local Python 3.12.9.
+- None. All Round 1 and Round 2 review blockers resolved, verified, and tested on local Python 3.12.9.
 
 ## Main Agent Review
 

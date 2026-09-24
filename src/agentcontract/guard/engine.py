@@ -2,6 +2,7 @@
 
 from collections.abc import Iterable, Mapping
 import fnmatch
+import math
 from typing import Any
 
 from agentcontract.common.immutable import FrozenDict
@@ -32,18 +33,52 @@ def _normalize_path_str(p: str) -> str:
 
 
 def _exact_value_equal(v1: Any, v2: Any) -> bool:
-    """Exact value matching preserving type semantics (e.g. 1 != '1', True != 1, True != 'True')."""
+    """Exact value matching preserving strict type semantics (e.g. 1 != 1.0, 1 != '1', True != 1).
+
+    Recursively checks nested Mappings and sequences element-by-element with exact type semantics.
+    """
     # In Python, bool is a subclass of int (True == 1), so explicitly prohibit bool vs non-bool equality
     if isinstance(v1, bool) or isinstance(v2, bool):
         if not (isinstance(v1, bool) and isinstance(v2, bool)):
             return False
         return v1 is v2
 
-    # Distinct scalar types (e.g. int vs str, float vs str) must not be equal
+    # None check
+    if v1 is None or v2 is None:
+        return v1 is None and v2 is None
+
+    # Mappings: recursively compare element-by-element with exact typed rule
+    if isinstance(v1, Mapping) or isinstance(v2, Mapping):
+        if not (isinstance(v1, Mapping) and isinstance(v2, Mapping)):
+            return False
+        if len(v1) != len(v2):
+            return False
+        if set(v1.keys()) != set(v2.keys()):
+            return False
+        for k in v1:
+            if not _exact_value_equal(v1[k], v2[k]):
+                return False
+        return True
+
+    # Sequences: recursively compare element-by-element with exact typed rule
+    if isinstance(v1, (list, tuple)) or isinstance(v2, (list, tuple)):
+        if not (isinstance(v1, (list, tuple)) and isinstance(v2, (list, tuple))):
+            return False
+        if len(v1) != len(v2):
+            return False
+        for item1, item2 in zip(v1, v2):
+            if not _exact_value_equal(item1, item2):
+                return False
+        return True
+
+    # Scalar types: types must match exactly (e.g. int != float, int != str)
     if type(v1) is not type(v2):
-        if isinstance(v1, (int, float)) and isinstance(v2, (int, float)):
-            return v1 == v2
         return False
+
+    if isinstance(v1, float):
+        if math.isnan(v1) or math.isnan(v2):
+            return False
+        return v1 == v2
 
     return v1 == v2
 
@@ -274,7 +309,7 @@ class SpecGuard:
                 is_compliant = (
                     match_scope(c.compliance_scope, action)
                     if c.compliance_scope is not None
-                    else True
+                    else False  # Defensive: missing compliance_scope is never treated as compliant
                 )
                 if not is_compliant:
                     violating_ids.append(c.id)
@@ -298,7 +333,7 @@ class SpecGuard:
                 is_preferred = (
                     match_scope(c.compliance_scope, action)
                     if c.compliance_scope is not None
-                    else True
+                    else False  # Defensive: missing compliance_scope is never treated as compliant
                 )
                 if not is_preferred:
                     violating_ids.append(c.id)

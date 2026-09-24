@@ -474,6 +474,102 @@ def test_scenario_10_selector_exact_match_behavior(empty_ledger: ConstraintLedge
     )
     assert guard_typed.evaluate(a_int_bool).is_allowed is True
 
+    # BLOCKER 1 (ROUND 2): Scalar int-vs-float (1 != 1.0) must NOT match
+    ledger_numeric = ConstraintLedger()
+    ledger_numeric.add(
+        _make_constraint(
+            cid="c-int-retries",
+            name="int_retries_gate",
+            strength=ConstraintStrength.HARD,
+            rule_effect=RuleEffect.DENY,
+            scope=ConstraintScope(selectors={"retries": 1}),
+        )
+    )
+    ledger_numeric.add(
+        _make_constraint(
+            cid="c-float-ratio",
+            name="float_ratio_gate",
+            strength=ConstraintStrength.HARD,
+            rule_effect=RuleEffect.DENY,
+            scope=ConstraintScope(selectors={"ratio": 1.0}),
+        )
+    )
+    guard_numeric = SpecGuard(ledger=ledger_numeric)
+
+    # Float 1.0 instead of int 1 -> NOT a match for c-int-retries
+    a_float_for_int = Action(action_kind=ActionKind.GENERIC, context={"retries": 1.0})
+    assert guard_numeric.evaluate(a_float_for_int).is_allowed is True
+
+    # Int 1 matches int 1 -> BLOCKED
+    a_int_for_int = Action(action_kind=ActionKind.GENERIC, context={"retries": 1})
+    d_int_for_int = guard_numeric.evaluate(a_int_for_int)
+    assert d_int_for_int.is_blocked is True
+    assert "c-int-retries" in d_int_for_int.violating_constraint_ids
+
+    # Int 1 instead of float 1.0 -> NOT a match for c-float-ratio
+    a_int_for_float = Action(action_kind=ActionKind.GENERIC, context={"ratio": 1})
+    assert guard_numeric.evaluate(a_int_for_float).is_allowed is True
+
+    # Float 1.0 matches float 1.0 -> BLOCKED
+    a_float_for_float = Action(action_kind=ActionKind.GENERIC, context={"ratio": 1.0})
+    d_float_for_float = guard_numeric.evaluate(a_float_for_float)
+    assert d_float_for_float.is_blocked is True
+    assert "c-float-ratio" in d_float_for_float.violating_constraint_ids
+
+    # BLOCKER 1 (ROUND 2): Nested mapping and sequence typed mismatches
+    ledger_nested = ConstraintLedger()
+    ledger_nested.add(
+        _make_constraint(
+            cid="c-nested-dict",
+            name="nested_dict_gate",
+            strength=ConstraintStrength.HARD,
+            rule_effect=RuleEffect.DENY,
+            scope=ConstraintScope(selectors={"config": {"retries": 1}}),
+        )
+    )
+    ledger_nested.add(
+        _make_constraint(
+            cid="c-nested-seq",
+            name="nested_seq_gate",
+            strength=ConstraintStrength.HARD,
+            rule_effect=RuleEffect.DENY,
+            scope=ConstraintScope(selectors={"levels": (1, 2)}),
+        )
+    )
+    guard_nested = SpecGuard(ledger=ledger_nested)
+
+    # Nested dict with float 1.0 instead of int 1 -> NOT a match -> ALLOWED
+    a_nested_dict_float = Action(
+        action_kind=ActionKind.GENERIC,
+        context={"config": {"retries": 1.0}},
+    )
+    assert guard_nested.evaluate(a_nested_dict_float).is_allowed is True
+
+    # Nested dict with exact int 1 -> BLOCKED
+    a_nested_dict_exact = Action(
+        action_kind=ActionKind.GENERIC,
+        context={"config": {"retries": 1}},
+    )
+    d_nested_dict = guard_nested.evaluate(a_nested_dict_exact)
+    assert d_nested_dict.is_blocked is True
+    assert "c-nested-dict" in d_nested_dict.violating_constraint_ids
+
+    # Nested sequence with float 2.0 instead of int 2 -> NOT a match -> ALLOWED
+    a_nested_seq_float = Action(
+        action_kind=ActionKind.GENERIC,
+        context={"levels": (1, 2.0)},
+    )
+    assert guard_nested.evaluate(a_nested_seq_float).is_allowed is True
+
+    # Nested sequence with exact ints -> BLOCKED
+    a_nested_seq_exact = Action(
+        action_kind=ActionKind.GENERIC,
+        context={"levels": (1, 2)},
+    )
+    d_nested_seq = guard_nested.evaluate(a_nested_seq_exact)
+    assert d_nested_seq.is_blocked is True
+    assert "c-nested-seq" in d_nested_seq.violating_constraint_ids
+
 
 # --- Scenario 11: Decision contains matched constraint IDs ---
 

@@ -259,6 +259,11 @@ class Constraint(BaseModel):
             raise ConstraintValidationError(
                 "AGENT_INFERENCE cannot be declared with HARD strength; inferences must be SOFT or ASSUMPTION."
             )
+        # REQUIRE and PREFER rules require an explicit compliance_scope
+        if self.rule_effect in (RuleEffect.REQUIRE, RuleEffect.PREFER) and self.compliance_scope is None:
+            raise ConstraintValidationError(
+                f"Constraint '{self.id}' with rule_effect={self.rule_effect.value} requires a non-None compliance_scope."
+            )
         return self
 
     @property
