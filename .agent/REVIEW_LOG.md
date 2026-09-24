@@ -185,3 +185,27 @@ Next:
 **Next:** TASK-003 — SpecGuard pre/post action validation engine is active.
 
 ---
+
+## 2026-09-24 — TASK-003 first implementation review
+
+**Implementation reviewed:** `033eed532a47a9d735b2ea7e3aa4008e4cb5797d`
+
+**Verdict:** CHANGES_REQUESTED
+
+**Verified strengths:**
+- solid Action / Observation / Decision model;
+- ACTIVE-only enforcement;
+- deterministic BLOCK > WARN > ALLOW aggregation;
+- correct DENY handling across HARD/SOFT/ASSUMPTION;
+- pre/post APIs and TracePointer provenance implemented;
+- executor reports 99/99 tests passing on local Python 3.12.9.
+
+**Blocking findings:**
+- REQUIRE/PREFER semantics punish matching compliant actions instead of detecting missing compliance;
+- selector "exact match" coerces values through strings and loses type semantics;
+- post-action validation discards accessed effects when changed paths are present;
+- set/frozenset inputs can make serialized/order-sensitive decisions nondeterministic.
+
+**Next:** execution agent fixes TASK-003 on `task/TASK-003-specguard`; TASK-004 remains blocked.
+
+---
