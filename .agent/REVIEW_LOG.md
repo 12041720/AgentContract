@@ -143,3 +143,23 @@ Next:
 **Next:** execution agent fixes TASK-002 on `task/TASK-002-trace-model`; TASK-003 remains blocked.
 
 ---
+
+## 2026-09-24 — TASK-002 second implementation review
+
+**Implementation reviewed:** `9f60435eb74a86c2811accc2c57440381ffab9aa`
+
+**Verdict:** CHANGES_REQUESTED — ROUND 2 (NARROW DURABILITY FIX)
+
+**Verified fixes:**
+- TOOL_RESULT parent/call provenance is now consistent.
+- arbitrary mutable/custom tool outputs are rejected.
+- blank pointer session IDs are rejected.
+- executor reports 71/71 tests passing on local Python 3.12.9.
+
+**Remaining issue:**
+- durable value semantics are inconsistent for set/frozenset and non-finite floats; serialization can change value/type across round-trip.
+- TraceEvent payload normalization accepts/promises a broader domain than its Pydantic field annotation declares.
+
+**Next:** narrow and align the durable value domain, add strict round-trip tests, then resubmit TASK-002. TASK-003 remains blocked.
+
+---
