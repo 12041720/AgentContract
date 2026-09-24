@@ -15,6 +15,7 @@ from agentcontract.constraints.models import (
     ConstraintStatus,
     ConstraintStrength,
     FrozenDict,
+    RuleEffect,
 )
 
 
@@ -386,3 +387,98 @@ def test_constraint_serialization_round_trip():
     assert reconstructed.relations.conflicts_with == ("c-other",)
     assert isinstance(reconstructed.scope.selectors, FrozenDict)
     assert isinstance(reconstructed.relations.conflicts_with, tuple)
+
+
+def test_require_and_prefer_constraints_require_compliance_scope():
+    """BLOCKER 2 (ROUND 2): REQUIRE and PREFER constraints must reject compliance_scope=None."""
+    provenance = ConstraintProvenance(
+        source=ConstraintSource.USER,
+        source_location="turn:2",
+        source_text="Requires test coverage",
+        author="reviewer",
+    )
+
+    # 1. REQUIRE with compliance_scope=None -> raises ConstraintValidationError
+    with pytest.raises(ValidationError) as exc_info:
+        Constraint(
+            id="c-req-invalid",
+            name="require_test_coverage",
+            description="All code must have tests",
+            strength=ConstraintStrength.HARD,
+            rule_effect=RuleEffect.REQUIRE,
+            provenance=provenance,
+            scope=ConstraintScope(paths=["src/"]),
+            compliance_scope=None,
+        )
+    assert "requires a non-None compliance_scope" in str(exc_info.value)
+
+    # 2. PREFER with compliance_scope=None -> raises ConstraintValidationError
+    with pytest.raises(ValidationError) as exc_info:
+        Constraint(
+            id="c-pref-invalid",
+            name="prefer_type_hints",
+            description="Prefer typed Python",
+            strength=ConstraintStrength.SOFT,
+            rule_effect=RuleEffect.PREFER,
+            provenance=provenance,
+            scope=ConstraintScope(paths=["src/"]),
+            compliance_scope=None,
+        )
+    assert "requires a non-None compliance_scope" in str(exc_info.value)
+
+    # 3. DENY with compliance_scope=None -> valid (backward compatibility for all pre-TASK-003 constraints)
+    deny_constraint = Constraint(
+        id="c-deny-valid",
+        name="deny_rm_rf",
+        description="Do not run rm -rf",
+        strength=ConstraintStrength.HARD,
+        rule_effect=RuleEffect.DENY,
+        provenance=provenance,
+        scope=ConstraintScope(tools=["rm"]),
+        compliance_scope=None,
+    )
+    assert deny_constraint.rule_effect == RuleEffect.DENY
+    assert deny_constraint.compliance_scope is None
+
+
+def test_require_and_prefer_serialization_round_trip():
+    """REQUIRE and PREFER constraints serialize to JSON and deserialize identically."""
+    provenance = ConstraintProvenance(
+        source=ConstraintSource.USER,
+        source_location="turn:3",
+        source_text="Must run in sandbox",
+        author="user",
+    )
+    require_c = Constraint(
+        id="c-req-sandbox",
+        name="require_sandbox",
+        description="Writes must be in sandbox",
+        strength=ConstraintStrength.HARD,
+        rule_effect=RuleEffect.REQUIRE,
+        provenance=provenance,
+        scope=ConstraintScope(actions=["write"]),
+        compliance_scope=ConstraintScope(paths=["sandbox/"]),
+    )
+    req_json = require_c.model_dump_json()
+    req_rebuilt = Constraint.model_validate_json(req_json)
+    assert req_rebuilt == require_c
+    assert req_rebuilt.rule_effect == RuleEffect.REQUIRE
+    assert req_rebuilt.compliance_scope is not None
+    assert req_rebuilt.compliance_scope.paths == ("sandbox/",)
+
+    prefer_c = Constraint(
+        id="c-pref-black",
+        name="prefer_black",
+        description="Prefer black formatter",
+        strength=ConstraintStrength.SOFT,
+        rule_effect=RuleEffect.PREFER,
+        provenance=provenance,
+        scope=ConstraintScope(paths=["src/"]),
+        compliance_scope=ConstraintScope(tools=["black"]),
+    )
+    pref_json = prefer_c.model_dump_json()
+    pref_rebuilt = Constraint.model_validate_json(pref_json)
+    assert pref_rebuilt == prefer_c
+    assert pref_rebuilt.rule_effect == RuleEffect.PREFER
+    assert pref_rebuilt.compliance_scope is not None
+    assert pref_rebuilt.compliance_scope.tools == ("black",)

@@ -9,6 +9,18 @@ from agentcontract.constraints import (
     ConstraintSource,
     ConstraintStatus,
     ConstraintStrength,
+    RuleEffect,
+)
+from agentcontract.guard import (
+    Action,
+    ActionKind,
+    ActionObservation,
+    DecisionKind,
+    GuardDecision,
+    GuardError,
+    GuardValidationError,
+    SpecGuard,
+    match_scope,
 )
 from agentcontract.trace import (
     ActorKind,
@@ -35,6 +47,17 @@ __all__ = [
     "ConstraintSource",
     "ConstraintStatus",
     "ConstraintStrength",
+    "RuleEffect",
+    # Guard
+    "Action",
+    "ActionKind",
+    "ActionObservation",
+    "DecisionKind",
+    "GuardDecision",
+    "GuardError",
+    "GuardValidationError",
+    "SpecGuard",
+    "match_scope",
     # Trace
     "ActorKind",
     "EventKind",

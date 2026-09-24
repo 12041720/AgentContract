@@ -26,6 +26,7 @@ from agentcontract.constraints.models import (
     ConstraintStatus,
     ConstraintStrength,
     FrozenDict,
+    RuleEffect,
     validate_transition,
 )
 
@@ -47,5 +48,6 @@ __all__ = [
     "FrozenDict",
     "InvalidConstraintTransitionError",
     "LedgerSnapshot",
+    "RuleEffect",
     "validate_transition",
 ]

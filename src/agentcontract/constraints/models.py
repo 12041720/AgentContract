@@ -44,6 +44,14 @@ class ConstraintStatus(StrEnum):
     CONFLICTED = "CONFLICTED"
 
 
+class RuleEffect(StrEnum):
+    """Explicit enforcement effect of a constraint rule."""
+
+    DENY = "DENY"       # Action matching scope is prohibited (prohibition rule)
+    REQUIRE = "REQUIRE" # Action matching scope requires compliance (requirement rule)
+    PREFER = "PREFER"   # Advisory guidance / preference (non-blocking warning)
+
+
 # Explicit state transition table governing lifecycle progression (read-only)
 ALLOWED_TRANSITIONS: MappingProxyType[ConstraintStatus, frozenset[ConstraintStatus]] = MappingProxyType({
     ConstraintStatus.ACTIVE: frozenset({
@@ -203,6 +211,10 @@ class Constraint(BaseModel):
         ...,
         description="Authority level: HARD (blocking), SOFT (preference), ASSUMPTION (inferred).",
     )
+    rule_effect: RuleEffect = Field(
+        default=RuleEffect.DENY,
+        description="Explicit rule enforcement effect: DENY, REQUIRE, or PREFER.",
+    )
     status: ConstraintStatus = Field(
         default=ConstraintStatus.ACTIVE,
         description="Current lifecycle status.",
@@ -213,7 +225,11 @@ class Constraint(BaseModel):
     )
     scope: ConstraintScope = Field(
         default_factory=ConstraintScope,
-        description="Target selectors and execution boundaries.",
+        description="Target selectors and execution boundaries defining when this constraint applies.",
+    )
+    compliance_scope: ConstraintScope | None = Field(
+        default=None,
+        description="Required or preferred target selectors defining compliance condition for REQUIRE and PREFER rules.",
     )
     relations: ConstraintRelation = Field(
         default_factory=ConstraintRelation,
@@ -243,6 +259,11 @@ class Constraint(BaseModel):
             raise ConstraintValidationError(
                 "AGENT_INFERENCE cannot be declared with HARD strength; inferences must be SOFT or ASSUMPTION."
             )
+        # REQUIRE and PREFER rules require an explicit compliance_scope
+        if self.rule_effect in (RuleEffect.REQUIRE, RuleEffect.PREFER) and self.compliance_scope is None:
+            raise ConstraintValidationError(
+                f"Constraint '{self.id}' with rule_effect={self.rule_effect.value} requires a non-None compliance_scope."
+            )
         return self
 
     @property
@@ -269,3 +290,13 @@ class Constraint(BaseModel):
     def source(self) -> ConstraintSource:
         """Convenience accessor for provenance source."""
         return self.provenance.source
+
+    @property
+    def effective_rule_effect(self) -> RuleEffect:
+        """Return the authoritative rule effect."""
+        return self.rule_effect
+
+    @property
+    def effect(self) -> RuleEffect:
+        """Convenience alias for effective_rule_effect."""
+        return self.effective_rule_effect
