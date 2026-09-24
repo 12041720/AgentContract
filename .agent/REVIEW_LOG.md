@@ -231,3 +231,24 @@ Next:
 **Next:** apply the two narrow fixes and resubmit TASK-003. TASK-004 remains blocked.
 
 ---
+
+## 2026-09-24 — TASK-003 final review and integration
+
+**Final implementation reviewed:** `cf80fd45246e74a11c11798022e2e7ef0797a236`
+
+**Verdict:** ACCEPTED
+
+**Integration commit:** `495b23b262d51e076ad2f6c36b81edba4169f4d4`
+
+**Final acceptance:**
+- deterministic DENY / REQUIRE / PREFER rule semantics;
+- explicit applicability vs compliance scopes;
+- recursive exact typed selector matching;
+- REQUIRE/PREFER model validation prevents silent no-op configuration;
+- all observed post-action read/write/tool effects are evaluated;
+- deterministic decision ordering and aggregation;
+- executor-reported 102/102 tests passing on local Python 3.12.9.
+
+**Next:** TASK-004 — deterministic EvidenceGate core is active.
+
+---
