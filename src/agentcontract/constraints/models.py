@@ -44,6 +44,14 @@ class ConstraintStatus(StrEnum):
     CONFLICTED = "CONFLICTED"
 
 
+class RuleEffect(StrEnum):
+    """Explicit enforcement effect of a constraint rule."""
+
+    DENY = "DENY"       # Action matching scope is prohibited (prohibition rule)
+    REQUIRE = "REQUIRE" # Action matching scope requires compliance (requirement rule)
+    PREFER = "PREFER"   # Advisory guidance / preference (non-blocking warning)
+
+
 # Explicit state transition table governing lifecycle progression (read-only)
 ALLOWED_TRANSITIONS: MappingProxyType[ConstraintStatus, frozenset[ConstraintStatus]] = MappingProxyType({
     ConstraintStatus.ACTIVE: frozenset({
@@ -141,6 +149,10 @@ class ConstraintScope(BaseModel):
         default_factory=FrozenDict,
         description="Extensible structured criteria for domain-specific matching.",
     )
+    rule_effect: RuleEffect | None = Field(
+        default=None,
+        description="Optional rule enforcement effect overriding or specifying scope effect.",
+    )
     description: str | None = Field(
         default=None,
         description="Human-readable summary of the constraint scope.",
@@ -202,6 +214,10 @@ class Constraint(BaseModel):
     strength: ConstraintStrength = Field(
         ...,
         description="Authority level: HARD (blocking), SOFT (preference), ASSUMPTION (inferred).",
+    )
+    rule_effect: RuleEffect = Field(
+        default=RuleEffect.DENY,
+        description="Explicit rule enforcement effect: DENY, REQUIRE, or PREFER.",
     )
     status: ConstraintStatus = Field(
         default=ConstraintStatus.ACTIVE,
@@ -269,3 +285,15 @@ class Constraint(BaseModel):
     def source(self) -> ConstraintSource:
         """Convenience accessor for provenance source."""
         return self.provenance.source
+
+    @property
+    def effective_rule_effect(self) -> RuleEffect:
+        """Return effective rule effect: scope-level override takes precedence over constraint-level default."""
+        if self.scope.rule_effect is not None:
+            return self.scope.rule_effect
+        return self.rule_effect
+
+    @property
+    def effect(self) -> RuleEffect:
+        """Convenience alias for effective_rule_effect."""
+        return self.effective_rule_effect
