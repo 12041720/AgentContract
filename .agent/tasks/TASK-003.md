@@ -1,10 +1,10 @@
 # TASK-003 — SpecGuard Pre/Post Action Validation Engine
 
-**Status:** READY_FOR_EXECUTOR  
+**Status:** CHANGES_REQUESTED  
 **Milestone:** M1 — Executable contract core  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-003-specguard`  
-**Main-agent review:** pending
+**Main-agent review:** changes requested
 
 ## Objective
 
@@ -201,31 +201,177 @@ Do not install another Python interpreter for compatibility testing.
 > Execution agent: fill this section only after implementation.
 
 **Implementation summary:**  
-TBD
+- **Environment & Baseline Alignment:** Development and testing executed exclusively on the user's installed local **Python 3.12.9** baseline (`python --version` -> `Python 3.12.9`).
+- **Domain Models & Rule Semantics:**
+  - Introduced `RuleEffect` (`DENY`, `REQUIRE`, `PREFER`) in `src/agentcontract/constraints/models.py`. Added `rule_effect: RuleEffect = RuleEffect.DENY` to `Constraint` and `ConstraintScope` with `effective_rule_effect` property, preserving 100% backward compatibility and serialization round-trip integrity for TASK-001.
+  - Implemented immutable, serializable models in `src/agentcontract/guard/models.py`:
+    - `DecisionKind`: `ALLOW`, `WARN`, `BLOCK`.
+    - `ActionKind`: `TOOL_CALL`, `FILE_READ`, `FILE_WRITE`, `FILE_DELETE`, `COMMAND_EXEC`, `NETWORK_REQUEST`, `STATE_CHANGE`, `GENERIC`.
+    - `Action`: normalized vendor-neutral action representation with path synchronization, context freezing, durable payload integration, and constructors `from_tool_call()` and `from_trace_event()`.
+    - `ActionObservation`: post-action runtime effect container with `from_tool_result()`.
+    - `GuardDecision`: immutable verdict model recording decision, action, `matched_constraint_ids`, `violating_constraint_ids`, deterministic `reasons`, optional `TracePointer`, and convenience accessors (`is_allowed`, `is_warned`, `is_blocked`, `reason`, `constraint_ids`).
+- **Validation Engine & Matching Logic (`src/agentcontract/guard/engine.py`):**
+  - Implemented `match_scope(scope, action)` across all 5 dimensions:
+    - `target_type`: case-insensitive match when populated.
+    - `tools`: case-insensitive normalized tool name match when populated.
+    - `actions`: matches normalized action kind, operation verbs (`write`, `delete`, `read`, `exec`, etc.), and custom verbs.
+    - `paths`: normalized cross-platform path matching supporting exact paths, directory tree prefixes (`migrations/`), and glob patterns (`*.sql`).
+    - `selectors`: exact key/value matching against action context and structured payload.
+  - Implemented `SpecGuard`:
+    - `evaluate(action, ledger=..., trace_pointer=...)` (pre-action API):
+      - Enforces **only ACTIVE** constraints (`is_active is True`); REVOKED, SUPERSEDED, and CONFLICTED constraints are excluded.
+      - HARD violation -> `BLOCK`.
+      - SOFT violation -> `WARN`.
+      - ASSUMPTION violation -> `WARN` (assumptions never independently produce `BLOCK`).
+      - PREFER rule effect -> `WARN`.
+      - Deterministic precedence: `BLOCK > WARN > ALLOW`.
+      - Unmatched constraints do not silently block (default is `ALLOW`).
+      - Identifies triggering constraint IDs and reasons; retains `TracePointer`.
+    - `evaluate_post_action(action, observation, ledger=...)` and `evaluate_observation(observation, ledger=...)` (post-action API):
+      - Validates observed runtime effects (e.g. actual changed paths, actual tool) against active constraints, detecting undeclared hard violations.
+- **Top-Level Exports & Clean Packaging:**
+  - Exported guard primitives in `src/agentcontract/guard/__init__.py` and top-level `src/agentcontract/__init__.py`.
+  - Added package `__init__.py` in `tests/trace/` and `tests/guard/` for clean pytest collection.
 
 **Files changed:**  
-TBD
+- `src/agentcontract/constraints/models.py` (added `RuleEffect`, `rule_effect` field, `effective_rule_effect` property)
+- `src/agentcontract/constraints/__init__.py` (exported `RuleEffect`)
+- `src/agentcontract/guard/exceptions.py` (new: `GuardError`, `GuardValidationError`)
+- `src/agentcontract/guard/models.py` (new: `Action`, `ActionKind`, `ActionObservation`, `DecisionKind`, `GuardDecision`)
+- `src/agentcontract/guard/engine.py` (new: `match_scope`, `SpecGuard`)
+- `src/agentcontract/guard/__init__.py` (new: package exports)
+- `src/agentcontract/__init__.py` (re-exported guard primitives and `RuleEffect`)
+- `tests/trace/__init__.py` (new: test package marker)
+- `tests/guard/__init__.py` (new: test package marker)
+- `tests/guard/test_models.py` (new: 10 tests for guard models, immutability, constructors, serialization)
+- `tests/guard/test_engine.py` (new: 15 tests covering Scenarios 1-15: hard block, soft warn, assumption downgrade, precedence, matching, post-action observation)
+- `.agent/tasks/TASK-003.md` (updated Executor Report)
 
 **Tests/checks:**  
-TBD
+- Python version check: `python --version` -> `Python 3.12.9`.
+- Full pytest suite: `python -m pytest -v` -> **99 passed in 0.52s** (100% pass rate: 33 constraint tests + 41 trace tests + 25 guard tests).
+- All 15 required test scenarios verified.
 
 **Known limitations:**  
-TBD
+- Pre/post validation is synchronous for v0.1 in-memory execution; async workflow runtime is scheduled for TASK-007.
+- Shell command semantic parsing relies on normalized inputs/operations provided to `Action` rather than full bash AST parsing.
 
 **Commit/PR:**  
-TBD
+- Branch: `task/TASK-003-specguard`
+- Commit SHA: `033eed5` (code and tests), follow-up report commit
 
 **Questions/blockers:**  
-TBD
+- None. All acceptance criteria and 15 required test scenarios are met and verified on local Python 3.12.9.
 
 ## Main Agent Review
 
 > Main agent only.
 
-**Verdict:** PENDING
+**Verdict:** CHANGES_REQUESTED
 
-**Findings:**  
-Pending implementation.
+**Reviewed implementation:** `033eed532a47a9d735b2ea7e3aa4008e4cb5797d`
 
-**Next instruction:**  
-Do not start TASK-004 until this section says ACCEPTED.
+**Accepted foundation:**
+- Action / ActionObservation / GuardDecision models are a good vendor-neutral base.
+- ACTIVE-only enforcement and BLOCK > WARN > ALLOW aggregation are correctly structured.
+- HARD/SOFT/ASSUMPTION authority handling for DENY rules is appropriate.
+- TracePointer provenance, serialization, tool/action/path matching, and pre/post APIs are in place.
+- Executor reports 99/99 tests passing on local Python 3.12.9.
+
+### BLOCKER 1 — REQUIRE / PREFER semantics are inverted
+
+Current behavior treats a matching REQUIRE as a violation and a matching PREFER as a warning:
+
+```text
+matches REQUIRE scope -> BLOCK
+matches PREFER scope  -> WARN
+```
+
+But matching the required/preferred condition means the action is compliant. The current engine therefore punishes actions for satisfying the rule.
+
+A single scope also cannot express both:
+- **when** a rule applies; and
+- **what** must/preferably be true.
+
+**Required fix:**
+Use explicit applicability vs compliance semantics. A recommended narrow design:
+
+```text
+Constraint.scope             = applicability / "when"
+Constraint.compliance_scope  = required or preferred condition
+Constraint.rule_effect       = DENY | REQUIRE | PREFER
+```
+
+Semantics:
+
+- `DENY`: if applicability scope matches -> violation.
+- `REQUIRE`: if applicability matches **and compliance_scope does not match** -> violation.
+- `REQUIRE`: if compliance_scope matches -> compliant, no violation.
+- `PREFER`: if applicability matches **and preferred/compliance scope does not match** -> WARN.
+- `PREFER`: if preferred condition matches -> no warning.
+
+Use an equivalent typed design if cleaner, but do not infer compliance from description text.
+
+Keep one authoritative `rule_effect` location. The newly-added `ConstraintScope.rule_effect` override mixes selector data with policy semantics and should be removed unless there is a concrete need for two independent effect sources.
+
+Add tests demonstrating both compliant and violating REQUIRE/PREFER cases.
+
+### BLOCKER 2 — selector "exact match" is not exact
+
+Current code compares:
+
+```python
+str(action_value).strip() == str(selector_value).strip()
+```
+
+This makes different typed values equivalent, for example `1` and `"1"`, or `True` and `"True"`.
+
+TASK-003 requires exact key/value matching.
+
+**Required fix:**
+- Compare normalized durable values directly, preserving type semantics.
+- `1 != "1"`, `True != "True"`.
+- Add regression tests for typed mismatches.
+
+### BLOCKER 3 — post-action validation can silently discard observed effects
+
+Current code selects:
+
+```python
+changed_paths or accessed_paths or action.paths
+```
+
+If both `changed_paths` and `accessed_paths` are present, one entire class of observed effects is discarded.
+
+Example:
+- safe file changed;
+- forbidden secret file read;
+- because `changed_paths` is non-empty, the forbidden read is never evaluated.
+
+**Required fix:**
+- Validate all observed effects, not only the first non-empty category.
+- Preserve action/effect semantics sufficiently to distinguish writes from reads.
+- Recommended: evaluate changed paths as FILE_WRITE observations and accessed paths as FILE_READ observations, plus any explicit observed action/tool effect, then aggregate decisions deterministically with BLOCK > WARN > ALLOW.
+- Add a regression test where a safe write and forbidden read occur in the same observation; result must detect the read violation.
+
+### BLOCKER 4 — unordered inputs undermine deterministic decisions
+
+`Action.paths`, `ActionObservation` paths, and `GuardDecision` ID/reason tuple validators currently accept `set/frozenset` and convert iteration order directly to tuple.
+
+That can make target_path selection, reasons, and serialized decisions nondeterministic across runs.
+
+**Required fix:**
+- For order-sensitive fields, reject unordered set/frozenset inputs, or normalize them with an explicitly documented deterministic ordering.
+- Prefer rejecting sets for paths/reasons and using ordered sequences.
+- Add regression tests.
+
+**Required re-check:**
+- local Python 3.12.9 only;
+- `python --version`;
+- `python -m pytest -v`;
+- existing TASK-001 and TASK-002 tests remain green;
+- update Executor Report with exact result and commit SHA.
+
+**Next instruction:**
+Fix these issues on `task/TASK-003-specguard`. Do not start TASK-004.
+
