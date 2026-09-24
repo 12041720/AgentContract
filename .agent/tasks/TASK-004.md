@@ -1,10 +1,10 @@
 # TASK-004 — Claims, Evidence Graph, and Deterministic EvidenceGate
 
-**Status:** READY_FOR_EXECUTOR  
+**Status:** CHANGES_REQUESTED  
 **Milestone:** M1 — Executable contract core  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-004-evidence-gate`  
-**Main-agent review:** pending
+**Main-agent review:** changes requested
 
 ## Objective
 
@@ -216,7 +216,103 @@ python -m pytest -v
 
 > Main agent only.
 
-**Verdict:** PENDING
+**Verdict:** CHANGES_REQUESTED
 
-**Next instruction:**  
-Do not start TASK-005 until this section says ACCEPTED.
+**Reviewed implementation:** `129f9ca7d81b923c7d13e7980b454c15b70af5c7`  
+**Reviewed branch head/report:** `5cb12e811688ef9ea63813d1ffc4f2cfd062a82a`
+
+**Accepted foundation:**
+- typed Claim / EvidenceRef / ClaimEvaluation models are a solid base;
+- ToolResult SUCCESS / ERROR / TIMEOUT handling is structured;
+- trace/call provenance is retained in EvidenceRef;
+- EvidenceGraph supports forward/reverse lookup;
+- executor reports 123 tests passing on local Python 3.12.9.
+
+### BLOCKER 1 — Claims can be verified without deterministic execution identity
+
+`Claim` permits all execution selectors to be absent. Then `_filter_tool_results_for_claim()` can return arbitrary ToolResults from the candidate trace(s).
+
+Also, when `call_id` is present, the current filter **does not validate simultaneously supplied `tool_name` or `command`**. A claim can point at call A while claiming a different command/tool and still be verified by call A's success.
+
+Finally, `ClaimType.GENERIC` is evaluated exactly like `ACTION_COMPLETED`, allowing arbitrary semantic prose to become VERIFIED from an unrelated successful execution. TASK-004 explicitly forbids verifying arbitrary semantic claims.
+
+**Required fix:**
+- `GENERIC` must never become VERIFIED by deterministic EvidenceGate; return UNVERIFIED/unsupported or remove it from v0.1 verification.
+- For execution-backed claim types, require deterministic resolution inside the declared trace/session:
+  - exact `call_id` is preferred; or
+  - tool/command selectors must resolve to exactly one ToolCall.
+- zero matches -> UNVERIFIED; multiple matches -> UNVERIFIED as ambiguous.
+- every selector supplied on a claim is conjunctive: if `call_id + tool_name + command` are supplied, all must match the same ToolCall.
+- do not search across all traces for a success claim with no trace identity.
+- add tests for under-scoped claim, ambiguous same-tool calls, and call_id with mismatching tool/command.
+
+### BLOCKER 2 — FILE_EXISTS uses non-evidence text/irrelevant fields as proof
+
+Current `_file_matches_tool_result()` can verify existence merely because a plain string contains the path, or because a generic list contains it. It can also contradict target A from `{"path": "B", "exists": false}` due to the final global `exists is False` check.
+
+This can turn logs or unrelated structured output into false file-state evidence.
+
+**Required fix:**
+Use only explicit structured artifact/state observations for FILE_EXISTS.
+
+A narrow v0.1 contract is sufficient, for example:
+- matching `{"path": target, "exists": true}` -> SUPPORTS;
+- matching `{"path": target, "exists": false}` -> CONTRADICTS;
+- explicit `created_paths/existing_paths` containing target -> SUPPORTS;
+- explicit `missing_paths` containing target -> CONTRADICTS.
+
+Do not use free-text substring matching or unrelated generic arrays as existence proof.
+
+Regression tests:
+- plain text mentioning target -> UNVERIFIED;
+- `{"path":"other","exists":false}` must not contradict target;
+- exact target + exists true -> VERIFIED;
+- exact target + exists false -> CONTRADICTED.
+
+### BLOCKER 3 — FrozenDict.__hash__ violates Python equality/hash contract
+
+The new hash fallback uses:
+
+```python
+hash(id(v))
+```
+
+for unhashable values.
+
+Two equal `FrozenDict` instances containing distinct but equal unhashable values can therefore satisfy `a == b` while `hash(a) != hash(b)`, which is invalid for hashable Python objects.
+
+**Required fix:**
+- never use object identity as hash fallback for value-based FrozenDict equality;
+- either compute a structural hash consistent with equality, or raise TypeError when a contained value is not hashable;
+- add a regression test with two distinct equal unhashable values proving the hash/equality contract is not violated.
+
+### BLOCKER 4 — EvidenceGraph update leaves stale reverse edges
+
+`add_evaluation()` documents register **or update**, but replacing an existing claim evaluation does not remove its old event->claim reverse references.
+
+After reevaluation, `get_claims_citing_evidence(old_event)` can incorrectly keep returning the claim.
+
+**Required fix:**
+- when replacing an existing claim_id evaluation, remove its old reverse edges before indexing new evidence;
+- preserve deterministic order;
+- add a test that evaluates/replaces the same claim with different evidence and confirms the old event no longer reverse-links to the claim.
+
+### TEST CORRECTION — contradiction precedence
+
+The current scenario 14 uses two different call_ids and treats them as one "same execution". That is not the invariant in the task.
+
+Do not use two distinct executions to prove contradiction precedence for one exact execution. After deterministic claim resolution is fixed, ambiguous multi-call claims should be UNVERIFIED rather than arbitrarily merged.
+
+Test contradiction precedence using evidence that genuinely refers to the same claimed execution, or factor/test the verdict aggregation rule directly if TraceStore's one-result-per-call invariant makes dual result evidence impossible in v0.1.
+
+**Required re-check:**
+- local Python 3.12.9 only;
+- inspect and update tests for the exact failure modes above;
+- `python --version`;
+- `python -m pytest -v`;
+- TASK-001/002/003 suites remain green;
+- update Executor Report with actual pushed commit SHA.
+
+**Next instruction:**
+Fix these blockers on `task/TASK-004-evidence-gate`. Do not start TASK-005.
+
