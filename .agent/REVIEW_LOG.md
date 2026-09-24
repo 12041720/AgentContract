@@ -252,3 +252,28 @@ Next:
 **Next:** TASK-004 — deterministic EvidenceGate core is active.
 
 ---
+
+## 2026-09-24 — TASK-004 first implementation review
+
+**Implementation reviewed:** `129f9ca7d81b923c7d13e7980b454c15b70af5c7`
+
+**Verdict:** CHANGES_REQUESTED
+
+**Verified strengths:**
+- typed claims/evidence/evaluations;
+- ToolResult status-based verification;
+- trace/call provenance retained;
+- bidirectional EvidenceGraph foundation;
+- executor reports 123/123 tests passing on local Python 3.12.9.
+
+**Blocking findings:**
+- under-scoped claims and GENERIC claims can be incorrectly VERIFIED;
+- call_id currently bypasses simultaneously supplied tool/command selectors;
+- FILE_EXISTS accepts free text/unrelated output as file-state evidence;
+- FrozenDict identity-based hash fallback violates equality/hash contract;
+- reevaluating a claim can leave stale EvidenceGraph reverse edges;
+- contradiction precedence test incorrectly merges distinct executions.
+
+**Next:** execution agent fixes TASK-004 on `task/TASK-004-evidence-gate`; TASK-005 remains blocked.
+
+---
