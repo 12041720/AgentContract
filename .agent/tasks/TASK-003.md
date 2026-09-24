@@ -240,7 +240,7 @@ Do not install another Python interpreter for compatibility testing.
 
 **Commit/PR:**  
 - Branch: `task/TASK-003-specguard`
-- Commit SHA: pending commit & push update
+- Fix Commit SHA: `cf80fd4` (Round 2 fixes: exact selector and compliance_scope invariant)
 
 **Questions/blockers:**  
 - None. All Round 1 and Round 2 review blockers resolved, verified, and tested on local Python 3.12.9.
