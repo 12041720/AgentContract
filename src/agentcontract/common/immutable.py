@@ -74,14 +74,7 @@ class FrozenDict(Mapping[str, Any]):
 
     def __hash__(self) -> int:
         if self._hash is None:
-            items = []
-            for k, v in sorted(self._data.items()):
-                try:
-                    h = hash(v)
-                except TypeError:
-                    h = hash(id(v))
-                items.append((k, h))
-            self._hash = hash(tuple(items))
+            self._hash = hash(tuple(sorted(self._data.items())))
         return self._hash
 
     @classmethod

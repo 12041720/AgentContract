@@ -235,3 +235,39 @@ def test_top_level_package_exports_evidence():
     assert RootEvidenceRelation is EvidenceRelation
     assert RootEvidenceGate is EvidenceGate
     assert RootEvidenceGraph is EvidenceGraph
+
+
+def test_frozen_dict_hash_equality_contract():
+    """Verify FrozenDict preserves Python equality/hash contract and raises TypeError for unhashable values."""
+    from agentcontract.common.immutable import FrozenDict
+
+    class UnhashableValue:
+        def __init__(self, value: int) -> None:
+            self.value = value
+
+        def __eq__(self, other: object) -> bool:
+            return isinstance(other, UnhashableValue) and self.value == other.value
+
+    # Two distinct equal unhashable values
+    val1 = UnhashableValue(42)
+    val2 = UnhashableValue(42)
+    assert val1 is not val2
+    assert val1 == val2
+
+    d1 = FrozenDict({"item": val1})
+    d2 = FrozenDict({"item": val2})
+    assert d1 == d2
+
+    # Attempting to hash must raise TypeError rather than using hash(id(v)) fallback
+    with pytest.raises(TypeError):
+        hash(d1)
+    with pytest.raises(TypeError):
+        hash(d2)
+
+    # For hashable values, equality strictly guarantees equal hash values
+    d3 = FrozenDict({"a": 1, "b": "hello", "c": (1, 2)})
+    d4 = FrozenDict({"b": "hello", "a": 1, "c": (1, 2)})
+    assert d3 == d4
+    assert hash(d3) == hash(d4)
+
+

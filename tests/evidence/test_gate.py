@@ -487,31 +487,35 @@ def test_scenario_13_graph_reverse_lookup():
 # --- Scenario 14: Contradictory evidence dominates support for same execution ---
 
 def test_scenario_14_contradictory_evidence_dominates_support():
-    """Scenario 14: When both supporting and contradictory evidence exist, contradiction wins."""
-    # Construct a claim evaluated with custom contradictory evidence
-    claim = Claim(
-        claim_id="clm-contradiction",
-        claim_type=ClaimType.TOOL_SUCCEEDED,
-        description="Action completed successfully",
-        trace_id="tr-conflict",
-    )
+    """Scenario 14: Contradiction strictly dominates support for the same claim target / execution.
+
+    Tests both:
+    1. Direct verdict determination: when both supporting and contradicting evidence are present,
+       CONTRADICTED strictly wins.
+    2. End-to-end trace evaluation: where a file target has both supporting (creation) and
+       contradicting (deletion) events in trace history.
+    """
+    # 1. Direct verdict determination rule check
     sup_ref = EvidenceRef(
         trace_pointer=TracePointer(trace_id="tr-conflict", event_id="evt-ok"),
         relation=EvidenceRelation.SUPPORTS,
-        reason="Partial step succeeded",
+        reason="Creation succeeded",
     )
     con_ref = EvidenceRef(
         trace_pointer=TracePointer(trace_id="tr-conflict", event_id="evt-err"),
         relation=EvidenceRelation.CONTRADICTS,
-        reason="Final step threw fatal exception",
+        reason="Subsequent observation confirmed file missing",
     )
+    verdict, reason = EvidenceGate.determine_verdict([sup_ref], [con_ref])
+    assert verdict == ClaimVerdict.CONTRADICTED
+    assert "CONTRADICTED" in reason
 
-    # EvidenceGate evaluate with mixed results from matching calls
+    # 2. End-to-end trace evaluation for same claim target
     store = TraceStore()
-    tc1 = ToolCall(call_id="call-step-1", tool_name="pipeline", arguments={})
+    tc1 = ToolCall(call_id="c-write-f", tool_name="file_writer", arguments={"path": "temp.txt"})
     store.append(
         TraceEvent(
-            event_id="evt-call-1",
+            event_id="evt-w-call",
             trace_id="tr-conflict",
             sequence=0,
             actor=ActorKind.AGENT,
@@ -521,20 +525,23 @@ def test_scenario_14_contradictory_evidence_dominates_support():
     )
     store.append(
         TraceEvent(
-            event_id="evt-ok",
+            event_id="evt-w-res",
             trace_id="tr-conflict",
             sequence=1,
             actor=ActorKind.TOOL,
             event_kind=EventKind.TOOL_RESULT,
-            parent_id="evt-call-1",
-            payload=ToolResult(call_id="call-step-1", status=ToolResultStatus.SUCCESS, exit_code=0),
+            parent_id="evt-w-call",
+            payload=ToolResult(
+                call_id="c-write-f",
+                status=ToolResultStatus.SUCCESS,
+                output={"created_paths": ["temp.txt"]},
+            ),
         )
     )
-
-    tc2 = ToolCall(call_id="call-step-2", tool_name="pipeline", arguments={})
+    tc2 = ToolCall(call_id="c-del-f", tool_name="file_deleter", arguments={"path": "temp.txt"})
     store.append(
         TraceEvent(
-            event_id="evt-call-2",
+            event_id="evt-d-call",
             trace_id="tr-conflict",
             sequence=2,
             actor=ActorKind.AGENT,
@@ -544,26 +551,29 @@ def test_scenario_14_contradictory_evidence_dominates_support():
     )
     store.append(
         TraceEvent(
-            event_id="evt-err",
+            event_id="evt-d-res",
             trace_id="tr-conflict",
             sequence=3,
             actor=ActorKind.TOOL,
             event_kind=EventKind.TOOL_RESULT,
-            parent_id="evt-call-2",
-            payload=ToolResult(call_id="call-step-2", status=ToolResultStatus.ERROR, error="Failed"),
+            parent_id="evt-d-call",
+            payload=ToolResult(
+                call_id="c-del-f",
+                status=ToolResultStatus.SUCCESS,
+                output={"missing_paths": ["temp.txt"]},
+            ),
         )
     )
 
     gate = EvidenceGate()
-    # Claim targets tool_name="pipeline" without specific call_id -> finds both step 1 and step 2
-    claim_pipeline = Claim(
-        claim_id="clm-pipeline",
-        claim_type=ClaimType.TOOL_SUCCEEDED,
-        description="Pipeline succeeded",
+    claim_file = Claim(
+        claim_id="clm-file-conflict",
+        claim_type=ClaimType.FILE_EXISTS,
+        description="temp.txt exists",
         trace_id="tr-conflict",
-        tool_name="pipeline",
+        target_path="temp.txt",
     )
-    evaluation = gate.evaluate(claim_pipeline, store)
+    evaluation = gate.evaluate(claim_file, store)
 
     assert evaluation.verdict == ClaimVerdict.CONTRADICTED
     assert evaluation.is_contradicted is True
@@ -630,3 +640,427 @@ def test_scenario_15_file_exists_claim_verification():
     eval_missing = gate.evaluate(claim_missing, store)
     assert eval_missing.verdict == ClaimVerdict.UNVERIFIED
     assert eval_missing.is_unverified is True
+
+
+# --- Regression Tests for Main Agent Review Blockers ---
+
+def test_generic_claim_never_verified_by_evidence_gate():
+    """GENERIC claim type must never be VERIFIED by deterministic EvidenceGate."""
+    store = _make_store_with_call_and_result(
+        trace_id="tr-generic",
+        call_id="c-gen-1",
+        tool_name="worker",
+        status=ToolResultStatus.SUCCESS,
+        exit_code=0,
+    )
+    gate = EvidenceGate()
+    claim = Claim(
+        claim_id="clm-generic-prose",
+        claim_type=ClaimType.GENERIC,
+        description="The code architecture is robust and fully optimal",
+        trace_id="tr-generic",
+        call_id="c-gen-1",
+    )
+    evaluation = gate.evaluate(claim, store)
+    assert evaluation.verdict == ClaimVerdict.UNVERIFIED
+    assert evaluation.is_unverified is True
+    assert "GENERIC" in evaluation.reason
+
+
+def test_execution_claim_requires_trace_id_and_selectors():
+    """Execution claims missing trace_id or selectors must return UNVERIFIED without querying all traces."""
+    store = _make_store_with_call_and_result(
+        trace_id="tr-scoped",
+        call_id="c-scoped-1",
+        tool_name="tester",
+        status=ToolResultStatus.SUCCESS,
+        exit_code=0,
+    )
+    gate = EvidenceGate()
+
+    # Missing trace_id
+    claim_no_trace = Claim(
+        claim_id="clm-no-trace",
+        claim_type=ClaimType.TOOL_SUCCEEDED,
+        description="Tester succeeded without trace",
+        call_id="c-scoped-1",
+    )
+    eval_no_trace = gate.evaluate(claim_no_trace, store)
+    assert eval_no_trace.verdict == ClaimVerdict.UNVERIFIED
+    assert "must specify a trace_id" in eval_no_trace.reason
+
+    # Missing all selectors
+    claim_no_sel = Claim(
+        claim_id="clm-no-selectors",
+        claim_type=ClaimType.TOOL_SUCCEEDED,
+        description="Tester succeeded without selectors",
+        trace_id="tr-scoped",
+    )
+    eval_no_sel = gate.evaluate(claim_no_sel, store)
+    assert eval_no_sel.verdict == ClaimVerdict.UNVERIFIED
+    assert "lacks deterministic execution selectors" in eval_no_sel.reason
+
+
+def test_ambiguous_execution_claim_returns_unverified():
+    """When selectors match multiple executions in the trace, claim is UNVERIFIED due to ambiguity."""
+    store = TraceStore()
+    for i in (1, 2):
+        tc = ToolCall(call_id=f"c-ambig-{i}", tool_name="worker", arguments={"task": f"step-{i}"})
+        store.append(
+            TraceEvent(
+                event_id=f"evt-call-{i}",
+                trace_id="tr-ambig",
+                sequence=2 * (i - 1),
+                actor=ActorKind.AGENT,
+                event_kind=EventKind.TOOL_CALL,
+                payload=tc,
+            )
+        )
+        store.append(
+            TraceEvent(
+                event_id=f"evt-res-{i}",
+                trace_id="tr-ambig",
+                sequence=2 * (i - 1) + 1,
+                actor=ActorKind.TOOL,
+                event_kind=EventKind.TOOL_RESULT,
+                parent_id=f"evt-call-{i}",
+                payload=ToolResult(call_id=f"c-ambig-{i}", status=ToolResultStatus.SUCCESS, exit_code=0),
+            )
+        )
+
+    gate = EvidenceGate()
+    claim = Claim(
+        claim_id="clm-ambig",
+        claim_type=ClaimType.TOOL_SUCCEEDED,
+        description="Worker task succeeded",
+        trace_id="tr-ambig",
+        tool_name="worker",  # Matches both c-ambig-1 and c-ambig-2
+    )
+    evaluation = gate.evaluate(claim, store)
+    assert evaluation.verdict == ClaimVerdict.UNVERIFIED
+    assert evaluation.is_unverified is True
+    assert "Ambiguous claim" in evaluation.reason
+
+
+def test_conjunctive_selectors_must_all_match():
+    """call_id, tool_name, and command must all match conjunctively on the same ToolCall."""
+    store = TraceStore()
+    tc = ToolCall(call_id="c-conj-1", tool_name="bash", arguments={"cmd": "pytest -v"})
+    store.append(
+        TraceEvent(
+            event_id="evt-conj-call",
+            trace_id="tr-conj",
+            sequence=0,
+            actor=ActorKind.AGENT,
+            event_kind=EventKind.TOOL_CALL,
+            payload=tc,
+        )
+    )
+    store.append(
+        TraceEvent(
+            event_id="evt-conj-res",
+            trace_id="tr-conj",
+            sequence=1,
+            actor=ActorKind.TOOL,
+            event_kind=EventKind.TOOL_RESULT,
+            parent_id="evt-conj-call",
+            payload=ToolResult(call_id="c-conj-1", status=ToolResultStatus.SUCCESS, exit_code=0),
+        )
+    )
+
+    gate = EvidenceGate()
+
+    # Mismatch tool_name
+    c_bad_tool = Claim(
+        claim_id="clm-bad-tool",
+        claim_type=ClaimType.COMMAND_EXITED_ZERO,
+        description="Test ran on git",
+        trace_id="tr-conj",
+        call_id="c-conj-1",
+        tool_name="git",  # does not match bash
+    )
+    eval_bad_tool = gate.evaluate(c_bad_tool, store)
+    assert eval_bad_tool.verdict == ClaimVerdict.UNVERIFIED
+    assert "does not match" in eval_bad_tool.reason
+
+    # Mismatch command
+    c_bad_cmd = Claim(
+        claim_id="clm-bad-cmd",
+        claim_type=ClaimType.COMMAND_EXITED_ZERO,
+        description="Test ran flake8",
+        trace_id="tr-conj",
+        call_id="c-conj-1",
+        tool_name="bash",
+        command="flake8",  # does not match pytest
+    )
+    eval_bad_cmd = gate.evaluate(c_bad_cmd, store)
+    assert eval_bad_cmd.verdict == ClaimVerdict.UNVERIFIED
+    assert "do not match" in eval_bad_cmd.reason
+
+    # All 3 match conjunctively -> VERIFIED
+    c_good = Claim(
+        claim_id="clm-good-all",
+        claim_type=ClaimType.COMMAND_EXITED_ZERO,
+        description="Test ran pytest on bash",
+        trace_id="tr-conj",
+        call_id="c-conj-1",
+        tool_name="bash",
+        command="pytest",
+    )
+    eval_good = gate.evaluate(c_good, store)
+    assert eval_good.verdict == ClaimVerdict.VERIFIED
+    assert eval_good.is_verified is True
+
+
+def test_file_exists_structured_evidence_only():
+    """FILE_EXISTS only accepts explicit structured evidence; rejects plain text and unrelated observations."""
+    store = TraceStore()
+    tc1 = ToolCall(call_id="c-log", tool_name="logger", arguments={})
+    store.append(
+        TraceEvent(
+            event_id="evt-log-call",
+            trace_id="tr-file-struct",
+            sequence=0,
+            actor=ActorKind.AGENT,
+            event_kind=EventKind.TOOL_CALL,
+            payload=tc1,
+        )
+    )
+    # Plain text output mentioning the target file path
+    store.append(
+        TraceEvent(
+            event_id="evt-log-res",
+            trace_id="tr-file-struct",
+            sequence=1,
+            actor=ActorKind.TOOL,
+            event_kind=EventKind.TOOL_RESULT,
+            parent_id="evt-log-call",
+            payload=ToolResult(
+                call_id="c-log",
+                status=ToolResultStatus.SUCCESS,
+                output="Log text: generated report at /data/report.pdf successfully.",
+                exit_code=0,
+            ),
+        )
+    )
+    # Output with exists=False for another path
+    tc2 = ToolCall(call_id="c-stat", tool_name="stat", arguments={})
+    store.append(
+        TraceEvent(
+            event_id="evt-stat-call",
+            trace_id="tr-file-struct",
+            sequence=2,
+            actor=ActorKind.AGENT,
+            event_kind=EventKind.TOOL_CALL,
+            payload=tc2,
+        )
+    )
+    store.append(
+        TraceEvent(
+            event_id="evt-stat-res",
+            trace_id="tr-file-struct",
+            sequence=3,
+            actor=ActorKind.TOOL,
+            event_kind=EventKind.TOOL_RESULT,
+            parent_id="evt-stat-call",
+            payload=ToolResult(
+                call_id="c-stat",
+                status=ToolResultStatus.SUCCESS,
+                output={"path": "/data/other.txt", "exists": False},
+                exit_code=0,
+            ),
+        )
+    )
+
+    gate = EvidenceGate()
+
+    # 1. Plain text cannot verify /data/report.pdf -> UNVERIFIED
+    c_pdf = Claim(
+        claim_id="clm-pdf",
+        claim_type=ClaimType.FILE_EXISTS,
+        description="report.pdf exists",
+        trace_id="tr-file-struct",
+        target_path="/data/report.pdf",
+    )
+    eval_pdf = gate.evaluate(c_pdf, store)
+    assert eval_pdf.verdict == ClaimVerdict.UNVERIFIED
+    assert eval_pdf.is_unverified is True
+
+    # 2. {"path": "/data/other.txt", "exists": False} must not contradict /data/report.pdf
+    assert len(eval_pdf.contradicting_evidence) == 0
+
+    # 3. Exact target with exists=True -> VERIFIED
+    tc3 = ToolCall(call_id="c-probe-ok", tool_name="probe", arguments={})
+    store.append(
+        TraceEvent(
+            event_id="evt-probe-ok-call",
+            trace_id="tr-file-struct",
+            sequence=4,
+            actor=ActorKind.AGENT,
+            event_kind=EventKind.TOOL_CALL,
+            payload=tc3,
+        )
+    )
+    store.append(
+        TraceEvent(
+            event_id="evt-probe-ok-res",
+            trace_id="tr-file-struct",
+            sequence=5,
+            actor=ActorKind.TOOL,
+            event_kind=EventKind.TOOL_RESULT,
+            parent_id="evt-probe-ok-call",
+            payload=ToolResult(
+                call_id="c-probe-ok",
+                status=ToolResultStatus.SUCCESS,
+                output={"path": "/data/report.pdf", "exists": True},
+                exit_code=0,
+            ),
+        )
+    )
+    eval_pdf_verified = gate.evaluate(c_pdf, store)
+    assert eval_pdf_verified.verdict == ClaimVerdict.VERIFIED
+    assert eval_pdf_verified.is_verified is True
+
+    # 4. Exact target with exists=False -> CONTRADICTED
+    c_other = Claim(
+        claim_id="clm-other",
+        claim_type=ClaimType.FILE_EXISTS,
+        description="other.txt exists",
+        trace_id="tr-file-struct",
+        target_path="/data/other.txt",
+    )
+    eval_other = gate.evaluate(c_other, store)
+    assert eval_other.verdict == ClaimVerdict.CONTRADICTED
+    assert eval_other.is_contradicted is True
+
+    # 5. Explicit missing_paths containing target -> CONTRADICTED
+    tc_miss = ToolCall(call_id="c-miss", tool_name="cleaner", arguments={})
+    store.append(
+        TraceEvent(
+            event_id="evt-miss-call",
+            trace_id="tr-file-struct",
+            sequence=6,
+            actor=ActorKind.AGENT,
+            event_kind=EventKind.TOOL_CALL,
+            payload=tc_miss,
+        )
+    )
+    store.append(
+        TraceEvent(
+            event_id="evt-miss-res",
+            trace_id="tr-file-struct",
+            sequence=7,
+            actor=ActorKind.TOOL,
+            event_kind=EventKind.TOOL_RESULT,
+            parent_id="evt-miss-call",
+            payload=ToolResult(
+                call_id="c-miss",
+                status=ToolResultStatus.SUCCESS,
+                output={"missing_paths": ["/data/deleted.txt"]},
+                exit_code=0,
+            ),
+        )
+    )
+    c_del = Claim(
+        claim_id="clm-deleted",
+        claim_type=ClaimType.FILE_EXISTS,
+        description="deleted.txt exists",
+        trace_id="tr-file-struct",
+        target_path="/data/deleted.txt",
+    )
+    eval_del = gate.evaluate(c_del, store)
+    assert eval_del.verdict == ClaimVerdict.CONTRADICTED
+    assert eval_del.is_contradicted is True
+
+    # 6. Tool result with ERROR status must not verify existence even if created_paths is present
+    tc4 = ToolCall(call_id="c-fail-write", tool_name="writer", arguments={})
+    store.append(
+        TraceEvent(
+            event_id="evt-fail-w-call",
+            trace_id="tr-file-struct",
+            sequence=8,
+            actor=ActorKind.AGENT,
+            event_kind=EventKind.TOOL_CALL,
+            payload=tc4,
+        )
+    )
+    store.append(
+        TraceEvent(
+            event_id="evt-fail-w-res",
+            trace_id="tr-file-struct",
+            sequence=9,
+            actor=ActorKind.TOOL,
+            event_kind=EventKind.TOOL_RESULT,
+            parent_id="evt-fail-w-call",
+            payload=ToolResult(
+                call_id="c-fail-write",
+                status=ToolResultStatus.ERROR,
+                output={"created_paths": ["/data/failed_out.txt"]},
+                error="Disk quota exceeded",
+            ),
+        )
+    )
+    c_failed = Claim(
+        claim_id="clm-failed",
+        claim_type=ClaimType.FILE_EXISTS,
+        description="failed_out.txt exists",
+        trace_id="tr-file-struct",
+        target_path="/data/failed_out.txt",
+    )
+    eval_failed = gate.evaluate(c_failed, store)
+    assert eval_failed.verdict == ClaimVerdict.UNVERIFIED
+    assert eval_failed.is_unverified is True
+
+
+def test_evidence_graph_update_clears_stale_reverse_edges():
+    """Updating a claim in EvidenceGraph must purge old reverse edges before adding new ones."""
+    graph = EvidenceGraph()
+    claim = Claim(
+        claim_id="clm-dynamic",
+        claim_type=ClaimType.TOOL_SUCCEEDED,
+        description="Dynamic claim",
+        trace_id="tr-dyn",
+        call_id="c-dyn-1",
+    )
+
+    # First evaluation citing evt-1
+    ref1 = EvidenceRef(
+        trace_pointer=TracePointer(trace_id="tr-dyn", event_id="evt-1"),
+        relation=EvidenceRelation.SUPPORTS,
+        call_id="c-dyn-1",
+    )
+    eval1 = ClaimEvaluation(
+        claim=claim,
+        verdict=ClaimVerdict.VERIFIED,
+        supporting_evidence=(ref1,),
+        contradicting_evidence=(),
+        reason="Supported by evt-1",
+    )
+    graph.add_evaluation(eval1)
+
+    assert graph.get_claims_citing_evidence("evt-1") == ("clm-dynamic",)
+    assert graph.get_claims_citing_evidence("evt-2") == ()
+
+    # Re-evaluate / update claim to cite evt-2 instead
+    ref2 = EvidenceRef(
+        trace_pointer=TracePointer(trace_id="tr-dyn", event_id="evt-2"),
+        relation=EvidenceRelation.SUPPORTS,
+        call_id="c-dyn-2",
+    )
+    eval2 = ClaimEvaluation(
+        claim=claim,
+        verdict=ClaimVerdict.VERIFIED,
+        supporting_evidence=(ref2,),
+        contradicting_evidence=(),
+        reason="Supported by evt-2",
+    )
+    graph.add_evaluation(eval2)
+
+    # evt-1 must no longer reverse-link to clm-dynamic
+    assert graph.get_claims_citing_evidence("evt-1") == ()
+    assert graph.get_claims_citing_evidence("evt-1", trace_id="tr-dyn") == ()
+
+    # evt-2 must now reverse-link to clm-dynamic
+    assert graph.get_claims_citing_evidence("evt-2") == ("clm-dynamic",)
+    assert graph.get_claims_citing_evidence("evt-2", trace_id="tr-dyn") == ("clm-dynamic",)
+

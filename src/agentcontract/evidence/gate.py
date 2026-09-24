@@ -1,6 +1,6 @@
 """Deterministic EvidenceGate verifying agent claims against trace store evidence."""
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any
 
@@ -36,63 +36,142 @@ def _command_in_tool_call(tc: ToolCall, command: str) -> bool:
 
 
 def _tool_call_matches_claim(tc: ToolCall, claim: Claim) -> bool:
-    """Deterministically check if a ToolCall satisfies the identifiers on a Claim."""
+    """Deterministically check if a ToolCall satisfies all selectors on a Claim conjunctively."""
     if claim.call_id is not None and tc.call_id != claim.call_id:
         return False
     if claim.tool_name is not None and tc.tool_name.strip().lower() != claim.tool_name.strip().lower():
         return False
-    if claim.command is not None:
-        if not _command_in_tool_call(tc, claim.command):
-            return False
+    if claim.command is not None and not _command_in_tool_call(tc, claim.command):
+        return False
     return True
 
 
-def _file_matches_tool_result(tr: ToolResult, target_path: str) -> tuple[bool, bool]:
-    """Check if target_path is confirmed or contradicted in a ToolResult output or metadata.
+def _check_file_exists_in_event(event: TraceEvent, target_path: str) -> tuple[bool, bool]:
+    """Check explicit structured artifact/state observations for target_path.
 
     Returns:
-        (is_present, is_contradicted)
+        (supports, contradicts)
     """
     norm_target = target_path.strip().replace("\\", "/")
+    candidate_mappings: list[Mapping[str, Any]] = []
+    can_support = True
+    if event.event_kind == EventKind.TOOL_RESULT and event.tool_result is not None:
+        tr = event.tool_result
+        if tr.status != ToolResultStatus.SUCCESS:
+            can_support = False
+        if isinstance(tr.output, Mapping):
+            candidate_mappings.append(tr.output)
+        if isinstance(tr.metadata, Mapping):
+            candidate_mappings.append(tr.metadata)
 
-    # Check output
-    output = tr.output
-    if output is not None:
-        # Mapping output
-        if isinstance(output, Mapping):
-            for k in ("files", "created", "modified", "paths", "artifacts"):
-                if k in output:
-                    val = output[k]
-                    if isinstance(val, (list, tuple)):
-                        for item in val:
-                            if str(item).strip().replace("\\", "/") == norm_target:
-                                return True, False
-            for k in ("file", "path", "target"):
-                if k in output and str(output[k]).strip().replace("\\", "/") == norm_target:
-                    if output.get("exists") is False:
-                        return False, True
-                    return True, False
-            if output.get("exists") is False:
-                return False, True
+    elif event.event_kind == EventKind.STATE_OBSERVATION:
+        if isinstance(event.payload, Mapping):
+            candidate_mappings.append(event.payload)
+        if isinstance(event.metadata, Mapping):
+            candidate_mappings.append(event.metadata)
 
-        # String or list output
-        elif isinstance(output, (list, tuple)):
-            for item in output:
-                if str(item).strip().replace("\\", "/") == norm_target:
-                    return True, False
-        elif isinstance(output, str):
-            if norm_target in output.replace("\\", "/"):
-                return True, False
+    supports = False
+    contradicts = False
 
-    # Check metadata
-    if "changed_paths" in tr.metadata:
-        cp = tr.metadata["changed_paths"]
-        if isinstance(cp, (list, tuple)):
-            for p in cp:
-                if str(p).strip().replace("\\", "/") == norm_target:
-                    return True, False
+    for m in candidate_mappings:
+        # 1. Matching exact {"path": target, "exists": true / false}
+        for key in ("path", "target", "file"):
+            if key in m:
+                val = str(m[key]).strip().replace("\\", "/")
+                if val == norm_target:
+                    if "exists" in m:
+                        if m["exists"] is True and can_support:
+                            supports = True
+                        elif m["exists"] is False:
+                            contradicts = True
 
-    return False, False
+        # 2. Explicit created_paths / existing_paths
+        for key in ("created_paths", "existing_paths", "changed_paths", "files"):
+            if key in m and isinstance(m[key], (list, tuple)) and can_support:
+                for item in m[key]:
+                    if str(item).strip().replace("\\", "/") == norm_target:
+                        supports = True
+
+        # 3. Explicit missing_paths / deleted_paths
+        for key in ("missing_paths", "deleted_paths", "not_found"):
+            if key in m and isinstance(m[key], (list, tuple)):
+                for item in m[key]:
+                    if str(item).strip().replace("\\", "/") == norm_target:
+                        contradicts = True
+
+    return supports, contradicts
+
+
+def _resolve_single_tool_execution(
+    calls: dict[str, TraceEvent],
+    results: dict[str, TraceEvent],
+    claim: Claim,
+) -> tuple[TraceEvent | None, str | None]:
+    """Deterministically resolve an execution claim to exactly one ToolResult event.
+
+    Returns:
+        (matching_result_event, error_reason)
+    """
+    # Trace ID is required for execution-backed claims
+    if claim.trace_id is None:
+        return None, f"Execution claim '{claim.claim_id}' must specify a trace_id for deterministic verification."
+
+    # At least one selector must be provided
+    has_selector = (claim.call_id is not None) or (claim.tool_name is not None) or (claim.command is not None)
+    if not has_selector:
+        return None, f"Execution claim '{claim.claim_id}' lacks deterministic execution selectors (call_id, tool_name, or command)."
+
+    # If call_id is specified, find that specific call and validate all other selectors conjunctively
+    if claim.call_id is not None:
+        call_evt = calls.get(claim.call_id)
+        if call_evt is None or call_evt.tool_call is None:
+            return None, f"No ToolCall found for call_id '{claim.call_id}' in trace '{claim.trace_id}'."
+
+        tc = call_evt.tool_call
+        if claim.tool_name is not None and tc.tool_name.strip().lower() != claim.tool_name.strip().lower():
+            return None, (
+                f"ToolCall '{claim.call_id}' tool_name '{tc.tool_name}' does not match "
+                f"claimed tool_name '{claim.tool_name}'."
+            )
+        if claim.command is not None and not _command_in_tool_call(tc, claim.command):
+            return None, (
+                f"ToolCall '{claim.call_id}' arguments do not match "
+                f"claimed command '{claim.command}'."
+            )
+
+        res_evt = results.get(claim.call_id)
+        if res_evt is None or res_evt.tool_result is None:
+            return None, f"No matching ToolResult recorded for ToolCall '{claim.call_id}' in trace '{claim.trace_id}'."
+
+        return res_evt, None
+
+    # If call_id is NOT specified, resolve via tool_name and/or command
+    matched_calls: list[TraceEvent] = []
+    for call_evt in calls.values():
+        tc = call_evt.tool_call
+        if tc is None:
+            continue
+        if _tool_call_matches_claim(tc, claim):
+            matched_calls.append(call_evt)
+
+    if not matched_calls:
+        return None, f"No ToolCall matching selectors found in trace '{claim.trace_id}'."
+
+    if len(matched_calls) > 1:
+        call_ids = [c.tool_call.call_id for c in matched_calls if c.tool_call]
+        return None, (
+            f"Ambiguous claim '{claim.claim_id}': resolved to {len(matched_calls)} matching executions "
+            f"in trace '{claim.trace_id}' ({', '.join(call_ids)}). Claims must resolve to exactly one execution."
+        )
+
+    single_call = matched_calls[0]
+    assert single_call.tool_call is not None
+    cid = single_call.tool_call.call_id
+    res_evt = results.get(cid)
+    if res_evt is None or res_evt.tool_result is None:
+        return None, f"No matching ToolResult recorded for matching ToolCall '{cid}' in trace '{claim.trace_id}'."
+
+    return res_evt, None
 
 
 class EvidenceGate:
@@ -107,6 +186,8 @@ class EvidenceGate:
     6. For exit-code claims, only an observed matching result with exit_code == 0 verifies success.
     7. Evidence from another trace or call_id cannot satisfy a specific claim.
     8. Precedence: Contradiction dominates support for the same execution.
+    9. Generic semantic claims are never verified by deterministic EvidenceGate.
+    10. Execution claims must resolve to exactly one execution; ambiguous or unscoped claims are UNVERIFIED.
     """
 
     def __init__(self, graph: EvidenceGraph | None = None) -> None:
@@ -119,14 +200,26 @@ class EvidenceGate:
 
     def evaluate(self, claim: Claim, trace_store: TraceStore) -> ClaimEvaluation:
         """Evaluate a single claim against events stored in the TraceStore."""
-        # 1. Gather candidate events filtered by trace_id and session_id if specified on the claim
+        # Rule: GENERIC semantic claims must never be verified by deterministic EvidenceGate
+        if claim.claim_type == ClaimType.GENERIC:
+            reason = (
+                f"Claim '{claim.claim_id}' has type GENERIC: arbitrary semantic prose claims "
+                "cannot be verified by deterministic EvidenceGate."
+            )
+            return self._finalize_evaluation(claim, ClaimVerdict.UNVERIFIED, (), (), reason)
+
+        # Scoped claims require a trace_id; do not search across all traces
+        if claim.trace_id is None:
+            reason = f"Claim '{claim.claim_id}' must specify a trace_id for deterministic verification."
+            return self._finalize_evaluation(claim, ClaimVerdict.UNVERIFIED, (), (), reason)
+
+        # 1. Gather candidate events filtered by trace_id and session_id if specified
         events = trace_store.list_events(trace_id=claim.trace_id)
         if claim.session_id is not None:
             events = tuple(e for e in events if e.session_id == claim.session_id)
 
-        # Map call_id -> ToolCall event for correlating results
         tool_call_events: dict[str, TraceEvent] = {}
-        tool_result_events: list[TraceEvent] = []
+        tool_result_events_by_call: dict[str, TraceEvent] = {}
 
         for e in events:
             # Rule 1: AGENT_MESSAGE is never evidence by itself
@@ -136,24 +229,33 @@ class EvidenceGate:
             if e.event_kind == EventKind.TOOL_CALL and e.tool_call is not None:
                 tool_call_events[e.tool_call.call_id] = e
             elif e.event_kind == EventKind.TOOL_RESULT and e.tool_result is not None:
-                tool_result_events.append(e)
+                tool_result_events_by_call[e.tool_result.call_id] = e
 
         supporting: list[EvidenceRef] = []
         contradicting: list[EvidenceRef] = []
-        reason_notes: list[str] = []
 
         # 2. Evaluate claim based on claim_type
-        if claim.claim_type == ClaimType.TOOL_SUCCEEDED:
-            matching_results = self._filter_tool_results_for_claim(
-                tool_result_events, tool_call_events, claim
+        if claim.claim_type in (
+            ClaimType.TOOL_SUCCEEDED,
+            ClaimType.COMMAND_EXITED_ZERO,
+            ClaimType.TESTS_PASSED,
+            ClaimType.ACTION_COMPLETED,
+        ):
+            res_evt, err_reason = _resolve_single_tool_execution(
+                tool_call_events, tool_result_events_by_call, claim
             )
-            if not matching_results:
-                reason = f"No matching ToolResult evidence found for claim '{claim.claim_id}'."
-                return self._finalize_evaluation(claim, ClaimVerdict.UNVERIFIED, (), (), reason)
+            if res_evt is None or res_evt.tool_result is None:
+                return self._finalize_evaluation(
+                    claim,
+                    ClaimVerdict.UNVERIFIED,
+                    (),
+                    (),
+                    err_reason or f"Execution for claim '{claim.claim_id}' could not be resolved.",
+                )
 
-            for res_evt in matching_results:
-                tr = res_evt.tool_result
-                assert tr is not None
+            tr = res_evt.tool_result
+
+            if claim.claim_type == ClaimType.TOOL_SUCCEEDED:
                 if tr.status == ToolResultStatus.SUCCESS:
                     if claim.expected_exit_code is not None and tr.exit_code != claim.expected_exit_code:
                         ref = EvidenceRef.from_event(
@@ -162,7 +264,6 @@ class EvidenceGate:
                             reason=f"ToolResult exit_code {tr.exit_code} != expected {claim.expected_exit_code}.",
                         )
                         contradicting.append(ref)
-                        reason_notes.append(ref.reason or "")
                     else:
                         ref = EvidenceRef.from_event(
                             res_evt,
@@ -170,7 +271,6 @@ class EvidenceGate:
                             reason=f"ToolResult completed successfully with status SUCCESS (exit_code={tr.exit_code}).",
                         )
                         supporting.append(ref)
-                        reason_notes.append(ref.reason or "")
                 else:
                     ref = EvidenceRef.from_event(
                         res_evt,
@@ -178,19 +278,8 @@ class EvidenceGate:
                         reason=f"ToolResult failed with status {tr.status.value}: {tr.error or 'error'}.",
                     )
                     contradicting.append(ref)
-                    reason_notes.append(ref.reason or "")
 
-        elif claim.claim_type == ClaimType.COMMAND_EXITED_ZERO:
-            matching_results = self._filter_tool_results_for_claim(
-                tool_result_events, tool_call_events, claim
-            )
-            if not matching_results:
-                reason = f"No matching command ToolResult found for claim '{claim.claim_id}'."
-                return self._finalize_evaluation(claim, ClaimVerdict.UNVERIFIED, (), (), reason)
-
-            for res_evt in matching_results:
-                tr = res_evt.tool_result
-                assert tr is not None
+            elif claim.claim_type == ClaimType.COMMAND_EXITED_ZERO:
                 if tr.status == ToolResultStatus.SUCCESS and tr.exit_code == 0:
                     ref = EvidenceRef.from_event(
                         res_evt,
@@ -198,7 +287,6 @@ class EvidenceGate:
                         reason="Command execution completed successfully with exit code 0.",
                     )
                     supporting.append(ref)
-                    reason_notes.append(ref.reason or "")
                 elif tr.exit_code is not None and tr.exit_code != 0:
                     ref = EvidenceRef.from_event(
                         res_evt,
@@ -206,7 +294,6 @@ class EvidenceGate:
                         reason=f"Command execution completed with non-zero exit code {tr.exit_code}.",
                     )
                     contradicting.append(ref)
-                    reason_notes.append(ref.reason or "")
                 elif tr.status in (ToolResultStatus.ERROR, ToolResultStatus.TIMEOUT, ToolResultStatus.CANCELLED):
                     ref = EvidenceRef.from_event(
                         res_evt,
@@ -214,23 +301,17 @@ class EvidenceGate:
                         reason=f"Command execution failed with status {tr.status.value}: {tr.error or 'failure'}.",
                     )
                     contradicting.append(ref)
-                    reason_notes.append(ref.reason or "")
                 else:
-                    # Missing exit_code cannot verify exit_code == 0
-                    reason_notes.append(f"ToolResult for call '{tr.call_id}' did not record an exit_code.")
+                    # Missing exit_code cannot verify COMMAND_EXITED_ZERO
+                    return self._finalize_evaluation(
+                        claim,
+                        ClaimVerdict.UNVERIFIED,
+                        (),
+                        (),
+                        f"ToolResult for call '{tr.call_id}' did not record an exit_code.",
+                    )
 
-        elif claim.claim_type == ClaimType.TESTS_PASSED:
-            matching_results = self._filter_tool_results_for_claim(
-                tool_result_events, tool_call_events, claim
-            )
-            if not matching_results:
-                reason = f"No test execution ToolResult evidence found for claim '{claim.claim_id}'."
-                return self._finalize_evaluation(claim, ClaimVerdict.UNVERIFIED, (), (), reason)
-
-            for res_evt in matching_results:
-                tr = res_evt.tool_result
-                assert tr is not None
-                # Check for explicit contradiction: non-success or non-zero exit
+            elif claim.claim_type == ClaimType.TESTS_PASSED:
                 if tr.status in (ToolResultStatus.ERROR, ToolResultStatus.TIMEOUT, ToolResultStatus.CANCELLED):
                     ref = EvidenceRef.from_event(
                         res_evt,
@@ -238,7 +319,6 @@ class EvidenceGate:
                         reason=f"Test execution failed with status {tr.status.value}: {tr.error or 'error'}.",
                     )
                     contradicting.append(ref)
-                    reason_notes.append(ref.reason or "")
                 elif tr.exit_code is not None and tr.exit_code != 0:
                     ref = EvidenceRef.from_event(
                         res_evt,
@@ -246,7 +326,6 @@ class EvidenceGate:
                         reason=f"Test execution exited with failure code {tr.exit_code}.",
                     )
                     contradicting.append(ref)
-                    reason_notes.append(ref.reason or "")
                 elif tr.status == ToolResultStatus.SUCCESS and (tr.exit_code == 0 or tr.exit_code is None):
                     if claim.expected_exit_code is not None and tr.exit_code != claim.expected_exit_code:
                         ref = EvidenceRef.from_event(
@@ -255,7 +334,6 @@ class EvidenceGate:
                             reason=f"Test exit code {tr.exit_code} != expected {claim.expected_exit_code}.",
                         )
                         contradicting.append(ref)
-                        reason_notes.append(ref.reason or "")
                     else:
                         ref = EvidenceRef.from_event(
                             res_evt,
@@ -263,65 +341,16 @@ class EvidenceGate:
                             reason=f"Test execution succeeded with status SUCCESS (exit_code={tr.exit_code}).",
                         )
                         supporting.append(ref)
-                        reason_notes.append(ref.reason or "")
                 else:
-                    reason_notes.append(f"Inconclusive test ToolResult for call '{tr.call_id}'.")
+                    return self._finalize_evaluation(
+                        claim,
+                        ClaimVerdict.UNVERIFIED,
+                        (),
+                        (),
+                        f"Inconclusive test ToolResult for call '{tr.call_id}'.",
+                    )
 
-        elif claim.claim_type == ClaimType.FILE_EXISTS:
-            if not claim.target_path:
-                reason = f"FILE_EXISTS claim '{claim.claim_id}' is missing required target_path."
-                return self._finalize_evaluation(claim, ClaimVerdict.UNVERIFIED, (), (), reason)
-
-            # Check all tool results and state observations in candidate events
-            matched_any = False
-            for e in events:
-                if e.event_kind == EventKind.TOOL_RESULT and e.tool_result is not None:
-                    tr = e.tool_result
-                    # If claim specifies call_id, filter by call_id
-                    if claim.call_id is not None and tr.call_id != claim.call_id:
-                        continue
-
-                    is_present, is_contra = _file_matches_tool_result(tr, claim.target_path)
-                    if is_present:
-                        matched_any = True
-                        if tr.status == ToolResultStatus.SUCCESS:
-                            ref = EvidenceRef.from_event(
-                                e,
-                                relation=EvidenceRelation.SUPPORTS,
-                                reason=f"ToolResult for '{tr.call_id}' confirmed existence/creation of '{claim.target_path}'.",
-                            )
-                            supporting.append(ref)
-                        else:
-                            ref = EvidenceRef.from_event(
-                                e,
-                                relation=EvidenceRelation.CONTRADICTS,
-                                reason=f"ToolResult for '{tr.call_id}' referenced '{claim.target_path}' but execution status is {tr.status.value}.",
-                            )
-                            contradicting.append(ref)
-                    elif is_contra:
-                        matched_any = True
-                        ref = EvidenceRef.from_event(
-                            e,
-                            relation=EvidenceRelation.CONTRADICTS,
-                            reason=f"ToolResult for '{tr.call_id}' reported '{claim.target_path}' does not exist.",
-                        )
-                        contradicting.append(ref)
-
-            if not matched_any:
-                reason = f"No trace evidence confirming existence of file '{claim.target_path}'."
-                return self._finalize_evaluation(claim, ClaimVerdict.UNVERIFIED, (), (), reason)
-
-        elif claim.claim_type in (ClaimType.ACTION_COMPLETED, ClaimType.GENERIC):
-            matching_results = self._filter_tool_results_for_claim(
-                tool_result_events, tool_call_events, claim
-            )
-            if not matching_results:
-                reason = f"No matching execution evidence found for claim '{claim.claim_id}'."
-                return self._finalize_evaluation(claim, ClaimVerdict.UNVERIFIED, (), (), reason)
-
-            for res_evt in matching_results:
-                tr = res_evt.tool_result
-                assert tr is not None
+            elif claim.claim_type == ClaimType.ACTION_COMPLETED:
                 if tr.status == ToolResultStatus.SUCCESS:
                     ref = EvidenceRef.from_event(
                         res_evt,
@@ -337,20 +366,43 @@ class EvidenceGate:
                     )
                     contradicting.append(ref)
 
-        # 3. Apply deterministic verdict precedence: Contradiction beats support
-        if contradicting:
-            verdict = ClaimVerdict.CONTRADICTED
-            reason = "Claim is CONTRADICTED by trace evidence: " + "; ".join(
-                r.reason for r in contradicting if r.reason
-            )
-        elif supporting:
-            verdict = ClaimVerdict.VERIFIED
-            reason = "Claim is VERIFIED by trace evidence: " + "; ".join(
-                r.reason for r in supporting if r.reason
-            )
-        else:
-            verdict = ClaimVerdict.UNVERIFIED
-            reason = "Claim is UNVERIFIED: insufficient supporting evidence in trace."
+        elif claim.claim_type == ClaimType.FILE_EXISTS:
+            if claim.trace_id is None:
+                reason = f"FILE_EXISTS claim '{claim.claim_id}' must specify a trace_id."
+                return self._finalize_evaluation(claim, ClaimVerdict.UNVERIFIED, (), (), reason)
+
+            if not claim.target_path:
+                reason = f"FILE_EXISTS claim '{claim.claim_id}' is missing required target_path."
+                return self._finalize_evaluation(claim, ClaimVerdict.UNVERIFIED, (), (), reason)
+
+            events_to_check = events
+            if claim.call_id is not None:
+                res = tool_result_events_by_call.get(claim.call_id)
+                events_to_check = (res,) if res is not None else ()
+
+            for e in events_to_check:
+                is_sup, is_contra = _check_file_exists_in_event(e, claim.target_path)
+                if is_contra:
+                    ref = EvidenceRef.from_event(
+                        e,
+                        relation=EvidenceRelation.CONTRADICTS,
+                        reason=f"Event '{e.event_id}' confirms '{claim.target_path}' is missing or deleted.",
+                    )
+                    contradicting.append(ref)
+                elif is_sup:
+                    ref = EvidenceRef.from_event(
+                        e,
+                        relation=EvidenceRelation.SUPPORTS,
+                        reason=f"Event '{e.event_id}' confirms existence/creation of '{claim.target_path}'.",
+                    )
+                    supporting.append(ref)
+
+            if not supporting and not contradicting:
+                reason = f"No trace evidence confirming existence of file '{claim.target_path}'."
+                return self._finalize_evaluation(claim, ClaimVerdict.UNVERIFIED, (), (), reason)
+
+        # 3. Deterministic verdict precedence: Contradiction beats support
+        verdict, reason = self.determine_verdict(supporting, contradicting)
 
         return self._finalize_evaluation(
             claim=claim,
@@ -359,6 +411,24 @@ class EvidenceGate:
             contradicting=tuple(contradicting),
             reason=reason,
         )
+
+    @staticmethod
+    def determine_verdict(
+        supporting: Sequence[EvidenceRef],
+        contradicting: Sequence[EvidenceRef],
+    ) -> tuple[ClaimVerdict, str]:
+        """Apply deterministic verdict precedence: Contradiction dominates support."""
+        if contradicting:
+            reason = "Claim is CONTRADICTED by trace evidence: " + "; ".join(
+                r.reason for r in contradicting if r.reason
+            )
+            return ClaimVerdict.CONTRADICTED, reason
+        if supporting:
+            reason = "Claim is VERIFIED by trace evidence: " + "; ".join(
+                r.reason for r in supporting if r.reason
+            )
+            return ClaimVerdict.VERIFIED, reason
+        return ClaimVerdict.UNVERIFIED, "Claim is UNVERIFIED: insufficient supporting evidence in trace."
 
     def evaluate_many(
         self,
@@ -371,35 +441,6 @@ class EvidenceGate:
             eval_result = self.evaluate(claim, trace_store)
             results.append(eval_result)
         return tuple(results)
-
-    def _filter_tool_results_for_claim(
-        self,
-        results: list[TraceEvent],
-        calls: dict[str, TraceEvent],
-        claim: Claim,
-    ) -> list[TraceEvent]:
-        """Filter ToolResult events to those matching the criteria of the Claim."""
-        matched: list[TraceEvent] = []
-        for r_evt in results:
-            tr = r_evt.tool_result
-            if tr is None:
-                continue
-
-            # Exact call_id check
-            if claim.call_id is not None:
-                if tr.call_id != claim.call_id:
-                    continue
-
-            # Tool call matching (tool_name, command)
-            if claim.call_id is None and (claim.tool_name is not None or claim.command is not None):
-                call_evt = calls.get(tr.call_id)
-                if call_evt is None or call_evt.tool_call is None:
-                    continue
-                if not _tool_call_matches_claim(call_evt.tool_call, claim):
-                    continue
-
-            matched.append(r_evt)
-        return matched
 
     def _finalize_evaluation(
         self,

@@ -29,8 +29,27 @@ class EvidenceGraph:
     def add_evaluation(self, evaluation: ClaimEvaluation) -> None:
         """Register or update an evaluation in the evidence graph."""
         cid = evaluation.claim.claim_id
-        if cid not in self._evaluations:
+        if cid in self._evaluations:
+            old_eval = self._evaluations[cid]
+            # Remove old reverse edges for this claim before indexing new references
+            for ref in old_eval.evidence_refs:
+                if ref.event_id in self._event_to_claims:
+                    c_list = self._event_to_claims[ref.event_id]
+                    if cid in c_list:
+                        c_list.remove(cid)
+                    if not c_list:
+                        del self._event_to_claims[ref.event_id]
+
+                te_key = (ref.trace_id, ref.event_id)
+                if te_key in self._trace_and_event_to_claims:
+                    te_list = self._trace_and_event_to_claims[te_key]
+                    if cid in te_list:
+                        te_list.remove(cid)
+                    if not te_list:
+                        del self._trace_and_event_to_claims[te_key]
+        else:
             self._claim_order.append(cid)
+
         self._evaluations[cid] = evaluation
 
         # Index reverse lookups for each referenced evidence event

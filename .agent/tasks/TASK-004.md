@@ -178,28 +178,31 @@ python -m pytest -v
     - Rule 6: For exit code claims, only observed matching results with exit_code == 0 (or expected) verify success.
     - Rule 7/8: Trace and call identity isolation: evidence from another trace or call_id cannot satisfy a scoped claim.
     - Rule 9: One evidence event can independently support multiple claims, while evaluations retain individual provenance.
-    - Rule 10: Contradiction dominates support if both are present for the same execution.
-- **Packaging and Exports:**
+    - Rule 10: Contradiction dominates support for the same execution or target observation.
+    - Rule 11: `GENERIC` claims are never verified by deterministic `EvidenceGate` (returns `UNVERIFIED`).
+    - Rule 12: Execution claims require deterministic identity resolution; 0 or multiple ambiguous matches return `UNVERIFIED`.
+    - Rule 13: Claim selectors (`call_id`, `tool_name`, `command`) are strictly conjunctive and must all match the same execution.
+    - Rule 14: `FILE_EXISTS` strictly requires structured file observation (`path` + `exists`, `created_paths`, `existing_paths`, `missing_paths`), rejecting plain text substring guessing or unrelated arrays.
+- **Evidence Graph (`src/agentcontract/evidence/graph.py`):**
+  - Bidirectional index linking claims to supporting and contradicting evidence.
+  - When re-evaluating/updating an existing claim, old reverse edges (`_event_to_claims` and `_trace_and_event_to_claims`) are purged before indexing new citations.
+  - Preserves deterministic encounter order.
+- **Packaging and Common Utilities:**
+  - `FrozenDict.__hash__`: Fixed to preserve the standard Python equality/hash contract by hashing sorted items without object identity `id()` fallbacks; raises `TypeError` if contained values are unhashable.
   - Exported all evidence primitives in `src/agentcontract/evidence/__init__.py` and top-level `src/agentcontract/__init__.py`.
-  - Implemented `__hash__` on `FrozenDict` in `src/agentcontract/common/immutable.py` to support hashing of frozen Pydantic models containing frozen metadata.
 
 **Files changed:**  
-- `src/agentcontract/common/immutable.py` (added `__hash__` method to `FrozenDict`)
-- `src/agentcontract/evidence/exceptions.py` (new: `EvidenceError`, `EvidenceValidationError`, `ClaimNotFoundError`)
-- `src/agentcontract/evidence/models.py` (new: `ClaimType`, `ClaimVerdict`, `EvidenceRelation`, `EvidenceRef`, `Claim`, `ClaimEvaluation`)
-- `src/agentcontract/evidence/graph.py` (new: `EvidenceGraph`)
-- `src/agentcontract/evidence/gate.py` (new: `EvidenceGate`)
-- `src/agentcontract/evidence/__init__.py` (exported evidence primitives)
-- `src/agentcontract/__init__.py` (re-exported evidence primitives at top-level)
-- `tests/evidence/__init__.py` (new: test package marker)
-- `tests/evidence/test_models.py` (new: unit tests for models, validation, immutability, serialization)
-- `tests/evidence/test_gate.py` (new: unit tests covering all 15 required scenarios)
+- `src/agentcontract/common/immutable.py` (fixed `FrozenDict.__hash__` to preserve Python hash/equality contract without `id()` fallback)
+- `src/agentcontract/evidence/gate.py` (enforced single-execution resolution, conjunctive selectors, GENERIC rejection, structured-only FILE_EXISTS, and determine_verdict)
+- `src/agentcontract/evidence/graph.py` (purged stale reverse edges on re-evaluation in `add_evaluation()`)
+- `tests/evidence/test_gate.py` (corrected Scenario 14 contradiction precedence, added regression tests for all review blockers)
+- `tests/evidence/test_models.py` (added regression test for `FrozenDict` hash/equality contract)
 - `.agent/tasks/TASK-004.md` (updated Executor Report)
 
 **Tests/checks:**  
 - Python version check: `python --version` -> `Python 3.12.9`.
-- Full pytest suite: `python -m pytest -v` -> **123 passed in 0.54s** (100% pass rate: 35 constraint tests + 41 trace tests + 26 guard tests + 21 evidence tests).
-- All 15 required test scenarios verified green, including existing test suites.
+- Full pytest suite: `python -m pytest -v` -> **130 passed in 0.61s** (100% pass rate: 35 constraint tests + 41 trace tests + 26 guard tests + 28 evidence tests).
+- All 15 required test scenarios verified green, including all new regression tests.
 
 **Known limitations:**  
 - v0.1 claims evaluation operates in-memory against `TraceStore`. Persistent graph database storage is planned for subsequent milestones.
@@ -207,10 +210,10 @@ python -m pytest -v
 
 **Commit/PR:**  
 - Branch: `task/TASK-004-evidence-gate`
-- Implementation Commit SHA: `129f9ca`
+- Implementation Commit SHA: pending push
 
 **Questions/blockers:**  
-- None. All acceptance criteria and 15 required test scenarios are met and verified on local Python 3.12.9.
+- None. All review blockers resolved and verified on local Python 3.12.9.
 
 ## Main Agent Review
 
