@@ -1,10 +1,10 @@
 # TASK-003 — SpecGuard Pre/Post Action Validation Engine
 
-**Status:** READY_FOR_EXECUTOR  
+**Status:** CHANGES_REQUESTED  
 **Milestone:** M1 — Executable contract core  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-003-specguard`  
-**Main-agent review:** pending
+**Main-agent review:** changes requested
 
 ## Objective
 
@@ -267,10 +267,111 @@ Do not install another Python interpreter for compatibility testing.
 
 > Main agent only.
 
-**Verdict:** PENDING
+**Verdict:** CHANGES_REQUESTED
 
-**Findings:**  
-Pending implementation.
+**Reviewed implementation:** `033eed532a47a9d735b2ea7e3aa4008e4cb5797d`
 
-**Next instruction:**  
-Do not start TASK-004 until this section says ACCEPTED.
+**Accepted foundation:**
+- Action / ActionObservation / GuardDecision models are a good vendor-neutral base.
+- ACTIVE-only enforcement and BLOCK > WARN > ALLOW aggregation are correctly structured.
+- HARD/SOFT/ASSUMPTION authority handling for DENY rules is appropriate.
+- TracePointer provenance, serialization, tool/action/path matching, and pre/post APIs are in place.
+- Executor reports 99/99 tests passing on local Python 3.12.9.
+
+### BLOCKER 1 — REQUIRE / PREFER semantics are inverted
+
+Current behavior treats a matching REQUIRE as a violation and a matching PREFER as a warning:
+
+```text
+matches REQUIRE scope -> BLOCK
+matches PREFER scope  -> WARN
+```
+
+But matching the required/preferred condition means the action is compliant. The current engine therefore punishes actions for satisfying the rule.
+
+A single scope also cannot express both:
+- **when** a rule applies; and
+- **what** must/preferably be true.
+
+**Required fix:**
+Use explicit applicability vs compliance semantics. A recommended narrow design:
+
+```text
+Constraint.scope             = applicability / "when"
+Constraint.compliance_scope  = required or preferred condition
+Constraint.rule_effect       = DENY | REQUIRE | PREFER
+```
+
+Semantics:
+
+- `DENY`: if applicability scope matches -> violation.
+- `REQUIRE`: if applicability matches **and compliance_scope does not match** -> violation.
+- `REQUIRE`: if compliance_scope matches -> compliant, no violation.
+- `PREFER`: if applicability matches **and preferred/compliance scope does not match** -> WARN.
+- `PREFER`: if preferred condition matches -> no warning.
+
+Use an equivalent typed design if cleaner, but do not infer compliance from description text.
+
+Keep one authoritative `rule_effect` location. The newly-added `ConstraintScope.rule_effect` override mixes selector data with policy semantics and should be removed unless there is a concrete need for two independent effect sources.
+
+Add tests demonstrating both compliant and violating REQUIRE/PREFER cases.
+
+### BLOCKER 2 — selector "exact match" is not exact
+
+Current code compares:
+
+```python
+str(action_value).strip() == str(selector_value).strip()
+```
+
+This makes different typed values equivalent, for example `1` and `"1"`, or `True` and `"True"`.
+
+TASK-003 requires exact key/value matching.
+
+**Required fix:**
+- Compare normalized durable values directly, preserving type semantics.
+- `1 != "1"`, `True != "True"`.
+- Add regression tests for typed mismatches.
+
+### BLOCKER 3 — post-action validation can silently discard observed effects
+
+Current code selects:
+
+```python
+changed_paths or accessed_paths or action.paths
+```
+
+If both `changed_paths` and `accessed_paths` are present, one entire class of observed effects is discarded.
+
+Example:
+- safe file changed;
+- forbidden secret file read;
+- because `changed_paths` is non-empty, the forbidden read is never evaluated.
+
+**Required fix:**
+- Validate all observed effects, not only the first non-empty category.
+- Preserve action/effect semantics sufficiently to distinguish writes from reads.
+- Recommended: evaluate changed paths as FILE_WRITE observations and accessed paths as FILE_READ observations, plus any explicit observed action/tool effect, then aggregate decisions deterministically with BLOCK > WARN > ALLOW.
+- Add a regression test where a safe write and forbidden read occur in the same observation; result must detect the read violation.
+
+### BLOCKER 4 — unordered inputs undermine deterministic decisions
+
+`Action.paths`, `ActionObservation` paths, and `GuardDecision` ID/reason tuple validators currently accept `set/frozenset` and convert iteration order directly to tuple.
+
+That can make target_path selection, reasons, and serialized decisions nondeterministic across runs.
+
+**Required fix:**
+- For order-sensitive fields, reject unordered set/frozenset inputs, or normalize them with an explicitly documented deterministic ordering.
+- Prefer rejecting sets for paths/reasons and using ordered sequences.
+- Add regression tests.
+
+**Required re-check:**
+- local Python 3.12.9 only;
+- `python --version`;
+- `python -m pytest -v`;
+- existing TASK-001 and TASK-002 tests remain green;
+- update Executor Report with exact result and commit SHA.
+
+**Next instruction:**
+Fix these issues on `task/TASK-003-specguard`. Do not start TASK-004.
+
