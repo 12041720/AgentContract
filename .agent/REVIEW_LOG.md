@@ -403,3 +403,30 @@ Next:
 **Next:** TASK-006 — LLM-assisted requirement/claim extraction adapters is active.
 
 ---
+
+## 2026-09-28 — TASK-006 first implementation review
+
+**Implementation reviewed:** `d7de73d40c97cf5234700d75ef6e1734f784ce47`
+
+**Verdict:** CHANGES_REQUESTED
+
+**Verified strengths:**
+- provider-neutral structured extraction protocol;
+- separate untrusted draft models and durable domain models;
+- caller trace/session and requirement provenance override model proposals;
+- claims remain unverified until deterministic EvidenceGate evaluation;
+- no automatic ledger mutation;
+- executor reports 186/186 tests passing on local Python 3.12.9.
+
+**Blocking findings:**
+- omitted authority/strength/effect/scope can silently become USER/HARD/global DENY;
+- draft models silently ignore unexpected model fields;
+- scope list values are string-coerced instead of strictly validated;
+- per-instance deterministic default ID generators can collide across extractor instances.
+
+**Hardening requested:**
+- complete spoof diagnostics for caller-owned provenance/scope fields.
+
+**Next:** execution agent fixes TASK-006 on `task/TASK-006-extraction-adapters`; TASK-007 remains blocked.
+
+---
