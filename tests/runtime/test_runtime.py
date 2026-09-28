@@ -31,6 +31,7 @@ from agentcontract.runtime.session import AgentContractRuntime
 from agentcontract.trace.models import (
     ActorKind,
     EventKind,
+    ToolCall,
     ToolResultStatus,
 )
 
@@ -470,16 +471,20 @@ def test_scenario_8_runtime_serialization_round_trip() -> None:
 def test_flexible_executor_signatures_and_return_types() -> None:
     runtime = AgentContractRuntime()
 
-    # 1. Executor taking only tool_call
-    def exec_tool_call(tc: Any) -> str:
+    # 1. Executor taking only ToolCall (must assert actual received type is ToolCall)
+    def exec_tool_call(tc: ToolCall) -> str:
+        assert isinstance(tc, ToolCall)
+        assert not isinstance(tc, Action)
         return f"result for {tc.tool_name}"
 
     r1 = runtime.execute(Action(tool_name="t1"), exec_tool_call)
     assert r1.is_success is True
     assert r1.tool_result.output == "result for t1"
 
-    # 2. Executor taking only action
+    # 2. Executor taking only Action (must assert actual received type is Action)
     def exec_action(act: Action) -> dict[str, Any]:
+        assert isinstance(act, Action)
+        assert not isinstance(act, ToolCall)
         return {"action_target": act.target_path, "status": "SUCCESS"}
 
     r2 = runtime.execute(Action(tool_name="t2", target_path="/path/x"), exec_action)
@@ -508,6 +513,107 @@ def test_flexible_executor_signatures_and_return_types() -> None:
     assert r4.is_success is False
     assert r4.tool_result.status == ToolResultStatus.ERROR
     assert r4.tool_result.exit_code == 127
+
+
+def test_executor_internal_type_error_invoked_exactly_once() -> None:
+    runtime = AgentContractRuntime()
+    call_count = 0
+
+    def bad_executor(action: Action, tool_call: ToolCall) -> Any:
+        nonlocal call_count
+        call_count += 1
+        # Raise internal TypeError from executor body
+        raise TypeError("simulated internal type error in executor logic")
+
+    res = runtime.execute(Action(tool_name="failing_tool"), bad_executor)
+
+    # 1. Executor invocation count must be EXACTLY 1 (no retries!)
+    assert call_count == 1
+    assert res.executed is True
+    assert res.is_success is False
+    assert res.tool_result is not None
+    assert res.tool_result.status == ToolResultStatus.ERROR
+    assert "TypeError: simulated internal type error" in res.tool_result.error
+
+    # 2. Exactly one TOOL_CALL and one correlated TOOL_RESULT recorded in trace
+    events = runtime.trace_store.list_events(runtime.trace_id)
+    assert len(events) == 2
+    assert events[0].event_kind == EventKind.TOOL_CALL
+    assert events[1].event_kind == EventKind.TOOL_RESULT
+    assert events[1].tool_result.is_error is True
+
+
+def test_unsupported_signature_fails_before_execution() -> None:
+    runtime = AgentContractRuntime()
+    call_count = 0
+
+    def bad_sig_executor(a: int, b: int, c: int) -> Any:
+        nonlocal call_count
+        call_count += 1
+        return "never reached"
+
+    res = runtime.execute(Action(tool_name="bad_sig_tool"), bad_sig_executor)
+
+    # Executor must NEVER be called!
+    assert call_count == 0
+    assert res.executed is True
+    assert res.tool_result.status == ToolResultStatus.ERROR
+    assert "ToolExecutionError" in res.tool_result.error or "cannot be called with candidate arguments" in res.tool_result.error
+
+
+def test_post_action_target_type_violation_blocks() -> None:
+    runtime = AgentContractRuntime()
+
+    # HARD DENY constraint on target_type="production_db"
+    runtime.add_constraint(
+        _make_constraint(
+            cid="C-PROD-DB-BLOCK",
+            name="Prohibit operations on production database",
+            strength=ConstraintStrength.HARD,
+            rule_effect=RuleEffect.DENY,
+            scope=ConstraintScope(
+                target_type="production_db",
+            ),
+        )
+    )
+
+    call_count = 0
+
+    def sneaky_db_tool(action: Action, tool_call: ToolCall) -> ToolExecutionOutcome:
+        nonlocal call_count
+        call_count += 1
+        # Pre-action was proposed with staging_db, but tool execution actually accessed production_db
+        return ToolExecutionOutcome.success(
+            output={"rows_modified": 42},
+            target_type="production_db",
+        )
+
+    # Pre-action target_type is staging_db (not prohibited)
+    action = Action(
+        tool_name="db_migrator",
+        action_kind=ActionKind.TOOL_CALL,
+        target_type="staging_db",
+    )
+
+    res = runtime.execute(action, sneaky_db_tool)
+
+    # 1. Pre-action was ALLOW
+    assert res.pre_decision.decision == DecisionKind.ALLOW
+
+    # 2. Tool did execute
+    assert call_count == 1
+    assert res.executed is True
+
+    # 3. Post-action SpecGuard detected forbidden target_type and returned BLOCK
+    assert res.post_decision is not None
+    assert res.post_decision.decision == DecisionKind.BLOCK
+    assert res.is_post_blocked is True
+    assert res.is_success is False
+    assert "C-PROD-DB-BLOCK" in res.post_decision.violating_constraint_ids
+
+    # 4. Provenance points to the TOOL_RESULT event
+    assert res.post_decision.trace_pointer == res.tool_result_event_pointer
+
 
 
 def test_runtime_validation_errors() -> None:

@@ -352,6 +352,7 @@ class AgentContractRuntime:
             accessed_paths=outcome.accessed_paths,
             tool_name=outcome.tool_name or action.tool_name,
             action_kind=outcome.action_kind or action.action_kind,
+            target_type=outcome.target_type or action.target_type,
             trace_pointer=result_event.to_pointer(),
             context=outcome.metadata,
         )
@@ -404,31 +405,62 @@ class AgentContractRuntime:
         return VerificationResult(evaluations=evaluations)
 
     @staticmethod
-    def _invoke_executor(executor: Any, action: Action, tool_call: ToolCall) -> Any:
-        """Invoke tool executor handling flexible parameter signatures."""
+    def _resolve_executor_args(executor: Any, action: Action, tool_call: ToolCall) -> tuple[Any, ...]:
+        """Determine and validate the arguments to pass to the executor before calling it."""
         if not callable(executor):
             raise ToolExecutionError(f"Executor '{executor}' is not callable.")
         try:
             sig = inspect.signature(executor)
-            params = list(sig.parameters.values())
-            has_varargs = any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params)
-            if has_varargs or len(params) >= 2:
-                return executor(action, tool_call)
-            elif len(params) == 1:
-                p_name = params[0].name.lower()
-                if "call" in p_name:
-                    return executor(tool_call)
-                return executor(action)
-            else:
-                return executor()
         except (ValueError, TypeError):
-            try:
-                return executor(action, tool_call)
-            except TypeError:
-                try:
-                    return executor(action)
-                except TypeError:
-                    return executor()
+            # Built-in or C function without inspectable signature: default to standard protocol
+            return (action, tool_call)
+
+        params = list(sig.parameters.values())
+        has_varargs = any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params)
+        pos_params = [
+            p
+            for p in params
+            if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        ]
+
+        if has_varargs or len(pos_params) >= 2:
+            candidate_args: tuple[Any, ...] = (action, tool_call)
+        elif len(pos_params) == 1:
+            p = pos_params[0]
+            p_name = p.name.lower()
+            p_ann = p.annotation
+
+            # Route by type annotation or parameter name
+            if p_ann is ToolCall or (isinstance(p_ann, str) and p_ann.endswith("ToolCall")):
+                candidate_args = (tool_call,)
+            elif p_ann is Action or (isinstance(p_ann, str) and p_ann.endswith("Action")):
+                candidate_args = (action,)
+            elif "call" in p_name or p_name == "tc":
+                candidate_args = (tool_call,)
+            elif "act" in p_name or p_name == "action":
+                candidate_args = (action,)
+            else:
+                candidate_args = (action,)
+        else:
+            candidate_args = ()
+
+        # Validate that candidate_args can actually bind to sig before calling
+        try:
+            sig.bind(*candidate_args)
+        except TypeError as err:
+            raise ToolExecutionError(
+                f"Executor signature '{sig}' cannot be called with candidate arguments: {err}"
+            ) from err
+
+        return candidate_args
+
+    @classmethod
+    def _invoke_executor(cls, executor: Any, action: Action, tool_call: ToolCall) -> Any:
+        """Invoke tool executor exactly once with pre-validated arguments."""
+        call_args = cls._resolve_executor_args(executor, action, tool_call)
+        # Execute exactly once; never catch or retry on exceptions from executor body
+        return executor(*call_args)
+
 
     @staticmethod
     def _normalize_outcome(
