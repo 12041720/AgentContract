@@ -340,3 +340,25 @@ Next:
 **Next:** TASK-005 — agent/tool runtime wrapper and end-to-end demo is active.
 
 ---
+
+## 2026-09-28 — TASK-005 first implementation review
+
+**Implementation reviewed:** `4e028fe6f98d9e6bdb57239128033031150e755e`
+
+**Verdict:** CHANGES_REQUESTED
+
+**Verified strengths:**
+- synchronous runtime wrapper connects SpecGuard, TraceStore, tool execution, post-action validation, and EvidenceGate;
+- BLOCK/WARN/ALLOW paths exist;
+- correlated ToolCall/ToolResult tracing exists;
+- executor failures become ERROR evidence;
+- executor reports 154/154 tests passing on local Python 3.12.9.
+
+**Blocking findings:**
+- internal executor TypeError can trigger multiple executor invocations due to signature fallback/retry logic;
+- actual `target_type` reported by ToolExecutionOutcome is dropped before post-action SpecGuard;
+- Executor Report contains an incorrect full commit SHA; actual implementation commit is `4e028fe6f98d9e6bdb57239128033031150e755e`.
+
+**Next:** execution agent fixes TASK-005 on `task/TASK-005-runtime-wrapper`; TASK-006 remains blocked.
+
+---
