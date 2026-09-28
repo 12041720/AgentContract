@@ -385,6 +385,7 @@ class EvidenceGate:
                 or (claim.command is not None)
             )
             if has_exec_selector:
+                # 1. Execution-scoped FILE_EXISTS: evaluate only the uniquely resolved execution result
                 res_evt, err_reason = _resolve_single_tool_execution(
                     tool_call_events, tool_result_events_by_call, claim
                 )
@@ -396,30 +397,93 @@ class EvidenceGate:
                         (),
                         err_reason or f"Execution for claim '{claim.claim_id}' could not be resolved.",
                     )
-                events_to_check = (res_evt,)
-            else:
-                events_to_check = events
 
-            for e in events_to_check:
-                is_sup, is_contra = _check_file_exists_in_event(e, claim.target_path)
+                is_sup, is_contra = _check_file_exists_in_event(res_evt, claim.target_path)
                 if is_contra:
                     ref = EvidenceRef.from_event(
-                        e,
+                        res_evt,
                         relation=EvidenceRelation.CONTRADICTS,
-                        reason=f"Event '{e.event_id}' confirms '{claim.target_path}' is missing or deleted.",
+                        reason=f"Event '{res_evt.event_id}' confirms '{claim.target_path}' is missing or deleted.",
                     )
                     contradicting.append(ref)
-                elif is_sup:
+                if is_sup:
                     ref = EvidenceRef.from_event(
-                        e,
+                        res_evt,
                         relation=EvidenceRelation.SUPPORTS,
-                        reason=f"Event '{e.event_id}' confirms existence/creation of '{claim.target_path}'.",
+                        reason=f"Event '{res_evt.event_id}' confirms existence/creation of '{claim.target_path}'.",
                     )
                     supporting.append(ref)
 
-            if not supporting and not contradicting:
-                reason = f"No trace evidence confirming existence of file '{claim.target_path}'."
-                return self._finalize_evaluation(claim, ClaimVerdict.UNVERIFIED, (), (), reason)
+                if not supporting and not contradicting:
+                    cid = res_evt.tool_result.call_id
+                    reason = f"No trace evidence confirming existence of file '{claim.target_path}' in execution '{cid}'."
+                    return self._finalize_evaluation(claim, ClaimVerdict.UNVERIFIED, (), (), reason)
+
+                verdict, reason = self.determine_verdict(supporting, contradicting)
+                return self._finalize_evaluation(
+                    claim=claim,
+                    verdict=verdict,
+                    supporting=tuple(supporting),
+                    contradicting=tuple(contradicting),
+                    reason=reason,
+                )
+
+            else:
+                # 2. Trace-level FILE_EXISTS: evaluate explicit file-state observations in trace sequence order
+                sorted_events = sorted(events, key=lambda e: e.sequence)
+                latest_state: str | None = None
+                latest_ref: EvidenceRef | None = None
+
+                for e in sorted_events:
+                    is_sup, is_contra = _check_file_exists_in_event(e, claim.target_path)
+                    if not is_sup and not is_contra:
+                        continue
+
+                    if is_contra:
+                        # Contradiction dominates within a single event
+                        ref = EvidenceRef.from_event(
+                            e,
+                            relation=EvidenceRelation.CONTRADICTS,
+                            reason=f"Event '{e.event_id}' (seq={e.sequence}) confirms '{claim.target_path}' is missing or deleted.",
+                        )
+                        contradicting.append(ref)
+                        latest_state = "CONTRADICTS"
+                        latest_ref = ref
+                        if is_sup:
+                            sup_ref = EvidenceRef.from_event(
+                                e,
+                                relation=EvidenceRelation.SUPPORTS,
+                                reason=f"Event '{e.event_id}' (seq={e.sequence}) confirms existence/creation of '{claim.target_path}'.",
+                            )
+                            supporting.append(sup_ref)
+                    else:
+                        ref = EvidenceRef.from_event(
+                            e,
+                            relation=EvidenceRelation.SUPPORTS,
+                            reason=f"Event '{e.event_id}' (seq={e.sequence}) confirms existence/creation of '{claim.target_path}'.",
+                        )
+                        supporting.append(ref)
+                        latest_state = "SUPPORTS"
+                        latest_ref = ref
+
+                if latest_state is None or latest_ref is None:
+                    reason = f"No trace evidence confirming existence of file '{claim.target_path}'."
+                    return self._finalize_evaluation(claim, ClaimVerdict.UNVERIFIED, (), (), reason)
+
+                if latest_state == "SUPPORTS":
+                    verdict = ClaimVerdict.VERIFIED
+                    reason = f"Claim is VERIFIED by latest explicit trace observation: {latest_ref.reason}"
+                else:
+                    verdict = ClaimVerdict.CONTRADICTED
+                    reason = f"Claim is CONTRADICTED by latest explicit trace observation: {latest_ref.reason}"
+
+                return self._finalize_evaluation(
+                    claim=claim,
+                    verdict=verdict,
+                    supporting=tuple(supporting),
+                    contradicting=tuple(contradicting),
+                    reason=reason,
+                )
 
         # 3. Deterministic verdict precedence: Contradiction beats support
         verdict, reason = self.determine_verdict(supporting, contradicting)

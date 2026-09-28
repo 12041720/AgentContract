@@ -1335,3 +1335,206 @@ def test_evidence_graph_update_clears_stale_reverse_edges():
     assert graph.get_claims_citing_evidence("evt-2") == ("clm-dynamic",)
     assert graph.get_claims_citing_evidence("evt-2", trace_id="tr-dyn") == ("clm-dynamic",)
 
+
+def test_trace_level_file_exists_temporal_ordering():
+    """Verify trace-level FILE_EXISTS enforces temporal ordering by latest explicit observation."""
+    gate = EvidenceGate()
+
+    # Case 1: missing first, created later -> VERIFIED
+    store_create_after_missing = TraceStore()
+    tc1 = ToolCall(call_id="c-del", tool_name="cleaner", arguments={})
+    store_create_after_missing.append(
+        TraceEvent(
+            event_id="evt-1-call",
+            trace_id="tr-order-1",
+            sequence=0,
+            actor=ActorKind.AGENT,
+            event_kind=EventKind.TOOL_CALL,
+            payload=tc1,
+        )
+    )
+    store_create_after_missing.append(
+        TraceEvent(
+            event_id="evt-1-res",
+            trace_id="tr-order-1",
+            sequence=1,
+            actor=ActorKind.TOOL,
+            event_kind=EventKind.TOOL_RESULT,
+            parent_id="evt-1-call",
+            payload=ToolResult(
+                call_id="c-del",
+                status=ToolResultStatus.SUCCESS,
+                output={"missing_paths": ["app/data.txt"]},
+                exit_code=0,
+            ),
+        )
+    )
+    tc2 = ToolCall(call_id="c-gen", tool_name="generator", arguments={})
+    store_create_after_missing.append(
+        TraceEvent(
+            event_id="evt-2-call",
+            trace_id="tr-order-1",
+            sequence=2,
+            actor=ActorKind.AGENT,
+            event_kind=EventKind.TOOL_CALL,
+            payload=tc2,
+        )
+    )
+    store_create_after_missing.append(
+        TraceEvent(
+            event_id="evt-2-res",
+            trace_id="tr-order-1",
+            sequence=3,
+            actor=ActorKind.TOOL,
+            event_kind=EventKind.TOOL_RESULT,
+            parent_id="evt-2-call",
+            payload=ToolResult(
+                call_id="c-gen",
+                status=ToolResultStatus.SUCCESS,
+                output={"created_paths": ["app/data.txt"]},
+                exit_code=0,
+            ),
+        )
+    )
+
+    claim_created_latest = Claim(
+        claim_id="clm-created-latest",
+        claim_type=ClaimType.FILE_EXISTS,
+        description="data.txt exists at end of trace",
+        trace_id="tr-order-1",
+        target_path="app/data.txt",
+    )
+    eval_created_latest = gate.evaluate(claim_created_latest, store_create_after_missing)
+    assert eval_created_latest.verdict == ClaimVerdict.VERIFIED
+    assert eval_created_latest.is_verified is True
+    # Provenance retains both observations
+    assert len(eval_created_latest.supporting_evidence) == 1
+    assert len(eval_created_latest.contradicting_evidence) == 1
+
+    # Case 2: created first, missing later -> CONTRADICTED
+    store_missing_after_create = TraceStore()
+    store_missing_after_create.append(
+        TraceEvent(
+            event_id="evt-c-call",
+            trace_id="tr-order-2",
+            sequence=0,
+            actor=ActorKind.AGENT,
+            event_kind=EventKind.TOOL_CALL,
+            payload=ToolCall(call_id="c-init", tool_name="init", arguments={}),
+        )
+    )
+    store_missing_after_create.append(
+        TraceEvent(
+            event_id="evt-c-res",
+            trace_id="tr-order-2",
+            sequence=1,
+            actor=ActorKind.TOOL,
+            event_kind=EventKind.TOOL_RESULT,
+            parent_id="evt-c-call",
+            payload=ToolResult(
+                call_id="c-init",
+                status=ToolResultStatus.SUCCESS,
+                output={"created_paths": ["app/cache.txt"]},
+                exit_code=0,
+            ),
+        )
+    )
+    store_missing_after_create.append(
+        TraceEvent(
+            event_id="evt-m-call",
+            trace_id="tr-order-2",
+            sequence=2,
+            actor=ActorKind.AGENT,
+            event_kind=EventKind.TOOL_CALL,
+            payload=ToolCall(call_id="c-purge", tool_name="purge", arguments={}),
+        )
+    )
+    store_missing_after_create.append(
+        TraceEvent(
+            event_id="evt-m-res",
+            trace_id="tr-order-2",
+            sequence=3,
+            actor=ActorKind.TOOL,
+            event_kind=EventKind.TOOL_RESULT,
+            parent_id="evt-m-call",
+            payload=ToolResult(
+                call_id="c-purge",
+                status=ToolResultStatus.SUCCESS,
+                output={"deleted_paths": ["app/cache.txt"]},
+                exit_code=0,
+            ),
+        )
+    )
+
+    claim_missing_latest = Claim(
+        claim_id="clm-missing-latest",
+        claim_type=ClaimType.FILE_EXISTS,
+        description="cache.txt exists at end of trace",
+        trace_id="tr-order-2",
+        target_path="app/cache.txt",
+    )
+    eval_missing_latest = gate.evaluate(claim_missing_latest, store_missing_after_create)
+    assert eval_missing_latest.verdict == ClaimVerdict.CONTRADICTED
+    assert eval_missing_latest.is_contradicted is True
+
+    # Case 3: Unrelated later observations do not alter the target file state
+    store_unrelated_later = store_create_after_missing
+    store_unrelated_later.append(
+        TraceEvent(
+            event_id="evt-unrelated-call",
+            trace_id="tr-order-1",
+            sequence=4,
+            actor=ActorKind.AGENT,
+            event_kind=EventKind.TOOL_CALL,
+            payload=ToolCall(call_id="c-other", tool_name="other", arguments={}),
+        )
+    )
+    store_unrelated_later.append(
+        TraceEvent(
+            event_id="evt-unrelated-res",
+            trace_id="tr-order-1",
+            sequence=5,
+            actor=ActorKind.TOOL,
+            event_kind=EventKind.TOOL_RESULT,
+            parent_id="evt-unrelated-call",
+            payload=ToolResult(
+                call_id="c-other",
+                status=ToolResultStatus.SUCCESS,
+                output={
+                    "missing_paths": ["app/completely_different.txt"],
+                    "created_paths": ["app/unrelated_log.txt"],
+                },
+                exit_code=0,
+            ),
+        )
+    )
+    eval_unrelated = gate.evaluate(claim_created_latest, store_unrelated_later)
+    assert eval_unrelated.verdict == ClaimVerdict.VERIFIED
+    assert eval_unrelated.is_verified is True
+
+    # Case 4: Execution-scoped FILE_EXISTS evaluates only the scoped call, independent of later calls
+    claim_scoped_del = Claim(
+        claim_id="clm-scoped-del",
+        claim_type=ClaimType.FILE_EXISTS,
+        description="data.txt state in delete call",
+        trace_id="tr-order-1",
+        call_id="c-del",
+        target_path="app/data.txt",
+    )
+    eval_scoped_del = gate.evaluate(claim_scoped_del, store_unrelated_later)
+    assert eval_scoped_del.verdict == ClaimVerdict.CONTRADICTED
+    assert eval_scoped_del.is_contradicted is True
+
+    claim_scoped_gen = Claim(
+        claim_id="clm-scoped-gen",
+        claim_type=ClaimType.FILE_EXISTS,
+        description="data.txt state in generator call",
+        trace_id="tr-order-1",
+        call_id="c-gen",
+        target_path="app/data.txt",
+    )
+    eval_scoped_gen = gate.evaluate(claim_scoped_gen, store_unrelated_later)
+    assert eval_scoped_gen.verdict == ClaimVerdict.VERIFIED
+    assert eval_scoped_gen.is_verified is True
+
+

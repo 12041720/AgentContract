@@ -185,6 +185,7 @@ python -m pytest -v
     - Rule 14: `FILE_EXISTS` strictly requires structured file observation (`path/target/file + exists=True/False`, `created_paths`, `existing_paths`, `missing_paths`, `deleted_paths`). Generic arrays such as `files` and `changed_paths` are rejected.
     - Rule 15: If `FILE_EXISTS` specifies execution selectors (`call_id`, `tool_name`, `command`), they are conjunctive and must resolve to a unique execution (0 or >1 matches return `UNVERIFIED`).
     - Rule 16: Command matching uses strict normalized equality (`==`); prefix matching (`startswith`) is strictly forbidden.
+    - Rule 17: Trace-level `FILE_EXISTS` claims (`trace_id + target_path`, no execution selectors) enforce temporal ordering by evaluating explicit file-state observations in trace sequence order; authoritative verdict is governed by the latest explicit observation for that target (missing -> created yields `VERIFIED`, created -> missing yields `CONTRADICTED`, unrelated subsequent observations do not alter state). Execution-scoped `FILE_EXISTS` continues evaluating only the uniquely resolved execution.
 - **Evidence Graph (`src/agentcontract/evidence/graph.py`):**
   - Bidirectional index linking claims to supporting and contradicting evidence.
   - When re-evaluating/updating an existing claim, old reverse edges (`_event_to_claims` and `_trace_and_event_to_claims`) are purged before indexing new citations.
@@ -195,15 +196,15 @@ python -m pytest -v
 
 **Files changed:**  
 - `src/agentcontract/common/immutable.py` (fixed `FrozenDict.__hash__` to preserve Python hash/equality contract without `id()` fallback)
-- `src/agentcontract/evidence/gate.py` (enforced strict exact command matching, explicit existence fields for FILE_EXISTS, conjunctive execution resolution for FILE_EXISTS, and determine_verdict)
+- `src/agentcontract/evidence/gate.py` (enforced strict exact command matching, explicit existence fields for FILE_EXISTS, conjunctive execution resolution for FILE_EXISTS, temporal ordering for trace-level FILE_EXISTS, and determine_verdict)
 - `src/agentcontract/evidence/graph.py` (purged stale reverse edges on re-evaluation in `add_evaluation()`)
-- `tests/evidence/test_gate.py` (updated Scenario 15, updated conjunctive command tests, added regression tests for files/changed_paths rejection, FILE_EXISTS execution selectors, and exact command matching)
+- `tests/evidence/test_gate.py` (updated Scenario 15, updated conjunctive command tests, added regression tests for files/changed_paths rejection, FILE_EXISTS execution selectors, exact command matching, and trace-level FILE_EXISTS temporal ordering)
 - `tests/evidence/test_models.py` (added regression test for `FrozenDict` hash/equality contract)
 - `.agent/tasks/TASK-004.md` (updated Executor Report)
 
 **Tests/checks:**  
 - Python version check: `python --version` -> `Python 3.12.9`.
-- Full pytest suite: `python -m pytest -v` -> **132 passed in 0.87s** (100% pass rate: 35 constraint tests + 41 trace tests + 26 guard tests + 30 evidence tests).
+- Full pytest suite: `python -m pytest -v` -> **133 passed in 0.70s** (100% pass rate: 35 constraint tests + 41 trace tests + 26 guard tests + 31 evidence tests).
 - All 15 required test scenarios verified green, including all new regression tests.
 
 **Known limitations:**  
@@ -212,7 +213,7 @@ python -m pytest -v
 
 **Commit/PR:**  
 - Branch: `task/TASK-004-evidence-gate`
-- Implementation Commit SHA: `23830c1` (`23830c1dfefb0431e85cbecf594c09223ce52ebe`)
+- Implementation Commit SHA: pending push
 
 **Questions/blockers:**  
 - None. All review blockers resolved and verified on local Python 3.12.9.
