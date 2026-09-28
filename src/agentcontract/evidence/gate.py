@@ -24,13 +24,17 @@ from agentcontract.trace.store import TraceStore
 
 
 def _command_in_tool_call(tc: ToolCall, command: str) -> bool:
-    """Check if a tool call argument matches the specified command string."""
+    """Check if a tool call argument matches the specified command string exactly."""
     target_cmd = command.strip()
     args = tc.arguments
     for key in ("cmd", "command", "args", "script", "code"):
         if key in args:
-            val = str(args[key]).strip()
-            if val == target_cmd or val.startswith(target_cmd):
+            raw_val = args[key]
+            if isinstance(raw_val, (list, tuple)):
+                val = " ".join(str(x) for x in raw_val).strip()
+            else:
+                val = str(raw_val).strip()
+            if val == target_cmd:
                 return True
     return False
 
@@ -86,14 +90,14 @@ def _check_file_exists_in_event(event: TraceEvent, target_path: str) -> tuple[bo
                             contradicts = True
 
         # 2. Explicit created_paths / existing_paths
-        for key in ("created_paths", "existing_paths", "changed_paths", "files"):
+        for key in ("created_paths", "existing_paths"):
             if key in m and isinstance(m[key], (list, tuple)) and can_support:
                 for item in m[key]:
                     if str(item).strip().replace("\\", "/") == norm_target:
                         supports = True
 
         # 3. Explicit missing_paths / deleted_paths
-        for key in ("missing_paths", "deleted_paths", "not_found"):
+        for key in ("missing_paths", "deleted_paths"):
             if key in m and isinstance(m[key], (list, tuple)):
                 for item in m[key]:
                     if str(item).strip().replace("\\", "/") == norm_target:
@@ -375,10 +379,26 @@ class EvidenceGate:
                 reason = f"FILE_EXISTS claim '{claim.claim_id}' is missing required target_path."
                 return self._finalize_evaluation(claim, ClaimVerdict.UNVERIFIED, (), (), reason)
 
-            events_to_check = events
-            if claim.call_id is not None:
-                res = tool_result_events_by_call.get(claim.call_id)
-                events_to_check = (res,) if res is not None else ()
+            has_exec_selector = (
+                (claim.call_id is not None)
+                or (claim.tool_name is not None)
+                or (claim.command is not None)
+            )
+            if has_exec_selector:
+                res_evt, err_reason = _resolve_single_tool_execution(
+                    tool_call_events, tool_result_events_by_call, claim
+                )
+                if res_evt is None or res_evt.tool_result is None:
+                    return self._finalize_evaluation(
+                        claim,
+                        ClaimVerdict.UNVERIFIED,
+                        (),
+                        (),
+                        err_reason or f"Execution for claim '{claim.claim_id}' could not be resolved.",
+                    )
+                events_to_check = (res_evt,)
+            else:
+                events_to_check = events
 
             for e in events_to_check:
                 is_sup, is_contra = _check_file_exists_in_event(e, claim.target_path)

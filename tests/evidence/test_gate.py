@@ -609,7 +609,7 @@ def test_scenario_15_file_exists_claim_verification():
             payload=ToolResult(
                 call_id="c-write",
                 status=ToolResultStatus.SUCCESS,
-                output={"files": ["out.txt", "schema.sql"]},
+                output={"created_paths": ["out.txt", "schema.sql"]},
                 exit_code=0,
             ),
         )
@@ -797,6 +797,20 @@ def test_conjunctive_selectors_must_all_match():
     assert eval_bad_cmd.verdict == ClaimVerdict.UNVERIFIED
     assert "do not match" in eval_bad_cmd.reason
 
+    # Mismatch command (prefix should NOT match)
+    c_prefix_cmd = Claim(
+        claim_id="clm-prefix-cmd",
+        claim_type=ClaimType.COMMAND_EXITED_ZERO,
+        description="Prefix command pytest should not match pytest -v",
+        trace_id="tr-conj",
+        call_id="c-conj-1",
+        tool_name="bash",
+        command="pytest",
+    )
+    eval_prefix = gate.evaluate(c_prefix_cmd, store)
+    assert eval_prefix.verdict == ClaimVerdict.UNVERIFIED
+    assert "do not match" in eval_prefix.reason
+
     # All 3 match conjunctively -> VERIFIED
     c_good = Claim(
         claim_id="clm-good-all",
@@ -805,7 +819,7 @@ def test_conjunctive_selectors_must_all_match():
         trace_id="tr-conj",
         call_id="c-conj-1",
         tool_name="bash",
-        command="pytest",
+        command="pytest -v",
     )
     eval_good = gate.evaluate(c_good, store)
     assert eval_good.verdict == ClaimVerdict.VERIFIED
@@ -1010,6 +1024,263 @@ def test_file_exists_structured_evidence_only():
     eval_failed = gate.evaluate(c_failed, store)
     assert eval_failed.verdict == ClaimVerdict.UNVERIFIED
     assert eval_failed.is_unverified is True
+
+    # 7. Generic arrays like 'files' or 'changed_paths' must NOT verify existence
+    tc_files = ToolCall(call_id="c-generic-files", tool_name="writer", arguments={})
+    store.append(
+        TraceEvent(
+            event_id="evt-gen-files-call",
+            trace_id="tr-file-struct",
+            sequence=10,
+            actor=ActorKind.AGENT,
+            event_kind=EventKind.TOOL_CALL,
+            payload=tc_files,
+        )
+    )
+    store.append(
+        TraceEvent(
+            event_id="evt-gen-files-res",
+            trace_id="tr-file-struct",
+            sequence=11,
+            actor=ActorKind.TOOL,
+            event_kind=EventKind.TOOL_RESULT,
+            parent_id="evt-gen-files-call",
+            payload=ToolResult(
+                call_id="c-generic-files",
+                status=ToolResultStatus.SUCCESS,
+                output={"files": ["/data/generic_files.txt"], "changed_paths": ["/data/generic_changed.txt"]},
+                exit_code=0,
+            ),
+        )
+    )
+    c_files = Claim(
+        claim_id="clm-files-array",
+        claim_type=ClaimType.FILE_EXISTS,
+        description="generic_files.txt exists",
+        trace_id="tr-file-struct",
+        target_path="/data/generic_files.txt",
+    )
+    eval_files = gate.evaluate(c_files, store)
+    assert eval_files.verdict == ClaimVerdict.UNVERIFIED
+    assert eval_files.is_unverified is True
+
+    c_changed = Claim(
+        claim_id="clm-changed-array",
+        claim_type=ClaimType.FILE_EXISTS,
+        description="generic_changed.txt exists",
+        trace_id="tr-file-struct",
+        target_path="/data/generic_changed.txt",
+    )
+    eval_changed = gate.evaluate(c_changed, store)
+    assert eval_changed.verdict == ClaimVerdict.UNVERIFIED
+    assert eval_changed.is_unverified is True
+
+
+def test_file_exists_with_execution_selectors():
+    """FILE_EXISTS with execution selectors enforces conjunctive matching and deterministic single-call resolution."""
+    store = TraceStore()
+    tc1 = ToolCall(call_id="c-stat-1", tool_name="stat", arguments={"cmd": "stat /data/file1.txt"})
+    store.append(
+        TraceEvent(
+            event_id="evt-s1-call",
+            trace_id="tr-fe-exec",
+            sequence=0,
+            actor=ActorKind.AGENT,
+            event_kind=EventKind.TOOL_CALL,
+            payload=tc1,
+        )
+    )
+    store.append(
+        TraceEvent(
+            event_id="evt-s1-res",
+            trace_id="tr-fe-exec",
+            sequence=1,
+            actor=ActorKind.TOOL,
+            event_kind=EventKind.TOOL_RESULT,
+            parent_id="evt-s1-call",
+            payload=ToolResult(
+                call_id="c-stat-1",
+                status=ToolResultStatus.SUCCESS,
+                output={"existing_paths": ["/data/file1.txt"]},
+                exit_code=0,
+            ),
+        )
+    )
+
+    tc2 = ToolCall(call_id="c-stat-2", tool_name="stat", arguments={"cmd": "stat /data/file2.txt"})
+    store.append(
+        TraceEvent(
+            event_id="evt-s2-call",
+            trace_id="tr-fe-exec",
+            sequence=2,
+            actor=ActorKind.AGENT,
+            event_kind=EventKind.TOOL_CALL,
+            payload=tc2,
+        )
+    )
+    store.append(
+        TraceEvent(
+            event_id="evt-s2-res",
+            trace_id="tr-fe-exec",
+            sequence=3,
+            actor=ActorKind.TOOL,
+            event_kind=EventKind.TOOL_RESULT,
+            parent_id="evt-s2-call",
+            payload=ToolResult(
+                call_id="c-stat-2",
+                status=ToolResultStatus.SUCCESS,
+                output={"existing_paths": ["/data/file2.txt"]},
+                exit_code=0,
+            ),
+        )
+    )
+
+    gate = EvidenceGate()
+
+    # 1. Ambiguous tool_name only: trace has two 'stat' calls -> UNVERIFIED
+    claim_ambig = Claim(
+        claim_id="clm-fe-ambig",
+        claim_type=ClaimType.FILE_EXISTS,
+        description="file1.txt exists via stat",
+        trace_id="tr-fe-exec",
+        tool_name="stat",
+        target_path="/data/file1.txt",
+    )
+    eval_ambig = gate.evaluate(claim_ambig, store)
+    assert eval_ambig.verdict == ClaimVerdict.UNVERIFIED
+    assert "Ambiguous claim" in eval_ambig.reason
+
+    # 2. Tool name with no matching calls -> UNVERIFIED
+    claim_no_match = Claim(
+        claim_id="clm-fe-no-match",
+        claim_type=ClaimType.FILE_EXISTS,
+        description="file1.txt exists via non_existent",
+        trace_id="tr-fe-exec",
+        tool_name="non_existent",
+        target_path="/data/file1.txt",
+    )
+    eval_no_match = gate.evaluate(claim_no_match, store)
+    assert eval_no_match.verdict == ClaimVerdict.UNVERIFIED
+    assert "No ToolCall matching selectors found" in eval_no_match.reason
+
+    # 3. Call ID with mismatching tool_name -> UNVERIFIED
+    claim_mismatch_tool = Claim(
+        claim_id="clm-fe-mismatch-tool",
+        claim_type=ClaimType.FILE_EXISTS,
+        description="file1.txt exists with bad tool_name",
+        trace_id="tr-fe-exec",
+        call_id="c-stat-1",
+        tool_name="writer",  # does not match stat
+        target_path="/data/file1.txt",
+    )
+    eval_mismatch_tool = gate.evaluate(claim_mismatch_tool, store)
+    assert eval_mismatch_tool.verdict == ClaimVerdict.UNVERIFIED
+    assert "does not match claimed tool_name" in eval_mismatch_tool.reason
+
+    # 4. Call ID with mismatching command -> UNVERIFIED
+    claim_mismatch_cmd = Claim(
+        claim_id="clm-fe-mismatch-cmd",
+        claim_type=ClaimType.FILE_EXISTS,
+        description="file1.txt exists with bad command",
+        trace_id="tr-fe-exec",
+        call_id="c-stat-1",
+        tool_name="stat",
+        command="stat /data/file2.txt",  # does not match stat /data/file1.txt
+        target_path="/data/file1.txt",
+    )
+    eval_mismatch_cmd = gate.evaluate(claim_mismatch_cmd, store)
+    assert eval_mismatch_cmd.verdict == ClaimVerdict.UNVERIFIED
+    assert "do not match claimed command" in eval_mismatch_cmd.reason
+
+    # 5. Call ID + tool_name + command all match conjunctively -> VERIFIED
+    claim_full_match = Claim(
+        claim_id="clm-fe-full-match",
+        claim_type=ClaimType.FILE_EXISTS,
+        description="file1.txt exists with all selectors matching",
+        trace_id="tr-fe-exec",
+        call_id="c-stat-1",
+        tool_name="stat",
+        command="stat /data/file1.txt",
+        target_path="/data/file1.txt",
+    )
+    eval_full_match = gate.evaluate(claim_full_match, store)
+    assert eval_full_match.verdict == ClaimVerdict.VERIFIED
+    assert eval_full_match.is_verified is True
+
+    # 6. Command uniquely identifying call -> VERIFIED
+    claim_cmd_unique = Claim(
+        claim_id="clm-fe-cmd-unique",
+        claim_type=ClaimType.FILE_EXISTS,
+        description="file2.txt exists identified uniquely by command",
+        trace_id="tr-fe-exec",
+        command="stat /data/file2.txt",
+        target_path="/data/file2.txt",
+    )
+    eval_cmd_unique = gate.evaluate(claim_cmd_unique, store)
+    assert eval_cmd_unique.verdict == ClaimVerdict.VERIFIED
+    assert eval_cmd_unique.is_verified is True
+
+
+def test_strict_exact_command_matching():
+    """Command matching requires exact equality without startswith prefix matching."""
+    store = TraceStore()
+    tc = ToolCall(call_id="c-cmd-test", tool_name="runner", arguments={"cmd": "pytest"})
+    store.append(
+        TraceEvent(
+            event_id="evt-cmd-call",
+            trace_id="tr-cmd-strict",
+            sequence=0,
+            actor=ActorKind.AGENT,
+            event_kind=EventKind.TOOL_CALL,
+            payload=tc,
+        )
+    )
+    store.append(
+        TraceEvent(
+            event_id="evt-cmd-res",
+            trace_id="tr-cmd-strict",
+            sequence=1,
+            actor=ActorKind.TOOL,
+            event_kind=EventKind.TOOL_RESULT,
+            parent_id="evt-cmd-call",
+            payload=ToolResult(call_id="c-cmd-test", status=ToolResultStatus.SUCCESS, exit_code=0),
+        )
+    )
+
+    gate = EvidenceGate()
+
+    # Exact match -> VERIFIED
+    c_exact = Claim(
+        claim_id="clm-exact",
+        claim_type=ClaimType.COMMAND_EXITED_ZERO,
+        description="Exact command matches",
+        trace_id="tr-cmd-strict",
+        call_id="c-cmd-test",
+        command="pytest",
+    )
+    assert gate.evaluate(c_exact, store).verdict == ClaimVerdict.VERIFIED
+
+    # pytestevil must NOT match pytest -> UNVERIFIED
+    c_evil = Claim(
+        claim_id="clm-evil",
+        claim_type=ClaimType.COMMAND_EXITED_ZERO,
+        description="pytestevil should not match pytest",
+        trace_id="tr-cmd-strict",
+        call_id="c-cmd-test",
+        command="pytestevil",
+    )
+    assert gate.evaluate(c_evil, store).verdict == ClaimVerdict.UNVERIFIED
+
+    # pytest -v must NOT match pytest -> UNVERIFIED
+    c_flag = Claim(
+        claim_id="clm-flag",
+        claim_type=ClaimType.COMMAND_EXITED_ZERO,
+        description="pytest -v should not match pytest",
+        trace_id="tr-cmd-strict",
+        call_id="c-cmd-test",
+        command="pytest -v",
+    )
+    assert gate.evaluate(c_flag, store).verdict == ClaimVerdict.UNVERIFIED
 
 
 def test_evidence_graph_update_clears_stale_reverse_edges():
