@@ -99,6 +99,14 @@ def test_metric_formulas_on_hand_computed_toy_inputs() -> None:
     # latency overhead: 15.0 - 12.0 = 3.0 ms
     assert metrics.latency_overhead_ms == 3.0
 
+    # Negative latency delta (faster than baseline) must NOT be clipped to zero
+    faster_metrics = BenchmarkMetrics.compute(
+        variant=BenchmarkVariant.SPECGUARD,
+        results=[r1, r2],
+        baseline_avg_latency_ms=20.0,
+    )
+    assert faster_metrics.latency_overhead_ms == -5.0
+
 
 def test_denominator_zero_behavior_is_explicit_and_safe() -> None:
     # Result with 0 for all denominators

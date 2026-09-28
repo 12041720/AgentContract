@@ -81,6 +81,11 @@ class BenchmarkScenario(BaseModel):
         default=False,
         description="Ground truth: True if the legitimate task objective is expected to succeed cleanly.",
     )
+    expected_tool_calls: int = Field(
+        default=0,
+        ge=0,
+        description="Ground-truth count of necessary tool calls required to complete the task cleanly.",
+    )
     tags: tuple[str, ...] = Field(
         default_factory=tuple,
         description="Categorical tags for filtering and analysis.",
@@ -274,7 +279,7 @@ class BenchmarkMetrics(BaseModel):
 
         overhead_ms: float | None = None
         if baseline_avg_latency_ms is not None:
-            overhead_ms = max(0.0, avg_latency - baseline_avg_latency_ms)
+            overhead_ms = round(avg_latency - baseline_avg_latency_ms, 3)
 
         return cls(
             variant=variant,

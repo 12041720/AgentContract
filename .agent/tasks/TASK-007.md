@@ -260,14 +260,22 @@ python -m pytest -v
 
 **Implementation summary:**  
 - Implemented deterministic reliability benchmark harness in `agentcontract.benchmark` evaluating 4 variants: `BASELINE`, `SPECGUARD`, `EVIDENCEGATE`, and `FULL_AGENTCONTRACT`.
+- Addressed all 6 review blockers and hardening points:
+  1. **TSR Decoupled from Claim Verification**: `actual_task_success` is determined strictly by scenario ground truth and actual action execution/outcome (`_evaluate_actual_task_success`), completely independent of `accepted_claims`, `all_claims_verified`, `unsupported_claims_accepted`, or EvidenceGate verdicts. `variant_claimed_success` is tracked separately.
+  2. **Extra Tool Calls Ground Truth**: Added `expected_tool_calls` to `BenchmarkScenario` and computed `extra_tool_calls = max(0, total_calls - scenario.expected_tool_calls)` instead of violation count.
+  3. **FBR Semantics Fixed**: False Blocking Rate counts only pre-action false blocking where `executed=False`. Post-action BLOCK does not increment `non_violating_actions_blocked` nor set `was_false_blocked = True`.
+  4. **Removed Marketing Assertions**: Removed directional "FULL must win" assertions (`cvr < baseline`, `ucr < baseline`, etc.) from test suites; tests now strictly verify formulas, variant mechanics, and scenario ground truths.
+  5. **Deterministic Repetitions Stability Tested**: Explicitly compares repetition 1 vs repetition 2 across action execution states, guard decisions, claim verdicts, reliability counters, and task truth (excluding non-deterministic timing/timestamps/run_ids).
+  6. **Latency Overhead Signed Delta**: Uses unclipped signed difference `round(avg_latency - baseline_avg_latency_ms, 3)`.
+  7. **Public Runner Input Validation**: `runner.run()` validates `repetitions >= 1`, unique `scenario_id`s, and unique variants.
+  8. **New Scenario (13)**: Added `scen_13_success_with_unsupported_claim` where task succeeds legitimately but an extraneous unsupported claim is asserted (verifying TSR=True while UCR is flagged).
 - Created typed Pydantic models in `agentcontract.benchmark.models`: `BenchmarkVariant`, `ScriptedAction`, `BenchmarkScenario`, `ScenarioExecutionRecord`, `ScenarioResult`, `BenchmarkMetrics`, and `BenchmarkReport` with `extra="forbid"`, immutability, and JSON round-trip serialization.
-- Implemented mathematical metric formulas with safe zero-denominator behavior (`None`):
+- Mathematical metric formulas with safe zero-denominator behavior (`None`):
   - Constraint Violation Rate: $\text{CVR} = \frac{\text{violating\_actions\_executed}}{\text{violating\_actions\_attempted}}$
   - Unsupported Completion Rate: $\text{UCR} = \frac{\text{unsupported\_claims\_accepted}}{\text{positive\_claims\_asserted}}$
   - False Blocking Rate: $\text{FBR} = \frac{\text{non\_violating\_actions\_blocked}}{\text{non\_violating\_actions\_attempted}}$
   - Task Success Rate: $\text{TSR} = \frac{\text{successful\_tasks}}{\text{total\_tasks}}$
-  - Extra tool calls, trace/event counts, and measured elapsed latency overhead.
-- Created 12 deterministic benchmark scenarios in `agentcontract.benchmark.scenarios` covering all 12 required classes:
+- 13 deterministic benchmark scenarios in `agentcontract.benchmark.scenarios`:
   1. `scen_01_forbidden_write`: hard forbidden file write;
   2. `scen_02_soft_warning`: soft preference warning;
   3. `scen_03_post_action_violation`: hidden post-action side effect;
@@ -279,10 +287,10 @@ python -m pytest -v
   9. `scen_09_timeout_execution`: timeout/cancelled execution;
   10. `scen_10_require_compliance`: REQUIRE/PREFER compliance behavior;
   11. `scen_11_unrelated_constraint`: unrelated constraint that should not block;
-  12. `scen_12_clean_successful_task`: clean multi-step task completed safely and successfully.
-- Implemented `BenchmarkRunner` in `agentcontract.benchmark.runner` orchestrating variant isolation, deterministic repetition, and runtime evaluation without duplicating core logic.
+  12. `scen_12_clean_successful_task`: clean multi-step task completed safely and successfully;
+  13. `scen_13_success_with_unsupported_claim`: successful task with extraneous unsupported claim.
 - Re-exported benchmark API at root package `agentcontract`.
-- Added 23 regression tests across `tests/benchmark/` covering models, metrics edge cases, scenario integrity, ground-truth resolution, variant isolation, repeated run stability, and full report execution.
+- Added 27 regression tests across `tests/benchmark/`.
 
 **Files changed:**  
 - `src/agentcontract/benchmark/models.py`
@@ -298,29 +306,29 @@ python -m pytest -v
 
 **Tests/checks:**  
 - `python --version` -> `Python 3.12.9`
-- `python -m pytest tests/benchmark/ -v` -> 23 passed in 0.48s
-- `python -m pytest -v` -> 218 passed in 1.17s (zero regressions across TASK-001 through TASK-006)
+- `python -m pytest tests/benchmark/ -v` -> 27 passed in 0.52s
+- `python -m pytest -v` -> 222 passed in 1.00s (zero regressions across TASK-001 through TASK-006)
 
 **Benchmark run:**  
-Deterministic run results from local run `bench_run_8ab89d23` (12 standard scenarios, 1 repetition):
+Deterministic run results from local run `bench_run_d79842e1` (13 standard scenarios, 1 repetition):
 | Metric | BASELINE | SPECGUARD | EVIDENCEGATE | FULL_AGENTCONTRACT |
 | --- | --- | --- | --- | --- |
 | **Constraint Violation Rate (CVR)** | 1.0000 (3/3) | 0.3333 (1/3) | 1.0000 (3/3) | 0.3333 (1/3) |
-| **Unsupported Completion Rate (UCR)** | 0.6923 (9/13) | 0.4615 (6/13) | 0.1538 (2/13) | 0.0000 (0/13) |
-| **False Blocking Rate (FBR)** | 0.0000 (0/12) | 0.0000 (0/12) | 0.0000 (0/12) | 0.0000 (0/12) |
-| **Task Success Rate (TSR)** | 0.2500 (3/12) | 0.2500 (3/12) | 0.2500 (3/12) | 0.2500 (3/12) |
-| **Extra Tool Calls** | 3 | 1 | 3 | 1 |
-| **Total Tool Calls** | 15 (avg 1.25) | 13 (avg 1.08) | 15 (avg 1.25) | 13 (avg 1.08) |
-| **Total Trace Events** | 0 (avg 0.00) | 0 (avg 0.00) | 30 (avg 2.50) | 54 (avg 4.50) |
-| **Avg Latency (ms)** | 0.060 ms | 0.310 ms | 0.171 ms | 0.991 ms |
-| **Latency Overhead (ms)** | baseline (0.0 ms) | +0.250 ms | +0.111 ms | +0.931 ms |
+| **Unsupported Completion Rate (UCR)** | 0.6667 (10/15) | 0.4667 (7/15) | 0.1333 (2/15) | 0.0000 (0/15) |
+| **False Blocking Rate (FBR)** | 0.0000 (0/13) | 0.0000 (0/13) | 0.0000 (0/13) | 0.0000 (0/13) |
+| **Task Success Rate (TSR)** | 0.3077 (4/13) | 0.3077 (4/13) | 0.3077 (4/13) | 0.3077 (4/13) |
+| **Extra Tool Calls** | 4 | 2 | 4 | 2 |
+| **Total Tool Calls** | 16 (avg 1.23) | 14 (avg 1.08) | 16 (avg 1.23) | 14 (avg 1.08) |
+| **Total Trace Events** | 0 (avg 0.00) | 0 (avg 0.00) | 32 (avg 2.46) | 58 (avg 4.46) |
+| **Avg Latency (ms)** | 0.063 ms | 0.210 ms | 0.161 ms | 1.061 ms |
+| **Latency Overhead (ms)** | baseline (0.0 ms) | +0.147 ms | +0.098 ms | +0.997 ms |
 
 **Known limitations:**  
-- Token overhead is omitted/None since the 12 deterministic scenarios execute local tools rather than external LLM calls.
-- Initial suite contains 12 scenarios; extensible to 100–300 scenarios in future tasks without changing the runner API.
+- Token overhead is omitted/None since the 13 deterministic scenarios execute local tools rather than external LLM calls.
+- Initial suite contains 13 scenarios; extensible to 100–300 scenarios in future tasks without changing the runner API.
 
 **Commit/PR:**  
-Commit SHA: `57169de` (implementation) on branch `task/TASK-007-benchmark`.
+Commit SHA: `ed448bd` on branch `task/TASK-007-benchmark`.
 
 **Questions/blockers:**  
 None. Ready for main agent review.
