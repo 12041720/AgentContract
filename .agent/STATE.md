@@ -15,9 +15,9 @@
 - Task: **TASK-007 — Benchmark scenarios and reliability metrics**
 - Task file: `.agent/tasks/TASK-007.md`
 - Work branch: `task/TASK-007-benchmark`
-- Status: **READY_FOR_EXECUTOR**
+- Status: **CHANGES_REQUESTED**
 - Owner: Execution agent
-- Main-agent review: TASK-006 accepted and integrated; TASK-007 ready for execution
+- Main-agent review: TASK-007 changes requested after review of `57169def3d64024a4f96a205db80005cc184b9f9`
 
 ## Main-agent checkpoint
 
@@ -30,7 +30,7 @@
 - TASK-004 accepted and integrated to `main` as `f93c5f70e93e4d2ef8341c719dba66f951ed8e03`.
 - TASK-005 accepted and integrated to `main` as `94ec3c32dc685528fa5265e11c8945b16fdbc6b4`.
 - TASK-006 accepted and integrated to `main` as `cc61b75d34e75ea47ee2f289874a719bf4be247f`.
-- M2 working demo is complete; TASK-007 benchmark contract is now active.
+- TASK-007 first benchmark implementation was reviewed; TSR/UCR separation, extra-call semantics, FBR semantics, repetition checks, and latency reporting need fixes.
 
 ## Current design decisions
 
