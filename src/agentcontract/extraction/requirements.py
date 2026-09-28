@@ -48,7 +48,7 @@ class RequirementExtractor:
         self._client = client
 
         if id_generator is None:
-            self._id_gen = IdGenerator(deterministic=True)
+            self._id_gen = IdGenerator(deterministic=False)
         elif isinstance(id_generator, IdGenerator):
             self._id_gen = id_generator
         elif callable(id_generator):
@@ -76,7 +76,7 @@ class RequirementExtractor:
         self,
         text: str,
         *,
-        source: ConstraintSource = ConstraintSource.USER,
+        source: ConstraintSource,
         source_location: str | None = None,
         author: str | None = None,
         metadata: Mapping[str, Any] | None = None,
@@ -87,7 +87,7 @@ class RequirementExtractor:
 
         Args:
             text: Raw input text containing requirements or instructions.
-            source: Authoritative provenance source (caller-owned).
+            source: Authoritative provenance source (caller-owned, required).
             source_location: Source reference location (e.g. 'prompt:12').
             author: Author or agent role that introduced the constraint.
             metadata: Additional provenance metadata.
@@ -98,6 +98,11 @@ class RequirementExtractor:
         Returns:
             ExtractionResult containing durable Constraint instances and diagnostics.
         """
+        if not isinstance(source, ConstraintSource):
+            raise ExtractionValidationError(
+                f"source must be a valid ConstraintSource enum instance, got {type(source).__name__}."
+            )
+
         stripped_text = text.strip() if text else ""
         if not stripped_text:
             raise ExtractionValidationError("text to extract requirements from cannot be empty or blank.")
@@ -205,7 +210,24 @@ class RequirementExtractor:
                 diagnostics.append(diag)
                 continue
 
-            # Check if model attempted to tamper with authority
+            # Generate unique ID
+            cid = self._id_gen.new_id("c")
+
+            # Check if model attempted to tamper with authority or provenance
+            if draft.id is not None:
+                diagnostics.append(
+                    ExtractionDiagnostic(
+                        message=(
+                            f"Model attempted to declare constraint id='{draft.id}'; "
+                            f"caller-owned identifier '{cid}' was strictly enforced."
+                        ),
+                        severity=DiagnosticSeverity.WARNING,
+                        field=f"constraints[{idx}].id",
+                        code="AUTHORITY_SPOOF_IGNORED",
+                        raw_item=draft.id,
+                    )
+                )
+
             if draft.source is not None and draft.source.strip().upper() != source.value:
                 diagnostics.append(
                     ExtractionDiagnostic(
@@ -220,8 +242,47 @@ class RequirementExtractor:
                     )
                 )
 
-            # Generate unique deterministic ID
-            cid = self._id_gen.new_id("c")
+            if draft.author is not None and draft.author != author:
+                diagnostics.append(
+                    ExtractionDiagnostic(
+                        message=(
+                            f"Model attempted to declare author='{draft.author}'; "
+                            f"caller-owned author '{author}' was strictly enforced."
+                        ),
+                        severity=DiagnosticSeverity.WARNING,
+                        field=f"constraints[{idx}].author",
+                        code="AUTHORITY_SPOOF_IGNORED",
+                        raw_item=draft.author,
+                    )
+                )
+
+            if draft.source_location is not None and draft.source_location != source_location:
+                diagnostics.append(
+                    ExtractionDiagnostic(
+                        message=(
+                            f"Model attempted to declare source_location='{draft.source_location}'; "
+                            f"caller-owned source_location '{source_location}' was strictly enforced."
+                        ),
+                        severity=DiagnosticSeverity.WARNING,
+                        field=f"constraints[{idx}].source_location",
+                        code="AUTHORITY_SPOOF_IGNORED",
+                        raw_item=draft.source_location,
+                    )
+                )
+
+            if draft.source_text is not None and draft.source_text != text:
+                diagnostics.append(
+                    ExtractionDiagnostic(
+                        message=(
+                            "Model attempted to declare source_text; "
+                            "caller-owned raw source_text was strictly enforced."
+                        ),
+                        severity=DiagnosticSeverity.WARNING,
+                        field=f"constraints[{idx}].source_text",
+                        code="AUTHORITY_SPOOF_IGNORED",
+                        raw_item=draft.source_text,
+                    )
+                )
 
             # Convert to durable Constraint model
             try:

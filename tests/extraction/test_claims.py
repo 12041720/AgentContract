@@ -212,6 +212,103 @@ def test_scenario_13_deterministic_claim_ids() -> None:
     assert [c.claim_id for c in result.items] == ["cid_claim_0001", "cid_claim_0002", "cid_claim_0003"]
 
 
+def test_unknown_fields_and_verdict_rejected_extra_forbid() -> None:
+    """Extra fields such as verdict='VERIFIED' or typos cannot be silently ignored."""
+    client_verdict = FakeStructuredExtractionClient(
+        {
+            "claims": [
+                {
+                    "claim_type": "TESTS_PASSED",
+                    "description": "Tests passed",
+                    "verdict": "VERIFIED",  # Model claims verdict!
+                }
+            ]
+        }
+    )
+    extractor = ClaimExtractor(client_verdict)
+
+    # strict=True raises
+    with pytest.raises(ExtractionValidationError, match="Extra inputs are not permitted"):
+        extractor.extract("pytest passed", strict=True)
+
+    # strict=False records ERROR diagnostic and skips
+    res = extractor.extract("pytest passed", strict=False)
+    assert res.has_errors is True
+    assert len(res.items) == 0
+    assert any("Extra inputs are not permitted" in d.message for d in res.diagnostics)
+
+
+def test_independent_claim_extractor_instances_default_ids_do_not_collide() -> None:
+    """Default ClaimExtractor instances use collision-resistant ID generators to avoid duplicate IDs."""
+    data = {
+        "claims": [
+            {
+                "claim_type": "FILE_EXISTS",
+                "description": "File exists",
+                "target_path": "output.txt",
+            }
+        ]
+    }
+    client1 = FakeStructuredExtractionClient(data)
+    client2 = FakeStructuredExtractionClient(data)
+
+    ext1 = ClaimExtractor(client1)
+    ext2 = ClaimExtractor(client2)
+
+    res1 = ext1.extract("Text 1")
+    res2 = ext2.extract("Text 2")
+
+    id1 = res1.items[0].claim_id
+    id2 = res2.items[0].claim_id
+    assert id1 != id2, f"Independent claim extractors must not produce colliding IDs: {id1} == {id2}"
+
+
+def test_complete_claim_scope_and_identifier_spoof_diagnostics() -> None:
+    """Model attempts to spoof claim_id, trace_id, session_id must not alter durable output
+    and must emit SCOPE_SPOOF_IGNORED diagnostics."""
+    client = FakeStructuredExtractionClient(
+        {
+            "claims": [
+                {
+                    "claim_type": "TOOL_SUCCEEDED",
+                    "description": "Tool succeeded",
+                    "tool_name": "bash",
+                    "claim_id": "spoofed_claim_999",
+                    "trace_id": "spoofed_trace_999",
+                    "session_id": "spoofed_session_999",
+                }
+            ]
+        }
+    )
+
+    id_gen = IdGenerator(prefix="claim_auth_", deterministic=True)
+    extractor = ClaimExtractor(client, id_generator=id_gen)
+
+    result = extractor.extract(
+        "Bash completed",
+        trace_id="real_trace_123",
+        session_id="real_session_123",
+        strict=True,
+    )
+
+    assert result.is_success is True
+    assert len(result.items) == 1
+    c = result.items[0]
+
+    # Caller values strictly enforced
+    assert c.claim_id == "claim_auth_claim_0001"
+    assert c.claim_id != "spoofed_claim_999"
+    assert c.trace_id == "real_trace_123"
+    assert c.session_id == "real_session_123"
+
+    # Check diagnostics
+    spoof_diags = [d for d in result.diagnostics if d.code == "SCOPE_SPOOF_IGNORED"]
+    fields_spoofed = {d.field for d in spoof_diags}
+    assert "claims[0].claim_id" in fields_spoofed
+    assert "claims[0].trace_id" in fields_spoofed
+    assert "claims[0].session_id" in fields_spoofed
+
+
 def test_client_safety_and_error_handling() -> None:
     # Blank text
     extractor = ClaimExtractor(FakeStructuredExtractionClient({}))
@@ -229,3 +326,4 @@ def test_client_safety_and_error_handling() -> None:
     ext3 = ClaimExtractor(empty_client)
     with pytest.raises(ExtractionValidationError, match="does not contain 'claims'"):
         ext3.extract("Some text", strict=True)
+

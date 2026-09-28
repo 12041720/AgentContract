@@ -71,6 +71,16 @@ class ConstraintScopeDraft(BaseModel):
     selectors: FrozenDict = Field(default_factory=FrozenDict, description="Custom selector filters.")
     description: str | None = Field(default=None, description="Scope summary.")
 
+    def is_empty(self) -> bool:
+        """Return True if no matching dimensions are specified."""
+        return (
+            (self.target_type is None or not self.target_type.strip())
+            and not self.paths
+            and not self.tools
+            and not self.actions
+            and not self.selectors
+        )
+
     @field_validator("paths", "tools", "actions", mode="before")
     @classmethod
     def _normalize_string_sequence(cls, val: Any) -> tuple[str, ...]:
@@ -80,13 +90,20 @@ class ConstraintScopeDraft(BaseModel):
             raise ExtractionValidationError("Scope collections must be ordered sequences (list or tuple), not sets.")
         if isinstance(val, str):
             s = val.strip()
-            return (s,) if s else ()
+            if not s:
+                raise ExtractionValidationError("Scope string item must not be empty or blank.")
+            return (s,)
         if isinstance(val, (list, tuple)):
             res = []
-            for item in val:
-                s = str(item).strip()
-                if s:
-                    res.append(s)
+            for idx, item in enumerate(val):
+                if not isinstance(item, str) or isinstance(item, bool):
+                    raise ExtractionValidationError(
+                        f"Scope items must be strings, got {type(item).__name__} at index {idx}: {item!r}"
+                    )
+                s = item.strip()
+                if not s:
+                    raise ExtractionValidationError(f"Scope string item at index {idx} must not be empty or blank.")
+                res.append(s)
             return tuple(res)
         raise ExtractionValidationError(f"Expected sequence of strings, got {type(val).__name__}")
 
@@ -114,20 +131,20 @@ class ConstraintScopeDraft(BaseModel):
 class ConstraintDraft(BaseModel):
     """Candidate constraint proposed by extraction model before authority enforcement."""
 
-    model_config = ConfigDict(frozen=True, extra="ignore")
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str = Field(..., description="Proposed constraint name.")
     description: str = Field(..., description="Proposed requirement specification.")
     strength: ConstraintStrength = Field(
-        default=ConstraintStrength.HARD,
+        ...,
         description="Proposed enforcement strength: HARD, SOFT, ASSUMPTION.",
     )
     rule_effect: RuleEffect = Field(
-        default=RuleEffect.DENY,
+        ...,
         description="Proposed rule effect: DENY, REQUIRE, PREFER.",
     )
-    scope: ConstraintScopeDraft | None = Field(
-        default=None,
+    scope: ConstraintScopeDraft = Field(
+        ...,
         description="Applicability scope.",
     )
     compliance_scope: ConstraintScopeDraft | None = Field(
@@ -148,6 +165,13 @@ class ConstraintDraft(BaseModel):
         if not s:
             raise ExtractionValidationError("name and description must not be empty.")
         return s
+
+    @field_validator("scope")
+    @classmethod
+    def _validate_scope_non_empty(cls, val: ConstraintScopeDraft) -> ConstraintScopeDraft:
+        if val.is_empty():
+            raise ExtractionValidationError("Constraint applicability scope must not be empty in v0.1.")
+        return val
 
     @field_validator("strength", mode="before")
     @classmethod
@@ -183,9 +207,14 @@ class ConstraintDraft(BaseModel):
 
         Enforces all domain invariants:
         1. Provenance is strictly caller-provided (never overridden by model proposals).
-        2. AGENT_INFERENCE cannot masquerade as HARD strength.
-        3. REQUIRE and PREFER rules require an explicit compliance_scope.
+        2. Scope cannot be omitted or empty in v0.1.
+        3. AGENT_INFERENCE cannot masquerade as HARD strength.
+        4. REQUIRE and PREFER rules require an explicit non-empty compliance_scope.
         """
+        # Invariant: scope cannot be omitted or empty
+        if self.scope is None or self.scope.is_empty():
+            raise ExtractionValidationError("Constraint applicability scope must not be omitted or empty in v0.1.")
+
         # Invariant: AGENT_INFERENCE cannot be HARD
         if provenance.source == ConstraintSource.AGENT_INFERENCE and self.strength == ConstraintStrength.HARD:
             raise ExtractionValidationError(
@@ -193,12 +222,13 @@ class ConstraintDraft(BaseModel):
             )
 
         # Invariant: REQUIRE / PREFER require compliance_scope
-        if self.rule_effect in (RuleEffect.REQUIRE, RuleEffect.PREFER) and self.compliance_scope is None:
-            raise ExtractionValidationError(
-                f"Constraint with rule_effect={self.rule_effect.value} requires a compliance_scope."
-            )
+        if self.rule_effect in (RuleEffect.REQUIRE, RuleEffect.PREFER):
+            if self.compliance_scope is None or self.compliance_scope.is_empty():
+                raise ExtractionValidationError(
+                    f"Constraint with rule_effect={self.rule_effect.value} requires a non-empty compliance_scope."
+                )
 
-        scope_obj = self.scope.to_scope() if self.scope is not None else ConstraintScope()
+        scope_obj = self.scope.to_scope()
         comp_scope_obj = (
             self.compliance_scope.to_scope() if self.compliance_scope is not None else None
         )
@@ -218,7 +248,7 @@ class ConstraintDraft(BaseModel):
 class ClaimDraft(BaseModel):
     """Candidate completion or state claim proposed by extraction model."""
 
-    model_config = ConfigDict(frozen=True, extra="ignore")
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     claim_type: ClaimType = Field(..., description="Proposed claim category.")
     description: str = Field(..., description="Atomic claim statement.")
@@ -352,11 +382,13 @@ def get_requirement_extraction_schema() -> dict[str, Any]:
     """Return JSON Schema specifying expected requirement extraction structured output."""
     return {
         "type": "object",
+        "additionalProperties": False,
         "properties": {
             "constraints": {
                 "type": "array",
                 "items": {
                     "type": "object",
+                    "additionalProperties": False,
                     "properties": {
                         "name": {
                             "type": "string",
@@ -378,6 +410,7 @@ def get_requirement_extraction_schema() -> dict[str, Any]:
                         },
                         "scope": {
                             "type": "object",
+                            "additionalProperties": False,
                             "properties": {
                                 "target_type": {"type": ["string", "null"]},
                                 "paths": {"type": "array", "items": {"type": "string"}},
@@ -389,6 +422,7 @@ def get_requirement_extraction_schema() -> dict[str, Any]:
                         },
                         "compliance_scope": {
                             "type": "object",
+                            "additionalProperties": False,
                             "properties": {
                                 "target_type": {"type": ["string", "null"]},
                                 "paths": {"type": "array", "items": {"type": "string"}},
@@ -399,7 +433,7 @@ def get_requirement_extraction_schema() -> dict[str, Any]:
                             },
                         },
                     },
-                    "required": ["name", "description"],
+                    "required": ["name", "description", "strength", "rule_effect", "scope"],
                 },
             }
         },
@@ -411,11 +445,13 @@ def get_claim_extraction_schema() -> dict[str, Any]:
     """Return JSON Schema specifying expected claim extraction structured output."""
     return {
         "type": "object",
+        "additionalProperties": False,
         "properties": {
             "claims": {
                 "type": "array",
                 "items": {
                     "type": "object",
+                    "additionalProperties": False,
                     "properties": {
                         "claim_type": {
                             "type": "string",
@@ -438,6 +474,7 @@ def get_claim_extraction_schema() -> dict[str, Any]:
                         "command": {"type": ["string", "null"]},
                         "target_path": {"type": ["string", "null"]},
                         "expected_exit_code": {"type": ["integer", "null"]},
+                        "metadata": {"type": "object"},
                     },
                     "required": ["claim_type", "description"],
                 },

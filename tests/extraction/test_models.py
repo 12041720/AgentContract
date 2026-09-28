@@ -43,13 +43,31 @@ def test_constraint_scope_draft_normalization_and_validation() -> None:
     assert scope.paths == ("/etc/hosts", "/etc/passwd")
     assert scope.target_type == "filesystem"
 
-    # 2. Reject unordered set
+    # 2. Reject unordered set and frozenset
     with pytest.raises(ExtractionValidationError, match="ordered sequences"):
         ConstraintScopeDraft(paths={"/etc/hosts"})  # type: ignore[arg-type]
+    with pytest.raises(ExtractionValidationError, match="ordered sequences"):
+        ConstraintScopeDraft(paths=frozenset({"/etc/hosts"}))  # type: ignore[arg-type]
 
     # 3. Reject invalid selector type
     with pytest.raises(ExtractionValidationError, match="selectors must be a mapping"):
         ConstraintScopeDraft(selectors="not_a_map")  # type: ignore[arg-type]
+
+    # 4. Strict item types: reject int, bool, nested object, empty string (no str(item) coercion)
+    with pytest.raises(ExtractionValidationError, match="Scope items must be strings"):
+        ConstraintScopeDraft(paths=[123])  # type: ignore[list-item]
+
+    with pytest.raises(ExtractionValidationError, match="Scope items must be strings"):
+        ConstraintScopeDraft(actions=[True])  # type: ignore[list-item]
+
+    with pytest.raises(ExtractionValidationError, match="Scope items must be strings"):
+        ConstraintScopeDraft(tools=[{"nested": "obj"}])  # type: ignore[list-item]
+
+    with pytest.raises(ExtractionValidationError, match="Scope items must be strings"):
+        ConstraintScopeDraft(paths=[["nested_list"]])  # type: ignore[list-item]
+
+    with pytest.raises(ExtractionValidationError, match="Scope string item at index 0 must not be empty"):
+        ConstraintScopeDraft(paths=["   "])
 
 
 def test_constraint_draft_enum_normalization_and_invariants() -> None:
@@ -81,6 +99,8 @@ def test_constraint_draft_enum_normalization_and_invariants() -> None:
             name="foo",
             description="bar",
             strength="ULTRA_HARD",  # type: ignore[arg-type]
+            rule_effect=RuleEffect.DENY,
+            scope=ConstraintScopeDraft(tools=["bash"]),
         )
 
     # 3. Invalid rule effect string raises ExtractionValidationError
@@ -88,7 +108,9 @@ def test_constraint_draft_enum_normalization_and_invariants() -> None:
         ConstraintDraft(
             name="foo",
             description="bar",
+            strength=ConstraintStrength.HARD,
             rule_effect="FORBIDDEN",  # type: ignore[arg-type]
+            scope=ConstraintScopeDraft(tools=["bash"]),
         )
 
     # 4. Invariant: AGENT_INFERENCE cannot be HARD
@@ -100,6 +122,8 @@ def test_constraint_draft_enum_normalization_and_invariants() -> None:
         name="inferred_hard",
         description="Inferred rule",
         strength=ConstraintStrength.HARD,
+        rule_effect=RuleEffect.DENY,
+        scope=ConstraintScopeDraft(tools=["bash"]),
     )
     with pytest.raises(ExtractionValidationError, match="AGENT_INFERENCE cannot be declared with HARD"):
         hard_draft.to_constraint(constraint_id="c_inf", provenance=inf_prov)
@@ -108,11 +132,78 @@ def test_constraint_draft_enum_normalization_and_invariants() -> None:
     require_draft = ConstraintDraft(
         name="require_schema",
         description="Require schema validation",
+        strength=ConstraintStrength.HARD,
         rule_effect=RuleEffect.REQUIRE,
+        scope=ConstraintScopeDraft(paths=["src/*.py"]),
         compliance_scope=None,
     )
-    with pytest.raises(ExtractionValidationError, match="requires a compliance_scope"):
+    with pytest.raises(ExtractionValidationError, match="requires a non-empty compliance_scope"):
         require_draft.to_constraint(constraint_id="c_req", provenance=prov)
+
+    # 6. Scope cannot be omitted or empty
+    with pytest.raises(Exception):
+        ConstraintDraft.model_validate(
+            {
+                "name": "omitted_scope",
+                "description": "No scope given",
+                "strength": "HARD",
+                "rule_effect": "DENY",
+            }
+        )
+
+    with pytest.raises(ExtractionValidationError, match="applicability scope must not be empty"):
+        ConstraintDraft(
+            name="empty_scope",
+            description="Empty scope given",
+            strength=ConstraintStrength.HARD,
+            rule_effect=RuleEffect.DENY,
+            scope=ConstraintScopeDraft(),
+        )
+
+    # 7. Model must explicitly provide strength and rule_effect
+    with pytest.raises(Exception):
+        ConstraintDraft.model_validate(
+            {
+                "name": "omitted_strength",
+                "description": "No strength",
+                "rule_effect": "DENY",
+                "scope": {"paths": ["/a"]},
+            }
+        )
+
+    with pytest.raises(Exception):
+        ConstraintDraft.model_validate(
+            {
+                "name": "omitted_effect",
+                "description": "No effect",
+                "strength": "HARD",
+                "scope": {"paths": ["/a"]},
+            }
+        )
+
+    # 8. Extra unknown fields strictly forbidden (extra='forbid')
+    with pytest.raises(Exception):
+        ConstraintDraft.model_validate(
+            {
+                "name": "extra_field_rule",
+                "description": "Has unexpected field",
+                "strength": "HARD",
+                "rule_effect": "DENY",
+                "scope": {"paths": ["/a"]},
+                "verdict": "VERIFIED",
+            }
+        )
+    with pytest.raises(Exception):
+        ConstraintDraft.model_validate(
+            {
+                "name": "typo_rule",
+                "description": "Has typo field",
+                "strength": "HARD",
+                "rule_effect": "DENY",
+                "scope": {"paths": ["/a"]},
+                "strenght": "SOFT",
+            }
+        )
 
 
 def test_claim_draft_validation_and_conversion() -> None:
@@ -150,6 +241,24 @@ def test_claim_draft_validation_and_conversion() -> None:
         ClaimDraft(
             claim_type=ClaimType.GENERIC,
             description="   ",
+        )
+
+    # 4. Extra fields strictly forbidden (extra='forbid')
+    with pytest.raises(Exception):
+        ClaimDraft.model_validate(
+            {
+                "claim_type": "TESTS_PASSED",
+                "description": "tests passed",
+                "verdict": "VERIFIED",
+            }
+        )
+    with pytest.raises(Exception):
+        ClaimDraft.model_validate(
+            {
+                "claim_type": "TESTS_PASSED",
+                "description": "tests passed",
+                "status": "SUCCESS",
+            }
         )
 
 

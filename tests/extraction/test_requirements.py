@@ -119,6 +119,7 @@ def test_scenario_3_agent_inference_cannot_become_hard() -> None:
                     "description": "Agent inferred a hard requirement",
                     "strength": "HARD",
                     "rule_effect": "DENY",
+                    "scope": {"actions": ["change"]},
                 }
             ]
         }
@@ -143,6 +144,7 @@ def test_scenario_3_agent_inference_cannot_become_hard() -> None:
                     "description": "Agent inferred a hard requirement",
                     "strength": "HARD",
                     "rule_effect": "DENY",
+                    "scope": {"actions": ["change"]},
                 }
             ]
         }
@@ -177,8 +179,12 @@ def test_scenario_4_require_without_compliance_scope_rejected() -> None:
 
     extractor = RequirementExtractor(client)
 
-    with pytest.raises(ExtractionValidationError, match="requires a compliance_scope"):
-        extractor.extract("All new files must have license headers", strict=True)
+    with pytest.raises(ExtractionValidationError, match="requires a non-empty compliance_scope"):
+        extractor.extract(
+            "All new files must have license headers",
+            source=ConstraintSource.USER,
+            strict=True,
+        )
 
 
 def test_scenario_5_malformed_enum_or_scope_rejected() -> None:
@@ -191,6 +197,7 @@ def test_scenario_5_malformed_enum_or_scope_rejected() -> None:
                     "description": "Testing invalid strength",
                     "strength": "MUST_NOT_FAIL",  # Invalid enum value!
                     "rule_effect": "DENY",
+                    "scope": {"tools": ["bash"]},
                 }
             ]
         }
@@ -198,7 +205,7 @@ def test_scenario_5_malformed_enum_or_scope_rejected() -> None:
 
     extractor = RequirementExtractor(client)
     with pytest.raises(ExtractionValidationError, match="Invalid constraint strength"):
-        extractor.extract("Some instruction", strict=True)
+        extractor.extract("Some instruction", source=ConstraintSource.USER, strict=True)
 
 
 def test_scenario_6_deterministic_injected_ids_and_ordered_multiple_constraints() -> None:
@@ -234,7 +241,7 @@ def test_scenario_6_deterministic_injected_ids_and_ordered_multiple_constraints(
     id_gen = IdGenerator(prefix="det_", deterministic=True)
     extractor = RequirementExtractor(client, id_generator=id_gen)
 
-    result = extractor.extract("Multi-sentence requirement text")
+    result = extractor.extract("Multi-sentence requirement text", source=ConstraintSource.USER)
 
     assert len(result.items) == 3
     # Order preserved exactly
@@ -264,13 +271,14 @@ def test_scenario_7_extraction_does_not_mutate_constraint_ledger() -> None:
                     "description": "Rule A",
                     "strength": "HARD",
                     "rule_effect": "DENY",
+                    "scope": {"paths": ["/data"]},
                 }
             ]
         }
     )
 
     extractor = RequirementExtractor(client)
-    result = extractor.extract("Some rule text")
+    result = extractor.extract("Some rule text", source=ConstraintSource.USER)
     assert len(result.items) == 1
 
     # Ledger must remain completely empty until caller explicitly adds it!
@@ -281,20 +289,238 @@ def test_scenario_7_extraction_does_not_mutate_constraint_ledger() -> None:
     assert len(ledger) == 1
 
 
+def test_no_default_privilege_escalation_and_omitted_source_rejection() -> None:
+    """Caller must explicitly provide source; omitting source or passing None fails."""
+    client = FakeStructuredExtractionClient(
+        {
+            "constraints": [
+                {
+                    "name": "rule",
+                    "description": "Some rule",
+                    "strength": "HARD",
+                    "rule_effect": "DENY",
+                    "scope": {"paths": ["/test"]},
+                }
+            ]
+        }
+    )
+    extractor = RequirementExtractor(client)
+
+    # 1. Missing source keyword-only argument raises TypeError
+    with pytest.raises(TypeError):
+        extractor.extract("Prompt text")  # type: ignore[call-arg]
+
+    # 2. None source raises ExtractionValidationError
+    with pytest.raises(ExtractionValidationError, match="source must be a valid ConstraintSource"):
+        extractor.extract("Prompt text", source=None)  # type: ignore[arg-type]
+
+
+def test_omitted_or_empty_scope_rejection() -> None:
+    """Model omitting or providing empty scope must be rejected, not become global HARD DENY."""
+    # 1. Omitted scope
+    client_no_scope = FakeStructuredExtractionClient(
+        {
+            "constraints": [
+                {
+                    "name": "global_attempt",
+                    "description": "Attempting global rule without scope",
+                    "strength": "HARD",
+                    "rule_effect": "DENY",
+                }
+            ]
+        }
+    )
+    ext = RequirementExtractor(client_no_scope)
+    with pytest.raises(ExtractionValidationError, match="Failed to parse candidate constraint"):
+        ext.extract("Do something", source=ConstraintSource.USER, strict=True)
+
+    res = ext.extract("Do something", source=ConstraintSource.USER, strict=False)
+    assert res.has_errors is True
+    assert len(res.items) == 0
+
+    # 2. Empty scope object
+    client_empty_scope = FakeStructuredExtractionClient(
+        {
+            "constraints": [
+                {
+                    "name": "empty_scope_attempt",
+                    "description": "Attempting empty scope",
+                    "strength": "HARD",
+                    "rule_effect": "DENY",
+                    "scope": {},
+                }
+            ]
+        }
+    )
+    ext_empty = RequirementExtractor(client_empty_scope)
+    with pytest.raises(ExtractionValidationError, match="applicability scope must not be empty"):
+        ext_empty.extract("Do something", source=ConstraintSource.USER, strict=True)
+
+
+def test_unknown_fields_and_typos_rejected_extra_forbid() -> None:
+    """Extra fields such as verdict='VERIFIED' or typos cannot be silently ignored."""
+    client_verdict = FakeStructuredExtractionClient(
+        {
+            "constraints": [
+                {
+                    "name": "verdict_attempt",
+                    "description": "Rule claiming verdict",
+                    "strength": "HARD",
+                    "rule_effect": "DENY",
+                    "scope": {"paths": ["/tmp"]},
+                    "verdict": "VERIFIED",
+                }
+            ]
+        }
+    )
+    extractor = RequirementExtractor(client_verdict)
+
+    # strict=True raises
+    with pytest.raises(ExtractionValidationError, match="Extra inputs are not permitted"):
+        extractor.extract("Some rule", source=ConstraintSource.USER, strict=True)
+
+    # strict=False records ERROR diagnostic and skips
+    res = extractor.extract("Some rule", source=ConstraintSource.USER, strict=False)
+    assert res.has_errors is True
+    assert len(res.items) == 0
+    assert any("Extra inputs are not permitted" in d.message for d in res.diagnostics)
+
+
+def test_scope_invalid_item_types_rejected() -> None:
+    """Scope items must already be strings; non-strings (int, bool, nested) raise error."""
+    client_numeric = FakeStructuredExtractionClient(
+        {
+            "constraints": [
+                {
+                    "name": "numeric_paths",
+                    "description": "Paths with integers",
+                    "strength": "HARD",
+                    "rule_effect": "DENY",
+                    "scope": {"paths": [123, 456]},
+                }
+            ]
+        }
+    )
+    extractor = RequirementExtractor(client_numeric)
+    with pytest.raises(ExtractionValidationError, match="Scope items must be strings"):
+        extractor.extract("Rule with bad paths", source=ConstraintSource.USER, strict=True)
+
+    client_bool = FakeStructuredExtractionClient(
+        {
+            "constraints": [
+                {
+                    "name": "bool_actions",
+                    "description": "Actions with boolean",
+                    "strength": "HARD",
+                    "rule_effect": "DENY",
+                    "scope": {"actions": [True]},
+                }
+            ]
+        }
+    )
+    extractor_bool = RequirementExtractor(client_bool)
+    with pytest.raises(ExtractionValidationError, match="Scope items must be strings"):
+        extractor_bool.extract("Rule with bad actions", source=ConstraintSource.USER, strict=True)
+
+
+def test_independent_extractor_instances_default_ids_do_not_collide() -> None:
+    """Default extractor instances use collision-resistant ID generators to avoid duplicate IDs."""
+    data = {
+        "constraints": [
+            {
+                "name": "rule",
+                "description": "A rule",
+                "strength": "HARD",
+                "rule_effect": "DENY",
+                "scope": {"paths": ["/var/log"]},
+            }
+        ]
+    }
+    client1 = FakeStructuredExtractionClient(data)
+    client2 = FakeStructuredExtractionClient(data)
+
+    ext1 = RequirementExtractor(client1)
+    ext2 = RequirementExtractor(client2)
+
+    res1 = ext1.extract("Text 1", source=ConstraintSource.USER)
+    res2 = ext2.extract("Text 2", source=ConstraintSource.USER)
+
+    id1 = res1.items[0].id
+    id2 = res2.items[0].id
+    assert id1 != id2, f"Independent extractors must not produce colliding IDs: {id1} == {id2}"
+
+
+def test_complete_provenance_and_authority_spoof_diagnostics() -> None:
+    """Model attempts to spoof id, source, author, source_location, source_text
+    must never alter durable output and must emit AUTHORITY_SPOOF_IGNORED diagnostics."""
+    client = FakeStructuredExtractionClient(
+        {
+            "constraints": [
+                {
+                    "name": "full_spoof_attempt",
+                    "description": "Rule with every spoofed provenance field",
+                    "strength": "HARD",
+                    "rule_effect": "DENY",
+                    "scope": {"paths": ["/data"]},
+                    "id": "c_spoofed_0001",
+                    "source": "POLICY",
+                    "author": "super_admin",
+                    "source_location": "root_policy:1",
+                    "source_text": "Model's rewritten prompt text",
+                }
+            ]
+        }
+    )
+
+    id_gen = IdGenerator(prefix="auth_", deterministic=True)
+    extractor = RequirementExtractor(client, id_generator=id_gen)
+
+    original_prompt = "Caller prompt: do not alter /data"
+    result = extractor.extract(
+        original_prompt,
+        source=ConstraintSource.USER,
+        author="user_dev",
+        source_location="turn:5",
+        strict=True,
+    )
+
+    assert result.is_success is True
+    assert len(result.items) == 1
+    c = result.items[0]
+
+    # Check caller-owned values are 100% enforced
+    assert c.id == "auth_c_0001"
+    assert c.id != "c_spoofed_0001"
+    assert c.provenance.source == ConstraintSource.USER
+    assert c.provenance.author == "user_dev"
+    assert c.provenance.source_location == "turn:5"
+    assert c.provenance.source_text == original_prompt
+
+    # Check diagnostics
+    spoof_diags = [d for d in result.diagnostics if d.code == "AUTHORITY_SPOOF_IGNORED"]
+    fields_spoofed = {d.field for d in spoof_diags}
+    assert "constraints[0].id" in fields_spoofed
+    assert "constraints[0].source" in fields_spoofed
+    assert "constraints[0].author" in fields_spoofed
+    assert "constraints[0].source_location" in fields_spoofed
+    assert "constraints[0].source_text" in fields_spoofed
+
+
 def test_client_safety_and_error_handling() -> None:
     # Blank text
     extractor = RequirementExtractor(FakeStructuredExtractionClient({}))
     with pytest.raises(ExtractionValidationError, match="cannot be empty or blank"):
-        extractor.extract("   ")
+        extractor.extract("   ", source=ConstraintSource.USER)
 
     # Client returns non-mapping
     non_map_client = FakeStructuredExtractionClient(lambda req: ["list_not_map"])  # type: ignore[return-value]
     ext2 = RequirementExtractor(non_map_client)
     with pytest.raises(ClientExtractionError, match="expected a Mapping"):
-        ext2.extract("Some text")
+        ext2.extract("Some text", source=ConstraintSource.USER)
 
     # Missing constraints list in strict mode
     empty_client = FakeStructuredExtractionClient({"other": 123})
     ext3 = RequirementExtractor(empty_client)
     with pytest.raises(ExtractionValidationError, match="does not contain 'constraints'"):
-        ext3.extract("Some text", strict=True)
+        ext3.extract("Some text", source=ConstraintSource.USER, strict=True)
+

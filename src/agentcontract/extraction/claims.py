@@ -42,7 +42,7 @@ class ClaimExtractor:
         self._client = client
 
         if id_generator is None:
-            self._id_gen = IdGenerator(deterministic=True)
+            self._id_gen = IdGenerator(deterministic=False)
         elif isinstance(id_generator, IdGenerator):
             self._id_gen = id_generator
         elif callable(id_generator):
@@ -183,7 +183,24 @@ class ClaimExtractor:
                 diagnostics.append(diag)
                 continue
 
-            # Check if model attempted to tamper with trace_id or session_id
+            # Generate unique ID
+            cid = self._id_gen.new_id("claim")
+
+            # Check if model attempted to tamper with scope or identity
+            if draft.claim_id is not None:
+                diagnostics.append(
+                    ExtractionDiagnostic(
+                        message=(
+                            f"Model attempted to declare claim_id='{draft.claim_id}'; "
+                            f"caller-owned identifier '{cid}' was strictly enforced."
+                        ),
+                        severity=DiagnosticSeverity.WARNING,
+                        field=f"claims[{idx}].claim_id",
+                        code="SCOPE_SPOOF_IGNORED",
+                        raw_item=draft.claim_id,
+                    )
+                )
+
             if draft.trace_id is not None and draft.trace_id != trace_id:
                 diagnostics.append(
                     ExtractionDiagnostic(
@@ -198,8 +215,19 @@ class ClaimExtractor:
                     )
                 )
 
-            # Generate unique deterministic ID
-            cid = self._id_gen.new_id("claim")
+            if draft.session_id is not None and draft.session_id != session_id:
+                diagnostics.append(
+                    ExtractionDiagnostic(
+                        message=(
+                            f"Model attempted to declare session_id='{draft.session_id}'; "
+                            f"caller session_id '{session_id}' was strictly enforced."
+                        ),
+                        severity=DiagnosticSeverity.WARNING,
+                        field=f"claims[{idx}].session_id",
+                        code="SCOPE_SPOOF_IGNORED",
+                        raw_item=draft.session_id,
+                    )
+                )
 
             # Convert to durable Claim model
             try:
