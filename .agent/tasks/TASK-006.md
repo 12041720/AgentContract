@@ -298,49 +298,52 @@ Do not install another Python interpreter for compatibility testing.
   - `StructuredExtractionClient` (`client.py`): Vendor-neutral `@runtime_checkable` protocol defining `extract(*, task, text, schema, context) -> Mapping[str, Any]`.
   - `ExtractionRequest` (`client.py`): Immutable typed request encapsulation for structured extraction.
   - `FakeStructuredExtractionClient` (`client.py`): In-memory deterministic fake client recording invocation count (`call_count`) and chronological request history (`requests`), supporting FIFO canned response queues or custom request-handling callables.
-  - `ConstraintDraft`, `ConstraintScopeDraft` (`models.py`): Untrusted candidate requirement models. Normalizes and validates proposed strength and rule_effect enums without coercive guessing; rejects unordered sets in scope collections; safely maps into durable `Constraint` objects via `to_constraint()`.
-  - `ClaimDraft` (`models.py`): Untrusted candidate claim model. Normalizes and validates proposed claim_type enums; contains no verdict attribute; maps into durable `Claim` objects via `to_claim()`.
-  - `ExtractionDiagnostic`, `DiagnosticSeverity` (`models.py`): Structured diagnostic records (`ERROR`, `WARNING`, `INFO`) tracking issues, invalid fields, and authority spoofing attempts.
+  - `ConstraintDraft`, `ConstraintScopeDraft` (`models.py`): Untrusted candidate requirement models.
+    - `model_config = ConfigDict(frozen=True, extra="forbid")` prevents unknown or misspelled fields from being silently ignored.
+    - No unsafe defaults: `strength`, `rule_effect`, and `scope` are required fields.
+    - Scope items in `paths`, `tools`, `actions` must strictly be `str`; no `str(item)` coercion; non-string items (e.g. `int`, `bool`, nested object) or empty strings immediately raise `ExtractionValidationError`; `set` and `frozenset` continue to be rejected.
+    - Empty or omitted applicability scopes are strictly rejected in v0.1 (`is_empty()` check), preventing extracted constraints from silently becoming global rules.
+    - Explicitly declared spoof fields (`id`, `source`, `author`, `source_location`, `source_text`) allow audit diagnostics while durable `Constraint` preserves caller-owned values.
+  - `ClaimDraft` (`models.py`): Untrusted candidate claim model.
+    - `model_config = ConfigDict(frozen=True, extra="forbid")` ensures unexpected fields like `verdict="VERIFIED"` or `status="SUCCESS"` are strictly rejected or recorded as ERROR diagnostics.
+    - Contains no verdict attribute; maps into durable `Claim` objects via `to_claim()`.
+    - Explicitly declared untrusted fields (`claim_id`, `trace_id`, `session_id`) ensure caller-owned trace/session scope and ID cannot be spoofed.
+  - `ExtractionDiagnostic`, `DiagnosticSeverity` (`models.py`): Structured diagnostic records (`ERROR`, `WARNING`, `INFO`) tracking issues, invalid fields, and authority/scope spoofing attempts.
   - `ExtractionResult[T]` (`models.py`): Immutable generic container aggregating extracted durable items, diagnostics, and raw response mapping, supporting iteration, indexing, length, and JSON round-trip serialization.
   - `RequirementExtractor` (`requirements.py`): Provider-neutral extractor converting natural language text into candidate `Constraint` models.
     - Client invoked exactly once per request.
-    - Caller supplies authoritative `ConstraintSource`, `source_location`, `author`, and exact original `source_text`. Model cannot overwrite provenance authority (e.g. attempting to output `source=POLICY` is ignored and flagged as a warning diagnostic).
-    - Enforces invariant: `AGENT_INFERENCE` cannot be declared with `HARD` strength (rejected in strict mode; flagged as ERROR diagnostic in non-strict mode).
-    - Enforces invariant: `REQUIRE` and `PREFER` rules require an explicit non-None `compliance_scope`.
-    - Generates sequential deterministic IDs using injected `IdGenerator`.
+    - Caller supplies authoritative `source: ConstraintSource` (required, no default `source=USER`).
+    - Caller supplies `source_location`, `author`, and exact original `source_text`.
+    - Invariant enforced: `AGENT_INFERENCE` cannot be declared with `HARD` strength.
+    - Invariant enforced: `REQUIRE` and `PREFER` rules require an explicit non-empty `compliance_scope`.
+    - Uses collision-resistant ID generator by default (`IdGenerator(deterministic=False)`); supports explicit injection of deterministic generators.
+    - Full provenance spoof diagnostics emitted (`id`, `source`, `author`, `source_location`, `source_text`) with `AUTHORITY_SPOOF_IGNORED` code without affecting durable outputs.
     - Never mutates `ConstraintLedger` automatically.
   - `ClaimExtractor` (`claims.py`): Provider-neutral extractor converting natural language completion text into atomic `Claim` models.
     - Client invoked exactly once per request.
     - Caller supplies authoritative `trace_id` and `session_id`; model cannot spoof or redirect claim scope.
     - Decomposes sentences into distinct atomic claims (e.g. "pytest passed and build.bin exists" -> `TESTS_PASSED` + `FILE_EXISTS`).
     - Subjective or non-verifiable statements remain `GENERIC`.
-    - Model claims like "tests passed" produce at most a `TESTS_PASSED` claim, which remains `UNVERIFIED` until EvidenceGate evaluates verifiable trace evidence. An `AGENT_MESSAGE` trace event alone never verifies it.
-    - Generates sequential deterministic IDs using injected `IdGenerator`.
+    - Model claims like "tests passed" produce at most a `TESTS_PASSED` claim, remaining `UNVERIFIED` until EvidenceGate evaluates verifiable trace evidence. An `AGENT_MESSAGE` trace event alone never verifies it.
+    - Uses collision-resistant ID generator by default (`IdGenerator(deterministic=False)`); supports explicit injection of deterministic generators.
+    - Full scope and identity spoof diagnostics emitted (`claim_id`, `trace_id`, `session_id`) with `SCOPE_SPOOF_IGNORED` code.
   - `extract_and_verify_claims` (`helpers.py`): Narrow optional integration helper extracting completion claims with runtime trace scope and verifying them with `runtime.verify_claims()`.
-  - `get_requirement_extraction_schema()`, `get_claim_extraction_schema()` (`models.py`): Standard JSON Schema specifications for extraction tasks.
+  - `get_requirement_extraction_schema()`, `get_claim_extraction_schema()` (`models.py`): Standard JSON Schema specifications with `"additionalProperties": False` and strict required lists.
   - Top-level re-exports: All extraction primitives exported from `agentcontract.extraction` and root `agentcontract`.
 
 **Files changed:**  
-- `src/agentcontract/extraction/__init__.py` (package exports)
-- `src/agentcontract/extraction/exceptions.py` (extraction exception hierarchy: ExtractionError, ExtractionValidationError, ClientExtractionError)
-- `src/agentcontract/extraction/client.py` (StructuredExtractionClient protocol, ExtractionRequest, FakeStructuredExtractionClient)
-- `src/agentcontract/extraction/models.py` (ConstraintScopeDraft, ConstraintDraft, ClaimDraft, ExtractionDiagnostic, ExtractionResult, JSON schema helpers)
-- `src/agentcontract/extraction/requirements.py` (RequirementExtractor implementation)
-- `src/agentcontract/extraction/claims.py` (ClaimExtractor implementation)
-- `src/agentcontract/extraction/helpers.py` (extract_and_verify_claims helper)
-- `src/agentcontract/__init__.py` (exported extraction primitives at package root)
-- `tests/extraction/__init__.py` (test package init)
-- `tests/extraction/test_client.py` (client protocol compliance and fake client behavior tests)
-- `tests/extraction/test_models.py` (draft models, enum validation, container immutability, schema, and root export tests)
-- `tests/extraction/test_requirements.py` (provenance authority, AGENT_INFERENCE invariants, compliance_scope checks, deterministic IDs, ledger non-mutation)
-- `tests/extraction/test_claims.py` (atomic claim decomposition, scope override, generic claims, unverified model assertions, deterministic IDs)
-- `tests/extraction/test_integration.py` (full product E2E loop with RequirementExtractor, AgentContractRuntime, ClaimExtractor, and EvidenceGate)
-- `.agent/tasks/TASK-006.md` (acceptance criteria checklist and Executor Report)
+- `src/agentcontract/extraction/models.py` (extra="forbid", required draft fields, strict scope item types, empty scope rejection, additionalProperties=False in schemas)
+- `src/agentcontract/extraction/requirements.py` (explicit source requirement, collision-resistant ID default, complete provenance spoof diagnostics)
+- `src/agentcontract/extraction/claims.py` (collision-resistant ID default, complete claim_id/trace_id/session_id spoof diagnostics)
+- `tests/extraction/test_models.py` (regression tests for strict scope types, required draft fields, empty scope rejection, extra="forbid" on ConstraintDraft & ClaimDraft)
+- `tests/extraction/test_requirements.py` (regression tests for explicit source, omitted/empty scope rejection, extra fields rejection, ID collision resistance across independent instances, complete spoof diagnostics)
+- `tests/extraction/test_claims.py` (regression tests for unknown fields/verdict rejection, ID collision resistance across independent instances, complete scope spoof diagnostics)
+- `.agent/tasks/TASK-006.md` (Executor Report update)
 
 **Tests/checks:**  
 - Python version check: `python --version` -> `Python 3.12.9`.
-- Full pytest suite: `python -m pytest -v` -> **186 passed in 1.39s** (100% pass across all milestone suites: 35 constraints + 41 trace + 27 guard + 31 evidence + 24 runtime + 28 extraction tests).
-- All 18 required scenarios verified:
+- Full pytest suite: `python -m pytest -v` -> **195 passed in 0.85s** (100% pass across all milestone suites: 35 constraints + 41 trace + 27 guard + 31 evidence + 24 runtime + 37 extraction tests).
+- All required scenarios and review blocker tests verified:
   1. USER "do not write /etc/hosts" -> valid DENY constraint with caller-owned USER provenance and exact original source_text.
   2. Model attempts source=POLICY while caller supplied USER -> resulting provenance remains USER; warning diagnostic recorded.
   3. AGENT_INFERENCE + proposed HARD -> rejected with ExtractionValidationError in strict mode; ERROR diagnostic in non-strict mode.
@@ -359,6 +362,11 @@ Do not install another Python interpreter for compatibility testing.
   16. Fake extraction client invoked exactly once per extraction request.
   17. Malformed entire client response (e.g. non-mapping or blank text) raises clean exceptions without state mutation.
   18. Disallowed vendor SDKs (openai, anthropic, google.generativeai, langchain) verified absent from core package and imports.
+  19. Blocker 1 regression tests: caller omitted source rejected; model omitted strength or rule_effect rejected; omitted or empty scope rejected (cannot become global rule); explicit valid scope accepted.
+  20. Blocker 2 regression tests: unknown fields (`verdict="VERIFIED"`, typo `strenght="SOFT"`, `status="SUCCESS"`) rejected via `extra="forbid"` in strict mode, and skipped with ERROR diagnostic in non-strict mode.
+  21. Blocker 3 regression tests: scope item types strictly validated (`int`, `bool`, nested object, empty string rejected; `set`/`frozenset` rejected; no `str(item)` coercion).
+  22. Blocker 4 regression tests: two independent default extractor instances produce collision-resistant distinct IDs; explicit deterministic generators sequentially assign IDs.
+  23. Hardening regression tests: complete spoof diagnostics emitted for `id`, `source`, `author`, `source_location`, `source_text` (constraints) and `claim_id`, `trace_id`, `session_id` (claims), while all caller-owned durable outputs remain 100% enforced.
 
 **Known limitations:**  
 - Core package implements provider-neutral protocols and candidate validation; concrete LLM provider integrations (e.g. OpenAI/Anthropic/Gemini HTTP connectors) are intentionally isolated from core foundation and reserved for adapter extensions.
@@ -366,10 +374,10 @@ Do not install another Python interpreter for compatibility testing.
 
 **Commit/PR:**  
 - Branch: `task/TASK-006-extraction-adapters`
-- Implementation Commit SHA: `d7de73d40c97cf5234700d75ef6e1734f784ce47`
+- Implementation Commit SHA: `0e8c33a86f0533b6016e9350f46ab708ee17abb6`
 
 **Questions/blockers:**  
-- None. All acceptance criteria satisfied and verified on local Python 3.12.9.
+- None. All review blockers resolved and verified green on local Python 3.12.9.
 
 ## Main Agent Review
 
