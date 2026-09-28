@@ -220,25 +220,28 @@ Do not install another Python interpreter for compatibility testing.
   - `WARN` permits execution, invokes executor exactly once, and retains the warning in `pre_decision`.
   - Tool execution for permitted actions invokes the executor exactly once, appending `TOOL_CALL` trace event before invocation and correlated `TOOL_RESULT` trace event with matching `call_id` and parent linkage.
   - Executor exceptions are caught, sanitized into safe error strings, and recorded as `ERROR` `ToolResult` trace events without fabricating success.
-  - Post-action effects (`changed_paths`, `accessed_paths`, output) are converted to `ActionObservation` and validated by `SpecGuard.evaluate_post_action`; post-action `BLOCK` is recorded in trace and attached to result with exact trace provenance pointing to the executed `TOOL_RESULT`.
+  - **Round 2 Fix — Exactly-Once Invocation:** In `session.py`, executor arguments are pre-resolved and pre-bound via `inspect.signature(...).bind(...)` *before* calling the executor. The executor is invoked strictly once with no retry loop; an internal `TypeError` raised by the executor body is never caught as a signature-selection signal and is recorded as one `ERROR` `ToolResult`. Unsupported signatures fail before invocation (`call_count == 0`).
+  - **Round 2 Fix — Post-Action `target_type`:** Extended `ActionObservation.from_tool_result()` to accept `target_type`, and passed `outcome.target_type or action.target_type` in `session.py` so that post-action constraints on `target_type` evaluate the actual observed target type.
+  - Post-action effects (`changed_paths`, `accessed_paths`, output, `target_type`) are converted to `ActionObservation` and validated by `SpecGuard.evaluate_post_action`; post-action `BLOCK` is recorded in trace and attached to result with exact trace provenance pointing to the executed `TOOL_RESULT`.
   - `verify_claims(claims)` validates typed claims using the runtime's `TraceStore` and `EvidenceGate`.
 - **Top-Level Exports (`src/agentcontract/__init__.py`):**
   - Exported all runtime primitives: `AgentContractRuntime`, `RuntimeExecutionResult`, `VerificationResult`, `ToolExecutionOutcome`, `ToolExecutor`, `IdGenerator`, `AgentContractRuntimeError`, `RuntimeValidationError`, `ToolExecutionError`.
 
 **Files changed:**  
+- `src/agentcontract/guard/models.py` (added `target_type` to `ActionObservation.from_tool_result()`)
 - `src/agentcontract/runtime/__init__.py` (runtime package initialization and public exports)
 - `src/agentcontract/runtime/exceptions.py` (runtime exception hierarchy)
 - `src/agentcontract/runtime/models.py` (ToolExecutionOutcome, RuntimeExecutionResult, VerificationResult, ToolExecutor, IdGenerator)
-- `src/agentcontract/runtime/session.py` (AgentContractRuntime implementation)
+- `src/agentcontract/runtime/session.py` (AgentContractRuntime implementation, arg pre-binding, passing target_type to observation)
 - `src/agentcontract/__init__.py` (exported runtime primitives at top level)
 - `tests/runtime/__init__.py` (test package init)
 - `tests/runtime/test_models.py` (models unit tests, container immutability, serialization round-trip)
-- `tests/runtime/test_runtime.py` (full E2E integration tests for all 8 scenarios and edge cases)
+- `tests/runtime/test_runtime.py` (full E2E integration tests for all 8 scenarios, exactly-once TypeError regression, pre-execution signature failure, and post-action target_type blocking)
 - `.agent/tasks/TASK-005.md` (updated acceptance criteria checklist and Executor Report)
 
 **Tests/checks:**  
 - Python version check: `python --version` -> `Python 3.12.9`.
-- Full pytest suite: `python -m pytest -v` -> **154 passed in 0.92s** (100% pass across all milestone suites: 35 constraints + 41 trace + 26 guard + 31 evidence + 21 runtime tests).
+- Full pytest suite: `python -m pytest -v` -> **157 passed in 0.95s** (100% pass across all milestone suites: 35 constraints + 41 trace + 26 guard + 31 evidence + 24 runtime tests).
 - All 8 required scenarios verified:
   1. Pre-action hard block (executor invocation count = 0, traceable guard event)
   2. Allowed successful execution (correlated ToolCall/ToolResult, success claims verified)
@@ -248,6 +251,11 @@ Do not install another Python interpreter for compatibility testing.
   6. Unsupported completion claims remain UNVERIFIED
   7. Trace integrity across multiple executions (strictly increasing sequence, parent linkages)
   8. JSON serialization round-trip of execution and verification results
+- Round 2 regression tests verified:
+  - `test_executor_internal_type_error_invoked_exactly_once`: counter equals 1, single `ERROR` `ToolResult` recorded.
+  - `test_unsupported_signature_fails_before_execution`: counter equals 0, fails prior to invocation.
+  - `test_post_action_target_type_violation_blocks`: pre-action ALLOW, observed forbidden `target_type` triggers post-action BLOCK.
+  - `test_flexible_executor_signatures_and_return_types`: explicitly asserts `isinstance(tc, ToolCall)` and `isinstance(act, Action)`.
 
 **Known limitations:**  
 - Runtime operates in-memory against local TraceStore; distributed queues and remote telemetry are intentionally out of scope for v0.1.
@@ -255,10 +263,11 @@ Do not install another Python interpreter for compatibility testing.
 
 **Commit/PR:**  
 - Branch: `task/TASK-005-runtime-wrapper`
-- Commit SHA: `4e028fe` (`4e028fea1d451368c340d86a67448fe97eb1df80`)
+- Implementation Commit SHA: `4e028fe6f98d9e6bdb57239128033031150e755e`
+- Round 2 Fix Commit SHA: `77281cf` (`77281cf874744799839446d7904b7e8824128507`)
 
 **Questions/blockers:**  
-- None. All acceptance criteria satisfied and verified on local Python 3.12.9.
+- None. All review blockers resolved and verified on local Python 3.12.9.
 
 ## Main Agent Review
 
