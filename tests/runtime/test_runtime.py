@@ -554,11 +554,53 @@ def test_unsupported_signature_fails_before_execution() -> None:
 
     res = runtime.execute(Action(tool_name="bad_sig_tool"), bad_sig_executor)
 
-    # Executor must NEVER be called!
+    # Executor must NEVER be called: executed must be False and call_count must be 0
     assert call_count == 0
-    assert res.executed is True
+    assert res.executed is False
+    assert res.is_success is False
+    assert res.post_decision is None
+    assert res.tool_result is not None
     assert res.tool_result.status == ToolResultStatus.ERROR
     assert "ToolExecutionError" in res.tool_result.error or "cannot be called with candidate arguments" in res.tool_result.error
+
+
+def test_executor_executed_flag_distinguishes_signature_failure_from_body_exception() -> None:
+    """Regression test: executed=False when parameter binding fails before invocation;
+    executed=True when function body actually runs and then raises an exception."""
+    runtime = AgentContractRuntime()
+
+    # Case A: Parameter resolution / signature validation fails BEFORE invocation
+    sig_fail_count = 0
+
+    def bad_sig_fn(x: int, y: int, z: int) -> Any:
+        nonlocal sig_fail_count
+        sig_fail_count += 1
+        return "never called"
+
+    res_a = runtime.execute(Action(tool_name="sig_fail_tool"), bad_sig_fn)
+    assert sig_fail_count == 0
+    assert res_a.executed is False
+    assert res_a.post_decision is None
+    assert res_a.is_success is False
+    assert res_a.tool_result is not None
+    assert res_a.tool_result.status == ToolResultStatus.ERROR
+
+    # Case B: Executor entered function body and THEN raised an exception
+    body_err_count = 0
+
+    def body_err_fn(action: Action, tool_call: ToolCall) -> Any:
+        nonlocal body_err_count
+        body_err_count += 1
+        raise RuntimeError("failed during execution in body")
+
+    res_b = runtime.execute(Action(tool_name="body_err_tool"), body_err_fn)
+    assert body_err_count == 1
+    assert res_b.executed is True
+    assert res_b.post_decision is not None
+    assert res_b.is_success is False
+    assert res_b.tool_result is not None
+    assert res_b.tool_result.status == ToolResultStatus.ERROR
+    assert "failed during execution in body" in str(res_b.tool_result.error)
 
 
 def test_post_action_target_type_violation_blocks() -> None:
@@ -630,6 +672,10 @@ def test_runtime_validation_errors() -> None:
     # Invalid id_generator
     with pytest.raises(RuntimeValidationError, match="Invalid id_generator type"):
         AgentContractRuntime(id_generator=12345)  # type: ignore[arg-type]
+
+    # Set rejected for paths in execute()
+    with pytest.raises(RuntimeValidationError, match="ordered sequence"):
+        runtime.execute(tool_name="tool", paths={"/a", "/b"}, executor=lambda a, c: "ok")  # type: ignore[arg-type]
 
 
 def test_record_all_guard_decisions_records_allow_and_warn() -> None:

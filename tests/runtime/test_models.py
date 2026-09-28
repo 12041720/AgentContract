@@ -81,6 +81,7 @@ def test_tool_execution_outcome_constructors_and_properties() -> None:
 
 
 def test_tool_execution_outcome_rejects_unordered_sets() -> None:
+    # 1. Direct model constructor
     with pytest.raises(RuntimeValidationError, match="ordered sequence"):
         ToolExecutionOutcome(
             changed_paths={"/tmp/a.txt"},  # type: ignore[arg-type]
@@ -90,6 +91,32 @@ def test_tool_execution_outcome_rejects_unordered_sets() -> None:
         ToolExecutionOutcome(
             accessed_paths={"/tmp/b.txt"},  # type: ignore[arg-type]
         )
+
+    with pytest.raises(RuntimeValidationError, match="ordered sequence"):
+        ToolExecutionOutcome(
+            changed_paths=frozenset(["/tmp/a.txt"]),  # type: ignore[arg-type]
+        )
+
+    # 2. ToolExecutionOutcome.success() convenience constructor must not accept sets
+    with pytest.raises(RuntimeValidationError, match="ordered sequence"):
+        ToolExecutionOutcome.success(changed_paths={"/tmp/a.txt", "/tmp/b.txt"})
+
+    with pytest.raises(RuntimeValidationError, match="ordered sequence"):
+        ToolExecutionOutcome.success(accessed_paths={"/tmp/b.txt"})
+
+    with pytest.raises(RuntimeValidationError, match="ordered sequence"):
+        ToolExecutionOutcome.success(changed_paths=frozenset(["/tmp/a.txt"]))
+
+    # 3. ToolExecutionOutcome.from_tool_result() convenience constructor must not accept sets
+    tr = ToolResult(call_id="c-1", status=ToolResultStatus.SUCCESS)
+    with pytest.raises(RuntimeValidationError, match="ordered sequence"):
+        ToolExecutionOutcome.from_tool_result(tr, changed_paths={"/tmp/out.txt"})
+
+    with pytest.raises(RuntimeValidationError, match="ordered sequence"):
+        ToolExecutionOutcome.from_tool_result(tr, accessed_paths={"/tmp/in.txt"})
+
+    with pytest.raises(RuntimeValidationError, match="ordered sequence"):
+        ToolExecutionOutcome.from_tool_result(tr, changed_paths=frozenset(["/tmp/out.txt"]))
 
 
 def test_id_generator_modes() -> None:

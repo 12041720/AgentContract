@@ -178,14 +178,17 @@ class AgentContractRuntime:
                 raise RuntimeValidationError(
                     "Either an Action instance or action parameters (tool_name, payload, paths, etc.) must be provided."
                 )
-            action = Action(
-                tool_name=tool_name,
-                action_kind=action_kind,
-                payload=payload,
-                target_path=target_path,
-                paths=tuple(paths),
-                context=FrozenDict(context or {}),
-            )
+            try:
+                action = Action(
+                    tool_name=tool_name,
+                    action_kind=action_kind,
+                    payload=payload,
+                    target_path=target_path,
+                    paths=paths,
+                    context=FrozenDict(context or {}),
+                )
+            except Exception as err:
+                raise RuntimeValidationError(f"Invalid action parameters: {err}") from err
 
         if executor is None:
             raise RuntimeValidationError("Tool executor must be provided.")
@@ -308,8 +311,11 @@ class AgentContractRuntime:
 
         # 5. Invoke tool executor EXACTLY ONCE
         start_time = time.perf_counter()
+        executed = False
         try:
-            raw_outcome = self._invoke_executor(executor, action, tool_call)
+            call_args = self._resolve_executor_args(executor, action, tool_call)
+            executed = True
+            raw_outcome = executor(*call_args)
             duration_ms = (time.perf_counter() - start_time) * 1000.0
             outcome = self._normalize_outcome(raw_outcome, default_duration_ms=duration_ms, action=action)
         except Exception as exc:
@@ -346,43 +352,46 @@ class AgentContractRuntime:
         self._trace_store.append(result_event)
 
         # 7. Post-action SpecGuard validation
-        obs = ActionObservation.from_tool_result(
-            tool_result=tool_result,
-            changed_paths=outcome.changed_paths,
-            accessed_paths=outcome.accessed_paths,
-            tool_name=outcome.tool_name or action.tool_name,
-            action_kind=outcome.action_kind or action.action_kind,
-            target_type=outcome.target_type or action.target_type,
-            trace_pointer=result_event.to_pointer(),
-            context=outcome.metadata,
-        )
-        post_decision = self._guard.evaluate_post_action(
-            action=action,
-            observation=obs,
-            ledger=self._ledger,
-            trace_pointer=result_event.to_pointer(),
-        )
-
+        post_decision: GuardDecision | None = None
         post_guard_pointer: TracePointer | None = None
-        if post_decision.is_blocked or self._record_all_guard_decisions:
-            post_guard_event = TraceEvent(
-                event_id=self._id_gen.new_event_id(),
-                trace_id=self._trace_id,
-                session_id=self._session_id,
-                sequence=self._next_sequence(),
-                actor=ActorKind.GUARD,
-                event_kind=EventKind.GUARD_DECISION,
-                parent_id=result_event.event_id,
-                payload=_freeze_trace_value(post_decision.model_dump(mode="json")),
-                metadata=FrozenDict({"phase": "post_action", "decision": post_decision.decision.value}),
+
+        if executed:
+            obs = ActionObservation.from_tool_result(
+                tool_result=tool_result,
+                changed_paths=outcome.changed_paths,
+                accessed_paths=outcome.accessed_paths,
+                tool_name=outcome.tool_name or action.tool_name,
+                action_kind=outcome.action_kind or action.action_kind,
+                target_type=outcome.target_type or action.target_type,
+                trace_pointer=result_event.to_pointer(),
+                context=outcome.metadata,
             )
-            self._trace_store.append(post_guard_event)
-            post_guard_pointer = post_guard_event.to_pointer()
+            post_decision = self._guard.evaluate_post_action(
+                action=action,
+                observation=obs,
+                ledger=self._ledger,
+                trace_pointer=result_event.to_pointer(),
+            )
+
+            if post_decision.is_blocked or self._record_all_guard_decisions:
+                post_guard_event = TraceEvent(
+                    event_id=self._id_gen.new_event_id(),
+                    trace_id=self._trace_id,
+                    session_id=self._session_id,
+                    sequence=self._next_sequence(),
+                    actor=ActorKind.GUARD,
+                    event_kind=EventKind.GUARD_DECISION,
+                    parent_id=result_event.event_id,
+                    payload=_freeze_trace_value(post_decision.model_dump(mode="json")),
+                    metadata=FrozenDict({"phase": "post_action", "decision": post_decision.decision.value}),
+                )
+                self._trace_store.append(post_guard_event)
+                post_guard_pointer = post_guard_event.to_pointer()
 
         return RuntimeExecutionResult(
             action=action,
             pre_decision=pre_decision,
-            executed=True,
+            executed=executed,
             tool_call=tool_call,
             tool_result=tool_result,
             post_decision=post_decision,
