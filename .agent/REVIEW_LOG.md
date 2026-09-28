@@ -430,3 +430,27 @@ Next:
 **Next:** execution agent fixes TASK-006 on `task/TASK-006-extraction-adapters`; TASK-007 remains blocked.
 
 ---
+
+## 2026-09-28 — TASK-006 final review and integration
+
+**Final implementation reviewed:** `0e8c33a86f0533b6016e9350f46ab708ee17abb6`
+
+**Verdict:** ACCEPTED
+
+**Integration commit:** `cc61b75d34e75ea47ee2f289874a719bf4be247f`
+
+**Final acceptance:**
+- caller authority/source must be explicit;
+- no unsafe HARD/DENY/global defaults;
+- unknown model fields are forbidden;
+- scope item types are strict and non-coercive;
+- default IDs are collision-resistant;
+- spoofed provenance/trace/session/IDs cannot affect durable objects;
+- claims remain subject to deterministic EvidenceGate verification;
+- executor-reported 195/195 tests passing on local Python 3.12.9.
+
+**Milestone:** M2 Working AgentContract demo complete.
+
+**Next:** TASK-007 — benchmark scenarios and reliability metrics is active.
+
+---
