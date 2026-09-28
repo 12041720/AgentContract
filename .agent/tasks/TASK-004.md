@@ -1,10 +1,10 @@
 # TASK-004 — Claims, Evidence Graph, and Deterministic EvidenceGate
 
-**Status:** CHANGES_REQUESTED  
+**Status:** ACCEPTED  
 **Milestone:** M1 — Executable contract core  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-004-evidence-gate`  
-**Main-agent review:** third-round final state-semantics fix requested
+**Main-agent review:** accepted and integrated
 
 ## Objective
 
@@ -185,6 +185,7 @@ python -m pytest -v
     - Rule 14: `FILE_EXISTS` strictly requires structured file observation (`path/target/file + exists=True/False`, `created_paths`, `existing_paths`, `missing_paths`, `deleted_paths`). Generic arrays such as `files` and `changed_paths` are rejected.
     - Rule 15: If `FILE_EXISTS` specifies execution selectors (`call_id`, `tool_name`, `command`), they are conjunctive and must resolve to a unique execution (0 or >1 matches return `UNVERIFIED`).
     - Rule 16: Command matching uses strict normalized equality (`==`); prefix matching (`startswith`) is strictly forbidden.
+    - Rule 17: Trace-level `FILE_EXISTS` claims (`trace_id + target_path`, no execution selectors) enforce temporal ordering by evaluating explicit file-state observations in trace sequence order; authoritative verdict is governed by the latest explicit observation for that target (missing -> created yields `VERIFIED`, created -> missing yields `CONTRADICTED`, unrelated subsequent observations do not alter state). Execution-scoped `FILE_EXISTS` continues evaluating only the uniquely resolved execution.
 - **Evidence Graph (`src/agentcontract/evidence/graph.py`):**
   - Bidirectional index linking claims to supporting and contradicting evidence.
   - When re-evaluating/updating an existing claim, old reverse edges (`_event_to_claims` and `_trace_and_event_to_claims`) are purged before indexing new citations.
@@ -195,15 +196,15 @@ python -m pytest -v
 
 **Files changed:**  
 - `src/agentcontract/common/immutable.py` (fixed `FrozenDict.__hash__` to preserve Python hash/equality contract without `id()` fallback)
-- `src/agentcontract/evidence/gate.py` (enforced strict exact command matching, explicit existence fields for FILE_EXISTS, conjunctive execution resolution for FILE_EXISTS, and determine_verdict)
+- `src/agentcontract/evidence/gate.py` (enforced strict exact command matching, explicit existence fields for FILE_EXISTS, conjunctive execution resolution for FILE_EXISTS, temporal ordering for trace-level FILE_EXISTS, and determine_verdict)
 - `src/agentcontract/evidence/graph.py` (purged stale reverse edges on re-evaluation in `add_evaluation()`)
-- `tests/evidence/test_gate.py` (updated Scenario 15, updated conjunctive command tests, added regression tests for files/changed_paths rejection, FILE_EXISTS execution selectors, and exact command matching)
+- `tests/evidence/test_gate.py` (updated Scenario 15, updated conjunctive command tests, added regression tests for files/changed_paths rejection, FILE_EXISTS execution selectors, exact command matching, and trace-level FILE_EXISTS temporal ordering)
 - `tests/evidence/test_models.py` (added regression test for `FrozenDict` hash/equality contract)
 - `.agent/tasks/TASK-004.md` (updated Executor Report)
 
 **Tests/checks:**  
 - Python version check: `python --version` -> `Python 3.12.9`.
-- Full pytest suite: `python -m pytest -v` -> **132 passed in 0.87s** (100% pass rate: 35 constraint tests + 41 trace tests + 26 guard tests + 30 evidence tests).
+- Full pytest suite: `python -m pytest -v` -> **133 passed in 0.70s** (100% pass rate: 35 constraint tests + 41 trace tests + 26 guard tests + 31 evidence tests).
 - All 15 required test scenarios verified green, including all new regression tests.
 
 **Known limitations:**  
@@ -212,7 +213,7 @@ python -m pytest -v
 
 **Commit/PR:**  
 - Branch: `task/TASK-004-evidence-gate`
-- Implementation Commit SHA: `23830c1` (`23830c1dfefb0431e85cbecf594c09223ce52ebe`)
+- Implementation Commit SHA: `3209bb5` (`3209bb52c0c311d3a6051611ef56942b0a85a939`)
 
 **Questions/blockers:**  
 - None. All review blockers resolved and verified on local Python 3.12.9.
@@ -221,55 +222,25 @@ python -m pytest -v
 
 > Main agent only.
 
-**Verdict:** CHANGES_REQUESTED — ROUND 3 (FINAL STATE-ORDERING FIX)
+**Verdict:** ACCEPTED
 
-**Reviewed implementation:** `23830c1dfefb0431e85cbecf594c09223ce52ebe`
+**Final implementation reviewed:** `3209bb52c0c311d3a6051611ef56942b0a85a939`  
+**Final branch head/report:** `2fcf3fe2c00e76fb86c183784946e00e9998065c`  
+**Integrated to main:** `f93c5f70e93e4d2ef8341c719dba66f951ed8e03`
 
-**Round-2 fixes verified:**
-- FILE_EXISTS no longer accepts generic `files` or `changed_paths` arrays as existence proof.
-- FILE_EXISTS execution selectors now resolve conjunctively and uniquely.
-- command matching is exact; prefix matches are rejected.
-- executor reports 132 tests passing on local Python 3.12.9.
-
-### FINAL BLOCKER — trace-level FILE_EXISTS ignores temporal ordering
-
-For a trace-level FILE_EXISTS claim (no execution selector), the gate scans all explicit observations and accumulates both support and contradiction. The global rule then makes any contradiction dominate any support.
-
-That is wrong for a state claim when observations occur at different times.
-
-Example:
-
-```text
-sequence 1: missing_paths = ["x.txt"]
-sequence 3: created_paths = ["x.txt"]
-```
-
-At the end of the trace, the latest explicit observation says the file exists. Current logic still returns CONTRADICTED because historical contradiction always dominates.
-
-The task's contradiction-precedence rule applies to conflicting evidence for the **same exact claimed execution**, not to stale historical state observations.
-
-**Required fix:**
-- For FILE_EXISTS with explicit execution selectors: keep evaluating only the uniquely resolved execution result.
-- For trace-level FILE_EXISTS (`trace_id + target_path`, no execution selectors): evaluate explicit file-state observations in trace sequence order and use the **latest explicit observation for that target** as the authoritative state.
-- Earlier state evidence may be retained as provenance/history if useful, but must not override a later explicit state.
-- If latest explicit state says exists -> VERIFIED.
-- If latest explicit state says missing/deleted -> CONTRADICTED.
-- If no explicit state observation -> UNVERIFIED.
-- If one single event internally contains both support and contradiction for the same target, contradiction may still dominate for that event.
-
-**Required tests:**
-1. missing first, created later -> VERIFIED;
-2. created first, missing later -> CONTRADICTED;
-3. unrelated later observations do not change target state;
-4. execution-scoped FILE_EXISTS behavior remains unchanged.
-
-**Required re-check:**
-- local Python 3.12.9 only;
-- `python --version`;
-- `python -m pytest -v`;
-- TASK-001/002/003 suites remain green;
-- update Executor Report with actual pushed commit SHA.
+**Acceptance summary:**
+- typed atomic claims and deterministic VERIFIED / CONTRADICTED / UNVERIFIED verdicts;
+- execution claims resolve to one exact trace execution, with conjunctive call/tool/command selectors;
+- GENERIC prose claims never self-verify;
+- AGENT_MESSAGE is never evidence by itself;
+- strict ToolResult status/exit-code handling;
+- FILE_EXISTS uses only explicit structured state evidence;
+- trace-level FILE_EXISTS respects temporal ordering and latest explicit state;
+- EvidenceGraph supports forward/reverse provenance and clears stale reverse edges on reevaluation;
+- contradiction precedence is deterministic for the same exact execution/evidence target;
+- FrozenDict hashing now respects equality/hash semantics;
+- executor reports **133 tests passed** on local Python 3.12.9.
 
 **Next instruction:**
-Apply this final narrow fix on `task/TASK-004-evidence-gate`. Do not start TASK-005.
+TASK-004 is complete. Proceed only with TASK-005 referenced by `.agent/STATE.md`.
 
