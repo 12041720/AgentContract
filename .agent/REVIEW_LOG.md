@@ -277,3 +277,27 @@ Next:
 **Next:** execution agent fixes TASK-004 on `task/TASK-004-evidence-gate`; TASK-005 remains blocked.
 
 ---
+
+## 2026-09-28 — TASK-004 second implementation review
+
+**Implementation reviewed:** `855bfbb6545b596fd427f49b8c3e87f23a5944a6`
+
+**Verdict:** CHANGES_REQUESTED — ROUND 2
+
+**Verified fixes:**
+- GENERIC claims remain UNVERIFIED;
+- deterministic single-execution resolution and conjunctive selectors for execution claims;
+- ambiguous executions remain UNVERIFIED;
+- FrozenDict hash/equality contract repaired;
+- stale EvidenceGraph reverse edges cleared on replacement;
+- contradiction precedence factored and directly unit-tested;
+- executor reports 130/130 tests passing on local Python 3.12.9.
+
+**Remaining narrow issues:**
+- FILE_EXISTS still treats generic `files` and `changed_paths` arrays as existence evidence;
+- FILE_EXISTS does not enforce supplied tool/command selectors consistently;
+- command matching still uses unsafe prefix semantics.
+
+**Next:** apply the three narrow fixes and resubmit TASK-004. TASK-005 remains blocked.
+
+---
