@@ -1,10 +1,10 @@
 # TASK-005 — Agent/Tool Runtime Wrapper and End-to-End Demo
 
-**Status:** READY_FOR_EXECUTOR  
+**Status:** CHANGES_REQUESTED  
 **Milestone:** M2 — Working AgentContract demo  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-005-runtime-wrapper`  
-**Main-agent review:** pending
+**Main-agent review:** changes requested
 
 ## Objective
 
@@ -264,7 +264,83 @@ Do not install another Python interpreter for compatibility testing.
 
 > Main agent only.
 
-**Verdict:** PENDING
+**Verdict:** CHANGES_REQUESTED
 
-**Next instruction:**  
-Do not start TASK-006 until this section says ACCEPTED.
+**Reviewed implementation:** `4e028fe6f98d9e6bdb57239128033031150e755e`  
+**Reviewed branch head/report:** `eccf774237c3d86aab9c06b600075e6c4ccdacfd`
+
+**Accepted foundation:**
+- synchronous vendor-neutral runtime wrapper exists;
+- pre-action BLOCK/WARN/ALLOW flow is correctly connected to SpecGuard;
+- executed actions record correlated ToolCall/ToolResult events;
+- executor exceptions are converted into ERROR ToolResult evidence;
+- post-action checks and EvidenceGate claim verification are wired end-to-end;
+- executor reports 154 tests passing on local Python 3.12.9.
+
+### BLOCKER 1 — executor can be invoked more than once after an internal TypeError
+
+Current `_invoke_executor()` catches `TypeError` around both signature inspection **and the actual executor call**. If a correctly-invoked executor raises TypeError from inside its body, runtime treats it as a signature mismatch and retries with another signature.
+
+That violates the core TASK-005 requirement:
+
+```text
+invoke the supplied tool executor exactly once
+```
+
+and can duplicate side effects.
+
+The current one-argument test also does not prove correct routing: a parameter named `tc` receives Action rather than ToolCall, but the test still passes because Action also has `tool_name`.
+
+**Required fix:**
+- determine/bind the call signature before invocation;
+- invoke the executor exactly once;
+- never catch a TypeError raised by the executor body as a signature-selection signal;
+- simplest acceptable v0.1 design is to require the explicit `ToolExecutor(action, tool_call)` protocol and remove flexible signature guessing;
+- if flexible signatures are retained, use `inspect.signature(...).bind(...)` / parameter inspection only before calling, then make exactly one call.
+
+**Required tests:**
+1. executor increments a counter then raises internal TypeError -> counter must equal 1 and runtime records one ERROR ToolResult;
+2. one-arg ToolCall executor must assert it actually receives a ToolCall;
+3. one-arg Action executor must assert it actually receives an Action;
+4. unsupported/ambiguous signature must fail before execution, without retrying different signatures after body execution.
+
+### BLOCKER 2 — actual target_type from ToolExecutionOutcome is dropped before post-action SpecGuard
+
+`ToolExecutionOutcome` exposes `target_type`, and `ActionObservation` has a `target_type` field, but runtime builds the observation through `ActionObservation.from_tool_result()`, whose constructor currently does not accept/pass target_type.
+
+Therefore an executor can report an actual target type that differs from the proposed action, and post-action target_type constraints will not see it.
+
+**Required fix:**
+- preserve `outcome.target_type or action.target_type` in the post-action ActionObservation;
+- either extend `ActionObservation.from_tool_result(..., target_type=...)` backward-compatibly or construct ActionObservation explicitly;
+- add a regression test:
+  - pre-action passes because proposed target_type does not match forbidden scope;
+  - executor reports actual forbidden target_type;
+  - post-action SpecGuard returns BLOCK.
+
+### REPORT ACCURACY
+
+Executor Report lists full SHA:
+
+```text
+4e028fea1d451368c340d86a67448fe97eb1df80
+```
+
+which is not the remote commit. The actual implementation commit is:
+
+```text
+4e028fe6f98d9e6bdb57239128033031150e755e
+```
+
+Update the report with the actual pushed SHA.
+
+**Required re-check:**
+- local Python 3.12.9 only;
+- `python --version`;
+- `python -m pytest -v`;
+- TASK-001 through TASK-004 suites remain green;
+- update Executor Report with exact pushed commit SHA.
+
+**Next instruction:**
+Fix these two runtime issues on `task/TASK-005-runtime-wrapper`. Do not start TASK-006.
+
