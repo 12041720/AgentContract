@@ -4,7 +4,7 @@
 **Milestone:** M2 — Working AgentContract demo  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-005-runtime-wrapper`  
-**Main-agent review:** changes requested
+**Main-agent review:** second-round narrow fixes requested
 
 ## Objective
 
@@ -220,25 +220,28 @@ Do not install another Python interpreter for compatibility testing.
   - `WARN` permits execution, invokes executor exactly once, and retains the warning in `pre_decision`.
   - Tool execution for permitted actions invokes the executor exactly once, appending `TOOL_CALL` trace event before invocation and correlated `TOOL_RESULT` trace event with matching `call_id` and parent linkage.
   - Executor exceptions are caught, sanitized into safe error strings, and recorded as `ERROR` `ToolResult` trace events without fabricating success.
-  - Post-action effects (`changed_paths`, `accessed_paths`, output) are converted to `ActionObservation` and validated by `SpecGuard.evaluate_post_action`; post-action `BLOCK` is recorded in trace and attached to result with exact trace provenance pointing to the executed `TOOL_RESULT`.
+  - **Round 2 Fix — Exactly-Once Invocation:** In `session.py`, executor arguments are pre-resolved and pre-bound via `inspect.signature(...).bind(...)` *before* calling the executor. The executor is invoked strictly once with no retry loop; an internal `TypeError` raised by the executor body is never caught as a signature-selection signal and is recorded as one `ERROR` `ToolResult`. Unsupported signatures fail before invocation (`call_count == 0`).
+  - **Round 2 Fix — Post-Action `target_type`:** Extended `ActionObservation.from_tool_result()` to accept `target_type`, and passed `outcome.target_type or action.target_type` in `session.py` so that post-action constraints on `target_type` evaluate the actual observed target type.
+  - Post-action effects (`changed_paths`, `accessed_paths`, output, `target_type`) are converted to `ActionObservation` and validated by `SpecGuard.evaluate_post_action`; post-action `BLOCK` is recorded in trace and attached to result with exact trace provenance pointing to the executed `TOOL_RESULT`.
   - `verify_claims(claims)` validates typed claims using the runtime's `TraceStore` and `EvidenceGate`.
 - **Top-Level Exports (`src/agentcontract/__init__.py`):**
   - Exported all runtime primitives: `AgentContractRuntime`, `RuntimeExecutionResult`, `VerificationResult`, `ToolExecutionOutcome`, `ToolExecutor`, `IdGenerator`, `AgentContractRuntimeError`, `RuntimeValidationError`, `ToolExecutionError`.
 
 **Files changed:**  
+- `src/agentcontract/guard/models.py` (added `target_type` to `ActionObservation.from_tool_result()`)
 - `src/agentcontract/runtime/__init__.py` (runtime package initialization and public exports)
 - `src/agentcontract/runtime/exceptions.py` (runtime exception hierarchy)
 - `src/agentcontract/runtime/models.py` (ToolExecutionOutcome, RuntimeExecutionResult, VerificationResult, ToolExecutor, IdGenerator)
-- `src/agentcontract/runtime/session.py` (AgentContractRuntime implementation)
+- `src/agentcontract/runtime/session.py` (AgentContractRuntime implementation, arg pre-binding, passing target_type to observation)
 - `src/agentcontract/__init__.py` (exported runtime primitives at top level)
 - `tests/runtime/__init__.py` (test package init)
 - `tests/runtime/test_models.py` (models unit tests, container immutability, serialization round-trip)
-- `tests/runtime/test_runtime.py` (full E2E integration tests for all 8 scenarios and edge cases)
+- `tests/runtime/test_runtime.py` (full E2E integration tests for all 8 scenarios, exactly-once TypeError regression, pre-execution signature failure, and post-action target_type blocking)
 - `.agent/tasks/TASK-005.md` (updated acceptance criteria checklist and Executor Report)
 
 **Tests/checks:**  
 - Python version check: `python --version` -> `Python 3.12.9`.
-- Full pytest suite: `python -m pytest -v` -> **154 passed in 0.92s** (100% pass across all milestone suites: 35 constraints + 41 trace + 26 guard + 31 evidence + 21 runtime tests).
+- Full pytest suite: `python -m pytest -v` -> **157 passed in 0.95s** (100% pass across all milestone suites: 35 constraints + 41 trace + 26 guard + 31 evidence + 24 runtime tests).
 - All 8 required scenarios verified:
   1. Pre-action hard block (executor invocation count = 0, traceable guard event)
   2. Allowed successful execution (correlated ToolCall/ToolResult, success claims verified)
@@ -248,6 +251,11 @@ Do not install another Python interpreter for compatibility testing.
   6. Unsupported completion claims remain UNVERIFIED
   7. Trace integrity across multiple executions (strictly increasing sequence, parent linkages)
   8. JSON serialization round-trip of execution and verification results
+- Round 2 regression tests verified:
+  - `test_executor_internal_type_error_invoked_exactly_once`: counter equals 1, single `ERROR` `ToolResult` recorded.
+  - `test_unsupported_signature_fails_before_execution`: counter equals 0, fails prior to invocation.
+  - `test_post_action_target_type_violation_blocks`: pre-action ALLOW, observed forbidden `target_type` triggers post-action BLOCK.
+  - `test_flexible_executor_signatures_and_return_types`: explicitly asserts `isinstance(tc, ToolCall)` and `isinstance(act, Action)`.
 
 **Known limitations:**  
 - Runtime operates in-memory against local TraceStore; distributed queues and remote telemetry are intentionally out of scope for v0.1.
@@ -255,81 +263,92 @@ Do not install another Python interpreter for compatibility testing.
 
 **Commit/PR:**  
 - Branch: `task/TASK-005-runtime-wrapper`
-- Commit SHA: `4e028fe` (`4e028fea1d451368c340d86a67448fe97eb1df80`)
+- Implementation Commit SHA: `4e028fe6f98d9e6bdb57239128033031150e755e`
+- Round 2 Fix Commit SHA: `77281cf` (`77281cf874744799839446d7904b7e8824128507`)
 
 **Questions/blockers:**  
-- None. All acceptance criteria satisfied and verified on local Python 3.12.9.
+- None. All review blockers resolved and verified on local Python 3.12.9.
 
 ## Main Agent Review
 
 > Main agent only.
 
-**Verdict:** CHANGES_REQUESTED
+**Verdict:** CHANGES_REQUESTED — ROUND 2 (NARROW FINAL FIXES)
 
-**Reviewed implementation:** `4e028fe6f98d9e6bdb57239128033031150e755e`  
-**Reviewed branch head/report:** `eccf774237c3d86aab9c06b600075e6c4ccdacfd`
+**Reviewed implementation:** `77281cfaba5ca6256cfd97d9c28f7e613958ac4c`  
+**Reviewed branch head/report:** `6f1d71683ee8c940e9ed95e0500c6a300ab2ae58`
 
-**Accepted foundation:**
-- synchronous vendor-neutral runtime wrapper exists;
-- pre-action BLOCK/WARN/ALLOW flow is correctly connected to SpecGuard;
-- executed actions record correlated ToolCall/ToolResult events;
-- executor exceptions are converted into ERROR ToolResult evidence;
-- post-action checks and EvidenceGate claim verification are wired end-to-end;
-- executor reports 154 tests passing on local Python 3.12.9.
+**Round-1 blockers verified fixed:**
+- executor internal `TypeError` no longer triggers retries;
+- argument binding is resolved before invocation;
+- one-argument ToolCall/Action executors are type-checked in tests;
+- actual `target_type` is propagated into post-action ActionObservation;
+- post-action target_type violations can now BLOCK;
+- executor reports 157 tests passing on local Python 3.12.9.
 
-### BLOCKER 1 — executor can be invoked more than once after an internal TypeError
+### BLOCKER 1 — RuntimeExecutionResult.executed is incorrect when invocation never occurred
 
-Current `_invoke_executor()` catches `TypeError` around both signature inspection **and the actual executor call**. If a correctly-invoked executor raises TypeError from inside its body, runtime treats it as a signature mismatch and retries with another signature.
-
-That violates the core TASK-005 requirement:
+The new unsupported-signature regression test says:
 
 ```text
-invoke the supplied tool executor exactly once
+fails before execution
+executor must NEVER be called
+call_count == 0
 ```
 
-and can duplicate side effects.
+but then asserts:
 
-The current one-argument test also does not prove correct routing: a parameter named `tc` receives Action rather than ToolCall, but the test still passes because Action also has `tool_name`.
+```python
+res.executed is True
+```
 
-**Required fix:**
-- determine/bind the call signature before invocation;
-- invoke the executor exactly once;
-- never catch a TypeError raised by the executor body as a signature-selection signal;
-- simplest acceptable v0.1 design is to require the explicit `ToolExecutor(action, tool_call)` protocol and remove flexible signature guessing;
-- if flexible signatures are retained, use `inspect.signature(...).bind(...)` / parameter inspection only before calling, then make exactly one call.
-
-**Required tests:**
-1. executor increments a counter then raises internal TypeError -> counter must equal 1 and runtime records one ERROR ToolResult;
-2. one-arg ToolCall executor must assert it actually receives a ToolCall;
-3. one-arg Action executor must assert it actually receives an Action;
-4. unsupported/ambiguous signature must fail before execution, without retrying different signatures after body execution.
-
-### BLOCKER 2 — actual target_type from ToolExecutionOutcome is dropped before post-action SpecGuard
-
-`ToolExecutionOutcome` exposes `target_type`, and `ActionObservation` has a `target_type` field, but runtime builds the observation through `ActionObservation.from_tool_result()`, whose constructor currently does not accept/pass target_type.
-
-Therefore an executor can report an actual target type that differs from the proposed action, and post-action target_type constraints will not see it.
+TASK-005 defines `executed` as whether tool execution actually occurred. If argument binding fails before executor invocation, this must be false.
 
 **Required fix:**
-- preserve `outcome.target_type or action.target_type` in the post-action ActionObservation;
-- either extend `ActionObservation.from_tool_result(..., target_type=...)` backward-compatibly or construct ActionObservation explicitly;
-- add a regression test:
-  - pre-action passes because proposed target_type does not match forbidden scope;
-  - executor reports actual forbidden target_type;
-  - post-action SpecGuard returns BLOCK.
+- distinguish "tool call event was emitted / invocation was attempted to be prepared" from "executor body actually ran";
+- if signature/binding validation fails before invoking executor:
+  - `executed=False`;
+  - executor call_count remains 0;
+  - still record appropriate trace/error provenance if desired, but do not claim execution occurred;
+- if executor body starts and then raises, `executed=True`.
+
+Add/update tests for both cases.
+
+### BLOCKER 2 — convenience constructors bypass unordered-set rejection
+
+The model validator correctly rejects unordered `set/frozenset` for `changed_paths` / `accessed_paths`, but convenience constructors do this first:
+
+```python
+changed_paths=tuple(changed_paths)
+accessed_paths=tuple(accessed_paths)
+```
+
+Therefore:
+
+```python
+ToolExecutionOutcome.success(changed_paths={"b", "a"})
+```
+
+silently accepts an unordered set and turns arbitrary iteration order into durable tuple order, bypassing the validator.
+
+`from_tool_result()` has the same issue.
+
+**Required fix:**
+- pass caller values through unchanged so field validators enforce ordered-sequence policy, or explicitly reject set/frozenset before conversion;
+- add regression tests for `success()` and `from_tool_result()` with set/frozenset inputs.
 
 ### REPORT ACCURACY
 
-Executor Report lists full SHA:
+Executor Report again contains an incorrect full round-2 SHA:
 
 ```text
-4e028fea1d451368c340d86a67448fe97eb1df80
+77281cf874744799839446d7904b7e8824128507
 ```
 
-which is not the remote commit. The actual implementation commit is:
+The actual remote implementation commit is:
 
 ```text
-4e028fe6f98d9e6bdb57239128033031150e755e
+77281cfaba5ca6256cfd97d9c28f7e613958ac4c
 ```
 
 Update the report with the actual pushed SHA.
@@ -338,9 +357,8 @@ Update the report with the actual pushed SHA.
 - local Python 3.12.9 only;
 - `python --version`;
 - `python -m pytest -v`;
-- TASK-001 through TASK-004 suites remain green;
-- update Executor Report with exact pushed commit SHA.
+- TASK-001 through TASK-004 suites remain green.
 
 **Next instruction:**
-Fix these two runtime issues on `task/TASK-005-runtime-wrapper`. Do not start TASK-006.
+Apply these two narrow fixes on `task/TASK-005-runtime-wrapper`. Do not start TASK-006.
 
