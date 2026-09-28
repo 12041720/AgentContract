@@ -222,26 +222,29 @@ Do not install another Python interpreter for compatibility testing.
   - Executor exceptions are caught, sanitized into safe error strings, and recorded as `ERROR` `ToolResult` trace events without fabricating success.
   - **Round 2 Fix — Exactly-Once Invocation:** In `session.py`, executor arguments are pre-resolved and pre-bound via `inspect.signature(...).bind(...)` *before* calling the executor. The executor is invoked strictly once with no retry loop; an internal `TypeError` raised by the executor body is never caught as a signature-selection signal and is recorded as one `ERROR` `ToolResult`. Unsupported signatures fail before invocation (`call_count == 0`).
   - **Round 2 Fix — Post-Action `target_type`:** Extended `ActionObservation.from_tool_result()` to accept `target_type`, and passed `outcome.target_type or action.target_type` in `session.py` so that post-action constraints on `target_type` evaluate the actual observed target type.
+  - **Round 3 Fix — Accurate `executed` Flag:** In `session.py`, `executed` distinguishes whether the executor function body actually ran from whether pre-invocation binding failed. When argument binding/validation fails before invocation, `executed=False`, `call_count=0`, and `post_decision=None` while recording `TOOL_CALL` and `TOOL_RESULT` (with `ERROR` status) in trace for provenance. When the executor body actually runs and raises an exception (or succeeds), `executed=True` and post-action validation proceeds.
+  - **Round 3 Fix — Strict Unordered-Set Rejection in Constructors:** Updated `ToolExecutionOutcome.success()`, `ToolExecutionOutcome.from_tool_result()`, and `ActionObservation.from_tool_result()` to pass caller values through directly to model construction without calling `tuple(...)`. Passing `set` or `frozenset` to `success(changed_paths={...})` or `from_tool_result(..., changed_paths={...})` immediately raises `RuntimeValidationError` / `GuardValidationError`.
   - Post-action effects (`changed_paths`, `accessed_paths`, output, `target_type`) are converted to `ActionObservation` and validated by `SpecGuard.evaluate_post_action`; post-action `BLOCK` is recorded in trace and attached to result with exact trace provenance pointing to the executed `TOOL_RESULT`.
   - `verify_claims(claims)` validates typed claims using the runtime's `TraceStore` and `EvidenceGate`.
 - **Top-Level Exports (`src/agentcontract/__init__.py`):**
   - Exported all runtime primitives: `AgentContractRuntime`, `RuntimeExecutionResult`, `VerificationResult`, `ToolExecutionOutcome`, `ToolExecutor`, `IdGenerator`, `AgentContractRuntimeError`, `RuntimeValidationError`, `ToolExecutionError`.
 
 **Files changed:**  
-- `src/agentcontract/guard/models.py` (added `target_type` to `ActionObservation.from_tool_result()`)
+- `src/agentcontract/guard/models.py` (avoided premature `tuple()` conversion in `ActionObservation.from_tool_result()` and `Action.from_trace_event()`)
 - `src/agentcontract/runtime/__init__.py` (runtime package initialization and public exports)
 - `src/agentcontract/runtime/exceptions.py` (runtime exception hierarchy)
-- `src/agentcontract/runtime/models.py` (ToolExecutionOutcome, RuntimeExecutionResult, VerificationResult, ToolExecutor, IdGenerator)
-- `src/agentcontract/runtime/session.py` (AgentContractRuntime implementation, arg pre-binding, passing target_type to observation)
+- `src/agentcontract/runtime/models.py` (avoided premature `tuple()` conversion in `ToolExecutionOutcome.success()` and `from_tool_result()`)
+- `src/agentcontract/runtime/session.py` (accurate `executed` flag tracking on binding failure vs body execution, wrapping action creation)
 - `src/agentcontract/__init__.py` (exported runtime primitives at top level)
 - `tests/runtime/__init__.py` (test package init)
-- `tests/runtime/test_models.py` (models unit tests, container immutability, serialization round-trip)
-- `tests/runtime/test_runtime.py` (full E2E integration tests for all 8 scenarios, exactly-once TypeError regression, pre-execution signature failure, and post-action target_type blocking)
+- `tests/guard/test_models.py` (regression tests for `ActionObservation.from_tool_result()` rejecting sets/frozensets)
+- `tests/runtime/test_models.py` (regression tests for `ToolExecutionOutcome.success()` and `from_tool_result()` rejecting sets/frozensets)
+- `tests/runtime/test_runtime.py` (regression tests for `executed=False` on pre-binding failure vs `executed=True` on function body exception, and execute() path set rejection)
 - `.agent/tasks/TASK-005.md` (updated acceptance criteria checklist and Executor Report)
 
 **Tests/checks:**  
 - Python version check: `python --version` -> `Python 3.12.9`.
-- Full pytest suite: `python -m pytest -v` -> **157 passed in 0.95s** (100% pass across all milestone suites: 35 constraints + 41 trace + 26 guard + 31 evidence + 24 runtime tests).
+- Full pytest suite: `python -m pytest -v` -> **158 passed in 1.01s** (100% pass across all milestone suites: 35 constraints + 41 trace + 27 guard + 31 evidence + 24 runtime tests).
 - All 8 required scenarios verified:
   1. Pre-action hard block (executor invocation count = 0, traceable guard event)
   2. Allowed successful execution (correlated ToolCall/ToolResult, success claims verified)
@@ -251,9 +254,13 @@ Do not install another Python interpreter for compatibility testing.
   6. Unsupported completion claims remain UNVERIFIED
   7. Trace integrity across multiple executions (strictly increasing sequence, parent linkages)
   8. JSON serialization round-trip of execution and verification results
-- Round 2 regression tests verified:
+- Round 2 & Round 3 regression tests verified:
   - `test_executor_internal_type_error_invoked_exactly_once`: counter equals 1, single `ERROR` `ToolResult` recorded.
-  - `test_unsupported_signature_fails_before_execution`: counter equals 0, fails prior to invocation.
+  - `test_unsupported_signature_fails_before_execution`: counter equals 0, `res.executed is False`, `res.post_decision is None`, fails prior to invocation.
+  - `test_executor_executed_flag_distinguishes_signature_failure_from_body_exception`: explicitly validates `executed=False` on signature binding failure vs `executed=True` on function body exception.
+  - `test_tool_execution_outcome_rejects_unordered_sets`: verifies `success()` and `from_tool_result()` reject `set` and `frozenset` with `RuntimeValidationError`.
+  - `test_unordered_sets_rejected_in_models`: verifies `ActionObservation.from_tool_result()` rejects `set` and `frozenset` with `ValidationError`.
+  - `test_runtime_validation_errors`: verifies `runtime.execute(paths={"/a", "/b"})` rejects unordered sets with `RuntimeValidationError`.
   - `test_post_action_target_type_violation_blocks`: pre-action ALLOW, observed forbidden `target_type` triggers post-action BLOCK.
   - `test_flexible_executor_signatures_and_return_types`: explicitly asserts `isinstance(tc, ToolCall)` and `isinstance(act, Action)`.
 
@@ -264,7 +271,8 @@ Do not install another Python interpreter for compatibility testing.
 **Commit/PR:**  
 - Branch: `task/TASK-005-runtime-wrapper`
 - Implementation Commit SHA: `4e028fe6f98d9e6bdb57239128033031150e755e`
-- Round 2 Fix Commit SHA: `77281cf` (`77281cf874744799839446d7904b7e8824128507`)
+- Round 2 Fix Commit SHA: `77281cfaba5ca6256cfd97d9c28f7e613958ac4c`
+- Round 3 Fix Commit SHA: `4f9946b074445aa2f68671f83899b7f40e718647`
 
 **Questions/blockers:**  
 - None. All review blockers resolved and verified on local Python 3.12.9.
