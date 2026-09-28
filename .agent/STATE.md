@@ -6,18 +6,18 @@
 
 - Name: AgentContract
 - Mission: Runtime constraint tracking and evidence-grounded completion verification for long-horizon tool-using agents.
-- Stage: Working Demo
+- Stage: Measurable Reliability
 - Architecture version: 0.1
 - Default branch: `main`
 
 ## Current active task
 
-- Task: **TASK-007 — Benchmark scenarios and reliability metrics**
-- Task file: `.agent/tasks/TASK-007.md`
-- Work branch: `task/TASK-007-benchmark`
-- Status: **CHANGES_REQUESTED**
+- Task: **TASK-008 — External integration adapters and OpenTelemetry bridge**
+- Task file: `.agent/tasks/TASK-008.md`
+- Work branch: `task/TASK-008-integrations`
+- Status: **READY_FOR_EXECUTOR**
 - Owner: Execution agent
-- Main-agent review: TASK-007 changes requested after review of `57169def3d64024a4f96a205db80005cc184b9f9`
+- Main-agent review: TASK-007 accepted and integrated; TASK-008 ready for execution
 
 ## Main-agent checkpoint
 
@@ -30,7 +30,8 @@
 - TASK-004 accepted and integrated to `main` as `f93c5f70e93e4d2ef8341c719dba66f951ed8e03`.
 - TASK-005 accepted and integrated to `main` as `94ec3c32dc685528fa5265e11c8945b16fdbc6b4`.
 - TASK-006 accepted and integrated to `main` as `cc61b75d34e75ea47ee2f289874a719bf4be247f`.
-- TASK-007 first benchmark implementation was reviewed; TSR/UCR separation, extra-call semantics, FBR semantics, repetition checks, and latency reporting need fixes.
+- TASK-007 accepted and integrated to `main` as `12dad52df4b2901905c2ea92c07f8a71d2934d7f`.
+- M3 measurable reliability is complete; TASK-008 integration work is now active.
 
 ## Current design decisions
 
@@ -44,7 +45,7 @@
 
 ## Review gate
 
-The main agent will not activate TASK-008 until TASK-007 satisfies its acceptance criteria and is reviewed.
+The main agent will not activate TASK-009 until TASK-008 satisfies its acceptance criteria and is reviewed.
 
 ## Resume instructions for the main agent
 
