@@ -454,3 +454,32 @@ Next:
 **Next:** TASK-007 — benchmark scenarios and reliability metrics is active.
 
 ---
+
+## 2026-09-28 — TASK-007 first benchmark review
+
+**Implementation reviewed:** `57169def3d64024a4f96a205db80005cc184b9f9`
+
+**Verdict:** CHANGES_REQUESTED
+
+**Verified strengths:**
+- four isolated benchmark variants;
+- 12 deterministic scenario classes;
+- typed serializable benchmark models;
+- metric aggregation and zero-denominator handling;
+- actual local benchmark table reported;
+- executor reports 218/218 tests passing on local Python 3.12.9.
+
+**Blocking findings:**
+- TSR is contaminated by claim acceptance/EvidenceGate verdicts instead of being independent scenario task truth;
+- Extra Tool Calls is currently just executed-violation count;
+- FBR counts post-action BLOCK even though the action already executed;
+- aggregate tests hard-code FULL_AGENTCONTRACT as the winner;
+- repeated-run test does not compare repetitions;
+- latency overhead clips negative measured deltas to zero.
+
+**Hardening requested:**
+- validate positive repetitions, unique scenario IDs, and unique variants.
+
+**Next:** fix TASK-007 benchmark semantics and rerun the real benchmark; TASK-008 remains blocked.
+
+---
