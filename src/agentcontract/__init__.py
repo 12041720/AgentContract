@@ -77,6 +77,18 @@ from agentcontract.extraction import (
     get_claim_extraction_schema,
     get_requirement_extraction_schema,
 )
+from agentcontract.benchmark import (
+    ALL_STANDARD_SCENARIOS,
+    BenchmarkMetrics,
+    BenchmarkReport,
+    BenchmarkRunner,
+    BenchmarkScenario,
+    BenchmarkVariant,
+    ScenarioExecutionRecord,
+    ScenarioResult,
+    ScriptedAction,
+    get_standard_scenarios,
+)
 
 __version__ = "0.1.0"
 
@@ -152,7 +164,19 @@ __all__ = [
     "extract_and_verify_claims",
     "get_claim_extraction_schema",
     "get_requirement_extraction_schema",
+    # Benchmark
+    "ALL_STANDARD_SCENARIOS",
+    "BenchmarkMetrics",
+    "BenchmarkReport",
+    "BenchmarkRunner",
+    "BenchmarkScenario",
+    "BenchmarkVariant",
+    "ScenarioExecutionRecord",
+    "ScenarioResult",
+    "ScriptedAction",
+    "get_standard_scenarios",
     # Meta
     "__version__",
 ]
+
 
