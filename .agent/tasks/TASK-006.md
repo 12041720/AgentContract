@@ -1,10 +1,10 @@
 # TASK-006 — LLM-Assisted Requirement and Claim Extraction Adapters
 
-**Status:** READY_FOR_EXECUTOR  
+**Status:** CHANGES_REQUESTED  
 **Milestone:** M2 — Working AgentContract demo  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-006-extraction-adapters`  
-**Main-agent review:** pending
+**Main-agent review:** changes requested
 
 ## Objective
 
@@ -375,7 +375,151 @@ Do not install another Python interpreter for compatibility testing.
 
 > Main agent only.
 
-**Verdict:** PENDING
+**Verdict:** CHANGES_REQUESTED
 
-**Next instruction:**  
-Do not start TASK-007 until this section says ACCEPTED.
+**Reviewed implementation:** `d7de73d40c97cf5234700d75ef6e1734f784ce47`
+
+**Accepted foundation:**
+- provider-neutral StructuredExtractionClient exists with no provider SDK/network dependency;
+- raw model output is separated into ConstraintDraft / ClaimDraft before durable domain construction;
+- caller trace_id/session_id and requirement provenance fields override model proposals;
+- extracted claims contain no verdict and still require EvidenceGate;
+- no automatic ConstraintLedger mutation occurs;
+- fake-client integration demonstrates the complete extraction -> runtime -> evidence flow;
+- executor reports 186 tests passing on local Python 3.12.9.
+
+### BLOCKER 1 — unsafe authority defaults can turn incomplete model output into USER/HARD/global DENY
+
+Current RequirementExtractor defaults:
+
+```python
+source=ConstraintSource.USER
+```
+
+and ConstraintDraft defaults:
+
+```python
+strength=HARD
+rule_effect=DENY
+scope=None
+```
+
+Because an empty ConstraintScope matches every action dimension, a model response containing only:
+
+```python
+{"name": "rule", "description": "some text"}
+```
+
+can become a durable **USER / HARD / DENY / globally-applicable** constraint.
+
+This violates the TASK-006 authority boundary: caller must supply authority, and malformed/incomplete model output must not silently gain strong semantics.
+
+**Required fix:**
+- caller must explicitly provide `source`; do not silently default provenance to USER;
+- extracted ConstraintDraft must explicitly provide `strength` and `rule_effect`; remove HARD/DENY defaults;
+- for v0.1, reject a completely empty applicability scope for extracted constraints unless there is a separately documented caller-owned explicit global-scope opt-in. Do not let omitted model scope silently mean "all actions";
+- keep REQUIRE/PREFER compliance_scope invariant.
+
+**Required tests:**
+1. omitted caller source -> validation error;
+2. model omits strength -> error;
+3. model omits rule_effect -> error;
+4. model omits/returns empty applicability scope -> error rather than global HARD DENY;
+5. explicit valid scope remains accepted.
+
+### BLOCKER 2 — Draft models silently ignore unexpected model fields
+
+Both ConstraintDraft and ClaimDraft use:
+
+```python
+extra="ignore"
+```
+
+So malformed or security-sensitive model output can disappear without a diagnostic while extraction still reports success.
+
+Examples:
+
+```python
+{"verdict": "VERIFIED"}
+{"strenght": "SOFT"}  # typo
+{"policy_override": true}
+```
+
+This contradicts "model output is untrusted" and "malformed fields cannot silently become trusted durable state."
+
+**Required fix:**
+- use `extra="forbid"` for untrusted draft models;
+- keep explicitly modeled spoofable fields (source/id/author/... and claim_id/trace_id/session_id) if they are needed for audit diagnostics;
+- schema should set `additionalProperties: false` at candidate/scope objects where practical;
+- unknown fields must raise in strict mode or produce ERROR diagnostic + skip in non-strict mode;
+- a model-provided claim `verdict` must never be silently ignored.
+
+Add strict/non-strict regression tests.
+
+### BLOCKER 3 — malformed scope values are silently string-coerced
+
+ConstraintScopeDraft currently does:
+
+```python
+s = str(item).strip()
+```
+
+for paths/tools/actions.
+
+Thus:
+
+```python
+paths=[123]
+actions=[True]
+```
+
+become valid strings instead of malformed structured output.
+
+**Required fix:**
+- each paths/tools/actions item must already be a string;
+- reject non-string values instead of coercing them;
+- preserve exact ordered list/tuple semantics;
+- continue rejecting set/frozenset.
+
+Add tests for numeric/bool/nested invalid items.
+
+### BLOCKER 4 — default deterministic ID generators can produce duplicate durable IDs
+
+When no ID generator is supplied, each new RequirementExtractor / ClaimExtractor creates a fresh:
+
+```python
+IdGenerator(deterministic=True)
+```
+
+Therefore two independent extractor instances can both emit `c_0001` or `claim_0001`.
+
+TASK-006 requires durable identity not to be trusted from model output and duplicate claim IDs to be impossible through adapter-owned generation.
+
+**Required fix:**
+- do not use a fresh per-instance deterministic generator as the production default;
+- preferred: require an injected ID factory for extraction, with deterministic IdGenerator used explicitly in tests;
+- alternatively use a collision-resistant non-deterministic default while preserving injected deterministic factories for reproducible tests;
+- add regression test with two independent extractor instances proving default-generated durable IDs cannot collide, or test that missing required factory is rejected.
+
+### HARDENING — caller-owned scope/provenance spoof diagnostics
+
+The durable values are already protected, but diagnostics are incomplete.
+
+Please also:
+- diagnose model session_id spoof as well as trace_id spoof;
+- diagnose model attempts to supply authoritative constraint id/author/source_location/source_text where they differ from caller-owned values;
+- ensure none of these fields can affect durable output.
+
+### REQUIRED RE-CHECK
+
+- local Python 3.12.9 only;
+- client invoked exactly once;
+- no provider SDK/network dependency;
+- TASK-001 through TASK-005 suites remain green;
+- `python --version`;
+- `python -m pytest -v`;
+- update Executor Report with exact pushed commit SHA.
+
+**Next instruction:**
+Fix these issues on `task/TASK-006-extraction-adapters`. Do not start TASK-007.
+
