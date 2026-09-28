@@ -12,12 +12,12 @@
 
 ## Current active task
 
-- Task: **TASK-004 — Claims, Evidence Graph, and Deterministic EvidenceGate**
-- Task file: `.agent/tasks/TASK-004.md`
-- Work branch: `task/TASK-004-evidence-gate`
-- Status: **CHANGES_REQUESTED**
+- Task: **TASK-005 — Agent/tool runtime wrapper and end-to-end demo**
+- Task file: `.agent/tasks/TASK-005.md`
+- Work branch: `task/TASK-005-runtime-wrapper`
+- Status: **READY_FOR_EXECUTOR**
 - Owner: Execution agent
-- Main-agent review: TASK-004 final state-ordering fix requested after review of `23830c1dfefb0431e85cbecf594c09223ce52ebe`
+- Main-agent review: TASK-004 accepted and integrated; TASK-005 ready for execution
 
 ## Main-agent checkpoint
 
@@ -27,7 +27,8 @@
 - TASK-001 accepted after final hardening and integrated to `main` as `48a7ae1cc07025a400b11804c298c2970cfc5107`.
 - TASK-002 accepted and integrated to `main` as `2c71b2509dc82a95a2c3ce298602811f549ac1ff`.
 - TASK-003 accepted and integrated to `main` as `495b23b262d51e076ad2f6c36b81edba4169f4d4`.
-- TASK-004 round-3 fixed FILE_EXISTS strictness/selectors/command matching; one final temporal state-ordering issue remains for trace-level FILE_EXISTS.
+- TASK-004 accepted and integrated to `main` as `f93c5f70e93e4d2ef8341c719dba66f951ed8e03`.
+- TASK-005 task contract has been created and is now active.
 
 ## Current design decisions
 
@@ -41,7 +42,7 @@
 
 ## Review gate
 
-The main agent will not activate TASK-005 until TASK-004 satisfies its acceptance criteria and is reviewed.
+The main agent will not activate TASK-006 until TASK-005 satisfies its acceptance criteria and is reviewed.
 
 ## Resume instructions for the main agent
 
