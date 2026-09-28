@@ -6,18 +6,18 @@
 
 - Name: AgentContract
 - Mission: Runtime constraint tracking and evidence-grounded completion verification for long-horizon tool-using agents.
-- Stage: Foundation
+- Stage: Working Demo
 - Architecture version: 0.1
 - Default branch: `main`
 
 ## Current active task
 
-- Task: **TASK-006 — LLM-assisted requirement/claim extraction adapters**
-- Task file: `.agent/tasks/TASK-006.md`
-- Work branch: `task/TASK-006-extraction-adapters`
-- Status: **CHANGES_REQUESTED**
+- Task: **TASK-007 — Benchmark scenarios and reliability metrics**
+- Task file: `.agent/tasks/TASK-007.md`
+- Work branch: `task/TASK-007-benchmark`
+- Status: **READY_FOR_EXECUTOR**
 - Owner: Execution agent
-- Main-agent review: TASK-006 changes requested after review of `d7de73d40c97cf5234700d75ef6e1734f784ce47`
+- Main-agent review: TASK-006 accepted and integrated; TASK-007 ready for execution
 
 ## Main-agent checkpoint
 
@@ -29,7 +29,8 @@
 - TASK-003 accepted and integrated to `main` as `495b23b262d51e076ad2f6c36b81edba4169f4d4`.
 - TASK-004 accepted and integrated to `main` as `f93c5f70e93e4d2ef8341c719dba66f951ed8e03`.
 - TASK-005 accepted and integrated to `main` as `94ec3c32dc685528fa5265e11c8945b16fdbc6b4`.
-- TASK-006 first implementation was reviewed; extraction authority defaults, untrusted-field handling, scope typing, and ID generation need fixes.
+- TASK-006 accepted and integrated to `main` as `cc61b75d34e75ea47ee2f289874a719bf4be247f`.
+- M2 working demo is complete; TASK-007 benchmark contract is now active.
 
 ## Current design decisions
 
@@ -43,7 +44,7 @@
 
 ## Review gate
 
-The main agent will not activate TASK-007 until TASK-006 satisfies its acceptance criteria and is reviewed.
+The main agent will not activate TASK-008 until TASK-007 satisfies its acceptance criteria and is reviewed.
 
 ## Resume instructions for the main agent
 
