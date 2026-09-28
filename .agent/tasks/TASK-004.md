@@ -212,7 +212,7 @@ python -m pytest -v
 
 **Commit/PR:**  
 - Branch: `task/TASK-004-evidence-gate`
-- Implementation Commit SHA: pending push
+- Implementation Commit SHA: `23830c1` (`23830c1dfefb0431e85cbecf594c09223ce52ebe`)
 
 **Questions/blockers:**  
 - None. All review blockers resolved and verified on local Python 3.12.9.
