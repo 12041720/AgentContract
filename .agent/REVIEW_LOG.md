@@ -320,3 +320,23 @@ Next:
 **Next:** apply the final temporal-ordering fix and resubmit TASK-004. TASK-005 remains blocked.
 
 ---
+
+## 2026-09-28 — TASK-004 final review and integration
+
+**Final implementation reviewed:** `3209bb52c0c311d3a6051611ef56942b0a85a939`
+
+**Verdict:** ACCEPTED
+
+**Integration commit:** `f93c5f70e93e4d2ef8341c719dba66f951ed8e03`
+
+**Final acceptance:**
+- deterministic typed EvidenceGate verdicts;
+- exact execution identity and conjunctive selectors;
+- strict structured FILE_EXISTS evidence;
+- trace-level FILE_EXISTS uses latest explicit state by sequence;
+- stale graph edges and FrozenDict hash contract repaired;
+- executor-reported 133/133 tests passing on local Python 3.12.9.
+
+**Next:** TASK-005 — agent/tool runtime wrapper and end-to-end demo is active.
+
+---
