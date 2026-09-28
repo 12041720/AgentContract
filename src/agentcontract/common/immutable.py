@@ -72,6 +72,11 @@ class FrozenDict(Mapping[str, Any]):
             return self._data == dict(other)
         return False
 
+    def __hash__(self) -> int:
+        if self._hash is None:
+            self._hash = hash(tuple(sorted(self._data.items())))
+        return self._hash
+
     @classmethod
     def __get_pydantic_core_schema__(
         cls, source_type: Any, handler: GetCoreSchemaHandler
