@@ -197,7 +197,7 @@ class Action(BaseModel):
         return cls(
             action_kind=action_kind or ActionKind.GENERIC,
             target_path=target_path,
-            paths=tuple(paths) if paths else ((target_path,) if target_path else ()),
+            paths=paths if paths else ((target_path,) if target_path else ()),
             target_type=target_type,
             payload=event.payload,
             context=FrozenDict(context or event.metadata),
@@ -275,10 +275,11 @@ class ActionObservation(BaseModel):
     def from_tool_result(
         cls,
         tool_result: ToolResult,
-        changed_paths: tuple[str, ...] | list[str] = (),
-        accessed_paths: tuple[str, ...] | list[str] = (),
+        changed_paths: tuple[str, ...] | list[str] | Any = (),
+        accessed_paths: tuple[str, ...] | list[str] | Any = (),
         tool_name: str | None = None,
         action_kind: ActionKind | None = None,
+        target_type: str | None = None,
         trace_pointer: TracePointer | None = None,
         context: Mapping[str, Any] | None = None,
     ) -> Self:
@@ -286,8 +287,9 @@ class ActionObservation(BaseModel):
         return cls(
             tool_name=tool_name,
             action_kind=action_kind,
-            changed_paths=tuple(changed_paths),
-            accessed_paths=tuple(accessed_paths),
+            changed_paths=changed_paths,
+            accessed_paths=accessed_paths,
+            target_type=target_type,
             output=tool_result.output,
             exit_code=tool_result.exit_code,
             context=FrozenDict(context or tool_result.metadata),

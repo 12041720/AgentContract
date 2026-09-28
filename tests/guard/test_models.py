@@ -241,6 +241,21 @@ def test_unordered_sets_rejected_in_models():
         ActionObservation(accessed_paths={"in.txt"})
     assert "ordered sequence" in str(exc_info.value)
 
+    # ActionObservation.from_tool_result rejects set / frozenset
+    from agentcontract.trace.models import ToolResult, ToolResultStatus
+    dummy_tr = ToolResult(call_id="call-obs", status=ToolResultStatus.SUCCESS)
+    with pytest.raises(ValidationError) as exc_info:
+        ActionObservation.from_tool_result(dummy_tr, changed_paths={"out.txt"})
+    assert "ordered sequence" in str(exc_info.value)
+
+    with pytest.raises(ValidationError) as exc_info:
+        ActionObservation.from_tool_result(dummy_tr, accessed_paths={"in.txt"})
+    assert "ordered sequence" in str(exc_info.value)
+
+    with pytest.raises(ValidationError) as exc_info:
+        ActionObservation.from_tool_result(dummy_tr, changed_paths=frozenset(["out.txt"]))
+    assert "ordered sequence" in str(exc_info.value)
+
     # GuardDecision rejects set
     action = Action(action_kind=ActionKind.FILE_WRITE, target_path="a.py")
     with pytest.raises(ValidationError) as exc_info:
