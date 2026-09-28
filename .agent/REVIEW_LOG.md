@@ -383,3 +383,23 @@ Next:
 **Next:** apply the two narrow fixes and resubmit TASK-005. TASK-006 remains blocked.
 
 ---
+
+## 2026-09-28 — TASK-005 final review and integration
+
+**Final implementation reviewed:** `4f9946b074445aa2f68671f83899b7f40e718647`
+
+**Verdict:** ACCEPTED
+
+**Integration commit:** `94ec3c32dc685528fa5265e11c8945b16fdbc6b4`
+
+**Final acceptance:**
+- full synchronous runtime loop connects constraints, SpecGuard, tool execution, trace, post-action validation, and EvidenceGate;
+- executor invocation is exactly-once;
+- pre-binding failures report `executed=False`, body failures report `executed=True`;
+- post-action observed target_type is enforced;
+- unordered path sets cannot bypass durable ordering validation;
+- executor-reported 158/158 tests passing on local Python 3.12.9.
+
+**Next:** TASK-006 — LLM-assisted requirement/claim extraction adapters is active.
+
+---
