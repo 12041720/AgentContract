@@ -1,10 +1,10 @@
 # TASK-007 — Benchmark Scenarios and Reliability Metrics
 
-**Status:** READY_FOR_EXECUTOR  
+**Status:** CHANGES_REQUESTED  
 **Milestone:** M3 — Measurable reliability  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-007-benchmark`  
-**Main-agent review:** pending
+**Main-agent review:** changes requested
 
 ## Objective
 
@@ -329,7 +329,184 @@ None. Ready for main agent review.
 
 > Main agent only.
 
-**Verdict:** PENDING
+**Verdict:** CHANGES_REQUESTED
 
-**Next instruction:**  
-Do not start TASK-008 until this section says ACCEPTED.
+**Reviewed implementation:** `57169def3d64024a4f96a205db80005cc184b9f9`  
+**Reviewed branch head/report:** `02f28416513f98bc0d394bc9c9d4e2397d25379d`
+
+**Accepted foundation:**
+- typed benchmark models and four variants exist;
+- 12 required deterministic scenario classes are present;
+- CVR/UCR/FBR/TSR aggregation and zero-denominator behavior are implemented;
+- BASELINE/SPECGUARD/EVIDENCEGATE/FULL paths are structurally isolated;
+- per-scenario provenance and serializable report exist;
+- executor reports 218 tests passing on local Python 3.12.9;
+- Executor Report contains an actual local 12-scenario benchmark run rather than fabricated numbers.
+
+### BLOCKER 1 — Task Success Rate is contaminated by claim verification / UCR
+
+Current `actual_task_success` depends on values such as:
+
+```python
+unsupported_accepted == 0
+all_claims_verified
+```
+
+That makes task success depend on whether the system accepted/rejected the agent's prose claims.
+
+This violates the benchmark contract:
+
+```text
+Task Success Rate = scenario-defined end-task success truth;
+do not infer success solely from agent prose.
+```
+
+A task can actually succeed while the agent additionally makes an unsupported claim. Conversely, a truthful completed task can have an UNVERIFIED claim because evidence is insufficient. Those affect UCR/evidence quality, not ground-truth task success.
+
+**Required fix:**
+- compute `actual_task_success` only from scenario ground truth plus actual execution state/outcomes;
+- do not use `accepted_claims`, `all_claims_verified`, `unsupported_claims_accepted`, or EvidenceGate verdicts to determine actual task success;
+- keep `variant_claimed_success` separate: it may depend on guard/gate acceptance;
+- for the current deterministic suite, an acceptable v0.1 rule is scenario-defined success gated by actual action execution/outcomes and ground-truth violations, e.g.:
+  - required legitimate actions actually execute successfully;
+  - false pre-blocks can make a task fail;
+  - ground-truth violating actions executed can make a task fail when scenario truth says so;
+  - claim acceptance never changes actual truth.
+- add at least one regression where an otherwise successful task contains an unsupported extra claim: `actual_task_success=True` while UCR records the reporting problem.
+
+### BLOCKER 2 — `extra_tool_calls` does not measure Extra Tool Calls
+
+Current runner increments `extra_calls` whenever a ground-truth violating action executes:
+
+```python
+if sa.is_violation:
+    extra_calls += 1
+```
+
+That is a violation count, not a tool-call overhead metric.
+
+The current report therefore labels:
+
+```text
+BASELINE Extra Tool Calls = 3
+FULL Extra Tool Calls = 1
+```
+
+but those values are just executed violating actions.
+
+**Required fix:**
+- define Extra Tool Calls against explicit scenario ground truth, not `is_violation`;
+- preferred: add an explicit scenario field such as `expected_tool_calls` / required-action indices and compute additional executed calls above that ground-truth requirement;
+- document numerator/baseline semantics;
+- do not call executed violations "extra tool-call overhead" unless the scenario explicitly marks them unnecessary calls;
+- add hand-computed regression tests.
+
+If the current deterministic runtime adds no extra tool calls itself, reporting 0 overhead for clean scenarios is correct.
+
+### BLOCKER 3 — False Blocking Rate counts post-action BLOCK after the tool already executed
+
+In SPECGUARD/FULL, if `post_decision.is_blocked` for a non-violating action, code increments:
+
+```python
+non_violating_actions_blocked += 1
+```
+
+But post-action BLOCK happens **after execution**. The action was not blocked/prevented.
+
+FBR is defined as:
+
+```text
+non-violating actions incorrectly blocked / non-violating actions attempted
+```
+
+**Required fix:**
+- FBR numerator must count only false **pre-action prevention** where `executed=False`;
+- a false post-action violation signal may be retained separately in provenance/another counter, but must not be called a blocked action;
+- ensure `was_false_blocked` obeys the same meaning;
+- add regression test distinguishing false pre-block from false post-action flag.
+
+### BLOCKER 4 — aggregate tests hard-code the benchmark winner
+
+`test_full_benchmark_run_and_report()` currently asserts:
+
+```python
+full CVR < baseline CVR
+full UCR < baseline UCR
+full FBR == 0
+full TSR >= baseline TSR
+```
+
+TASK-007 explicitly says:
+
+```text
+Do not hard-code expected "AgentContract wins" results.
+```
+
+The benchmark scenarios should test mechanics and ground truth, not encode a mandatory marketing conclusion.
+
+**Required fix:**
+- remove aggregate directional winner assertions;
+- retain scenario-level correctness tests and hand-computed metric tests;
+- it is fine for the actual generated report to show better/worse/equal values;
+- tests should fail when formulas/variant semantics are wrong, not when FULL fails to "win".
+
+### BLOCKER 5 — repeated-run stability test does not test stability
+
+`test_repeated_deterministic_runs_are_identical` only checks that metrics are present/non-None.
+
+It never compares repetition 1 vs repetition 2.
+
+**Required fix:**
+- compare deterministic semantic outputs per `scenario_id + variant` across repetitions:
+  - action executed/blocked states;
+  - guard decisions;
+  - claim verdicts;
+  - reliability counters;
+  - task truth;
+- exclude intentionally non-deterministic timing/timestamps/run_id from equality;
+- assert the semantic results are identical.
+
+### BLOCKER 6 — latency overhead clips real measurements
+
+Current formula:
+
+```python
+max(0.0, avg_latency - baseline_avg_latency)
+```
+
+silently turns a measured negative delta into zero.
+
+TASK-007 says overhead numbers must come from actual harness measurements.
+
+**Required fix:**
+- report signed measured delta `avg_latency - baseline_avg_latency`, or name it `latency_delta_ms`;
+- do not clip observed values;
+- benchmark report/docs may explain that sub-millisecond one-run numbers are noisy and are not statistical claims.
+
+### HARDENING
+
+Also add runner input validation:
+- `repetitions >= 1`;
+- input scenario IDs unique;
+- variant list contains no duplicates.
+
+The standard-scenario uniqueness test alone is insufficient for the public runner API.
+
+### BENCHMARK REPORT
+
+After fixing the formulas/semantics:
+- rerun the benchmark locally;
+- replace the current table with the **new actual output**;
+- do not preserve the current numbers if formulas changed;
+- keep token overhead omitted unless measured.
+
+**Required re-check:**
+- local Python 3.12.9 only;
+- `python -m pytest tests/benchmark/ -v`;
+- `python -m pytest -v`;
+- TASK-001 through TASK-006 stay green;
+- update Executor Report with exact pushed commit SHA.
+
+**Next instruction:**
+Fix these benchmark semantics on `task/TASK-007-benchmark`. Do not start TASK-008.
+
