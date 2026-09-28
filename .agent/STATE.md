@@ -15,9 +15,9 @@
 - Task: **TASK-006 — LLM-assisted requirement/claim extraction adapters**
 - Task file: `.agent/tasks/TASK-006.md`
 - Work branch: `task/TASK-006-extraction-adapters`
-- Status: **READY_FOR_EXECUTOR**
+- Status: **CHANGES_REQUESTED**
 - Owner: Execution agent
-- Main-agent review: TASK-005 accepted and integrated; TASK-006 ready for execution
+- Main-agent review: TASK-006 changes requested after review of `d7de73d40c97cf5234700d75ef6e1734f784ce47`
 
 ## Main-agent checkpoint
 
@@ -29,7 +29,7 @@
 - TASK-003 accepted and integrated to `main` as `495b23b262d51e076ad2f6c36b81edba4169f4d4`.
 - TASK-004 accepted and integrated to `main` as `f93c5f70e93e4d2ef8341c719dba66f951ed8e03`.
 - TASK-005 accepted and integrated to `main` as `94ec3c32dc685528fa5265e11c8945b16fdbc6b4`.
-- TASK-006 task contract has been created and is now active.
+- TASK-006 first implementation was reviewed; extraction authority defaults, untrusted-field handling, scope typing, and ID generation need fixes.
 
 ## Current design decisions
 
