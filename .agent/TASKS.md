@@ -8,7 +8,7 @@ Status values: `PLANNED`, `READY_FOR_EXECUTOR`, `IN_PROGRESS`, `READY_FOR_REVIEW
 | TASK-002 | Unified trace and provenance model | ACCEPTED | TASK-001 |
 | TASK-003 | SpecGuard pre/post action validation engine | ACCEPTED | TASK-001, TASK-002 |
 | TASK-004 | Claims, evidence graph, and deterministic EvidenceGate | PLANNED | TASK-002 |
-| TASK-005 | Agent/tool runtime wrapper and end-to-end demo | PLANNED | TASK-003, TASK-004 |
+| TASK-005 | Agent/tool runtime wrapper and end-to-end demo | READY_FOR_EXECUTOR | TASK-003, TASK-004 |
 | TASK-006 | LLM-assisted requirement/claim extraction adapters | PLANNED | TASK-001, TASK-004 |
 | TASK-007 | Benchmark scenarios and reliability metrics | PLANNED | TASK-005, TASK-006 |
 | TASK-008 | OpenTelemetry + external agent adapters | PLANNED | TASK-005 |
