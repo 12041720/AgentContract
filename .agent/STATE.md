@@ -17,7 +17,7 @@
 - Work branch: `task/TASK-005-runtime-wrapper`
 - Status: **CHANGES_REQUESTED**
 - Owner: Execution agent
-- Main-agent review: TASK-005 changes requested after review of `4e028fe6f98d9e6bdb57239128033031150e755e`
+- Main-agent review: TASK-005 round-2 narrow final fixes requested after review of `77281cfaba5ca6256cfd97d9c28f7e613958ac4c`
 
 ## Main-agent checkpoint
 
@@ -28,7 +28,7 @@
 - TASK-002 accepted and integrated to `main` as `2c71b2509dc82a95a2c3ce298602811f549ac1ff`.
 - TASK-003 accepted and integrated to `main` as `495b23b262d51e076ad2f6c36b81edba4169f4d4`.
 - TASK-004 accepted and integrated to `main` as `f93c5f70e93e4d2ef8341c719dba66f951ed8e03`.
-- TASK-005 first implementation was reviewed; executor exactly-once semantics and post-action target_type propagation need fixes.
+- TASK-005 round-2 fixed exactly-once executor invocation and post-action target_type propagation; two narrow runtime state/determinism issues remain.
 
 ## Current design decisions
 
