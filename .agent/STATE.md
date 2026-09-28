@@ -15,9 +15,9 @@
 - Task: **TASK-005 — Agent/tool runtime wrapper and end-to-end demo**
 - Task file: `.agent/tasks/TASK-005.md`
 - Work branch: `task/TASK-005-runtime-wrapper`
-- Status: **READY_FOR_EXECUTOR**
+- Status: **CHANGES_REQUESTED**
 - Owner: Execution agent
-- Main-agent review: TASK-004 accepted and integrated; TASK-005 ready for execution
+- Main-agent review: TASK-005 changes requested after review of `4e028fe6f98d9e6bdb57239128033031150e755e`
 
 ## Main-agent checkpoint
 
@@ -28,7 +28,7 @@
 - TASK-002 accepted and integrated to `main` as `2c71b2509dc82a95a2c3ce298602811f549ac1ff`.
 - TASK-003 accepted and integrated to `main` as `495b23b262d51e076ad2f6c36b81edba4169f4d4`.
 - TASK-004 accepted and integrated to `main` as `f93c5f70e93e4d2ef8341c719dba66f951ed8e03`.
-- TASK-005 task contract has been created and is now active.
+- TASK-005 first implementation was reviewed; executor exactly-once semantics and post-action target_type propagation need fixes.
 
 ## Current design decisions
 
