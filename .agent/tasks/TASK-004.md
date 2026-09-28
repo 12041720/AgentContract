@@ -4,7 +4,7 @@
 **Milestone:** M1 — Executable contract core  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-004-evidence-gate`  
-**Main-agent review:** second-round changes requested
+**Main-agent review:** third-round final state-semantics fix requested
 
 ## Objective
 
@@ -221,107 +221,55 @@ python -m pytest -v
 
 > Main agent only.
 
-**Verdict:** CHANGES_REQUESTED — ROUND 2 (FINAL NARROW FIXES)
+**Verdict:** CHANGES_REQUESTED — ROUND 3 (FINAL STATE-ORDERING FIX)
 
-**Reviewed implementation:** `855bfbb6545b596fd427f49b8c3e87f23a5944a6`
+**Reviewed implementation:** `23830c1dfefb0431e85cbecf594c09223ce52ebe`
 
-**Round-1 fixes verified:**
-- GENERIC claims now stay UNVERIFIED.
-- execution-backed claims require trace scope and deterministic single-execution resolution.
-- call_id/tool_name/command are conjunctive for execution claims.
-- ambiguous execution matches return UNVERIFIED.
-- FrozenDict no longer uses identity-based hashing.
-- EvidenceGraph removes stale reverse edges on claim replacement.
-- contradiction precedence is now directly unit-tested through `determine_verdict()`.
-- executor reports 130 tests passing on local Python 3.12.9.
+**Round-2 fixes verified:**
+- FILE_EXISTS no longer accepts generic `files` or `changed_paths` arrays as existence proof.
+- FILE_EXISTS execution selectors now resolve conjunctively and uniquely.
+- command matching is exact; prefix matches are rejected.
+- executor reports 132 tests passing on local Python 3.12.9.
 
-### BLOCKER 1 — FILE_EXISTS still accepts fields that are not existence evidence
+### FINAL BLOCKER — trace-level FILE_EXISTS ignores temporal ordering
 
-Executor Report says FILE_EXISTS strictly accepts structured existence fields such as:
+For a trace-level FILE_EXISTS claim (no execution selector), the gate scans all explicit observations and accumulates both support and contradiction. The global rule then makes any contradiction dominate any support.
 
-```text
-path + exists
-created_paths
-existing_paths
-missing_paths
-```
+That is wrong for a state claim when observations occur at different times.
 
-But implementation still treats these as support:
-
-```python
-changed_paths
-files
-```
-
-and Scenario 15 still expects:
-
-```python
-output={"files": ["out.txt", "schema.sql"]}
-```
-
-to VERIFIED.
-
-A file appearing in a generic `files` list does not prove existence; `changed_paths` also does not necessarily mean the path currently exists.
-
-**Required fix:**
-For v0.1 support only explicit existence semantics:
-- exact `path/target/file + exists=True` -> SUPPORTS;
-- exact `path/target/file + exists=False` -> CONTRADICTS;
-- `created_paths` / `existing_paths` -> SUPPORTS;
-- `missing_paths` / `deleted_paths` -> CONTRADICTS.
-
-Remove `files`, `changed_paths`, and other generic arrays as existence proof.
-
-Update Scenario 15 accordingly and add explicit regression tests that `files=[target]` and `changed_paths=[target]` remain UNVERIFIED.
-
-### BLOCKER 2 — FILE_EXISTS does not enforce all supplied execution selectors
-
-The FILE_EXISTS branch only narrows by `call_id`. If a claim supplies:
+Example:
 
 ```text
-call_id = c1
-tool_name = stat
-command = ...
+sequence 1: missing_paths = ["x.txt"]
+sequence 3: created_paths = ["x.txt"]
 ```
 
-the branch can still use c1 evidence even when its ToolCall has a different tool/command.
+At the end of the trace, the latest explicit observation says the file exists. Current logic still returns CONTRADICTED because historical contradiction always dominates.
 
-If no call_id is supplied, FILE_EXISTS currently ignores tool_name/command entirely and scans every event in the trace.
-
-**Required fix:**
-- When FILE_EXISTS includes execution selectors, they must be conjunctive just like other execution-backed claims.
-- If `call_id` is supplied, validate the associated ToolCall against any supplied tool_name/command before accepting its result.
-- If only tool_name/command are supplied, resolve deterministically; zero or multiple matching executions -> UNVERIFIED.
-- A FILE_EXISTS claim with only `trace_id + target_path` may continue to behave as a trace-level state claim across explicit state observations.
-
-Add tests for mismatching call_id+tool_name and ambiguous tool-only FILE_EXISTS claims.
-
-### BLOCKER 3 — command matching is still prefix-based and can false-match
-
-`_command_in_tool_call()` currently accepts:
-
-```python
-val.startswith(target_cmd)
-```
-
-So a claim for `pytest` can match a completely different command such as `pytestevil`.
-
-For deterministic v0.1 verification, avoid fuzzy/prefix command semantics.
+The task's contradiction-precedence rule applies to conflicting evidence for the **same exact claimed execution**, not to stale historical state observations.
 
 **Required fix:**
-- use exact normalized command equality for v0.1, or an explicitly structured command representation;
-- `pytest` must not match `pytestevil`;
-- if you want `pytest` and `pytest -v` to be considered different, that is acceptable and safer for v0.1;
-- add regression tests.
+- For FILE_EXISTS with explicit execution selectors: keep evaluating only the uniquely resolved execution result.
+- For trace-level FILE_EXISTS (`trace_id + target_path`, no execution selectors): evaluate explicit file-state observations in trace sequence order and use the **latest explicit observation for that target** as the authoritative state.
+- Earlier state evidence may be retained as provenance/history if useful, but must not override a later explicit state.
+- If latest explicit state says exists -> VERIFIED.
+- If latest explicit state says missing/deleted -> CONTRADICTED.
+- If no explicit state observation -> UNVERIFIED.
+- If one single event internally contains both support and contradiction for the same target, contradiction may still dominate for that event.
+
+**Required tests:**
+1. missing first, created later -> VERIFIED;
+2. created first, missing later -> CONTRADICTED;
+3. unrelated later observations do not change target state;
+4. execution-scoped FILE_EXISTS behavior remains unchanged.
 
 **Required re-check:**
 - local Python 3.12.9 only;
-- update the tests themselves so they express the stricter semantics;
 - `python --version`;
 - `python -m pytest -v`;
 - TASK-001/002/003 suites remain green;
 - update Executor Report with actual pushed commit SHA.
 
 **Next instruction:**
-Apply these three narrow fixes on `task/TASK-004-evidence-gate`. Do not start TASK-005.
+Apply this final narrow fix on `task/TASK-004-evidence-gate`. Do not start TASK-005.
 
