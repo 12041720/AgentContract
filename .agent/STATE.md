@@ -12,12 +12,12 @@
 
 ## Current active task
 
-- Task: **TASK-005 — Agent/tool runtime wrapper and end-to-end demo**
-- Task file: `.agent/tasks/TASK-005.md`
-- Work branch: `task/TASK-005-runtime-wrapper`
-- Status: **CHANGES_REQUESTED**
+- Task: **TASK-006 — LLM-assisted requirement/claim extraction adapters**
+- Task file: `.agent/tasks/TASK-006.md`
+- Work branch: `task/TASK-006-extraction-adapters`
+- Status: **READY_FOR_EXECUTOR**
 - Owner: Execution agent
-- Main-agent review: TASK-005 round-2 narrow final fixes requested after review of `77281cfaba5ca6256cfd97d9c28f7e613958ac4c`
+- Main-agent review: TASK-005 accepted and integrated; TASK-006 ready for execution
 
 ## Main-agent checkpoint
 
@@ -28,7 +28,8 @@
 - TASK-002 accepted and integrated to `main` as `2c71b2509dc82a95a2c3ce298602811f549ac1ff`.
 - TASK-003 accepted and integrated to `main` as `495b23b262d51e076ad2f6c36b81edba4169f4d4`.
 - TASK-004 accepted and integrated to `main` as `f93c5f70e93e4d2ef8341c719dba66f951ed8e03`.
-- TASK-005 round-2 fixed exactly-once executor invocation and post-action target_type propagation; two narrow runtime state/determinism issues remain.
+- TASK-005 accepted and integrated to `main` as `94ec3c32dc685528fa5265e11c8945b16fdbc6b4`.
+- TASK-006 task contract has been created and is now active.
 
 ## Current design decisions
 
@@ -42,7 +43,7 @@
 
 ## Review gate
 
-The main agent will not activate TASK-006 until TASK-005 satisfies its acceptance criteria and is reviewed.
+The main agent will not activate TASK-007 until TASK-006 satisfies its acceptance criteria and is reviewed.
 
 ## Resume instructions for the main agent
 
