@@ -328,7 +328,7 @@ Deterministic run results from local run `bench_run_d79842e1` (13 standard scena
 - Initial suite contains 13 scenarios; extensible to 100–300 scenarios in future tasks without changing the runner API.
 
 **Commit/PR:**  
-Commit SHA: `ed448bd` on branch `task/TASK-007-benchmark`.
+Commit SHA: `6b035b5` on branch `task/TASK-007-benchmark`.
 
 **Questions/blockers:**  
 None. Ready for main agent review.
