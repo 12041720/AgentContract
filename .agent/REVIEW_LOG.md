@@ -301,3 +301,22 @@ Next:
 **Next:** apply the three narrow fixes and resubmit TASK-004. TASK-005 remains blocked.
 
 ---
+
+## 2026-09-28 — TASK-004 third implementation review
+
+**Implementation reviewed:** `23830c1dfefb0431e85cbecf594c09223ce52ebe`
+
+**Verdict:** CHANGES_REQUESTED — ROUND 3
+
+**Verified fixes:**
+- FILE_EXISTS accepts only explicit existence semantics;
+- FILE_EXISTS execution selectors are conjunctive and deterministic;
+- command matching is exact instead of prefix-based;
+- executor reports 132/132 tests passing on local Python 3.12.9.
+
+**Final blocker:**
+- trace-level FILE_EXISTS aggregates stale historical support/contradiction and lets any old contradiction override later state; state claims must respect event sequence and use the latest explicit observation for the target.
+
+**Next:** apply the final temporal-ordering fix and resubmit TASK-004. TASK-005 remains blocked.
+
+---
