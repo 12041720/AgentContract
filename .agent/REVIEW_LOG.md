@@ -362,3 +362,24 @@ Next:
 **Next:** execution agent fixes TASK-005 on `task/TASK-005-runtime-wrapper`; TASK-006 remains blocked.
 
 ---
+
+## 2026-09-28 — TASK-005 second implementation review
+
+**Implementation reviewed:** `77281cfaba5ca6256cfd97d9c28f7e613958ac4c`
+
+**Verdict:** CHANGES_REQUESTED — ROUND 2
+
+**Verified fixes:**
+- executor internal TypeError does not trigger retry;
+- executor arguments are bound before one invocation;
+- actual target_type reaches post-action SpecGuard;
+- target_type mismatch can produce post-action BLOCK;
+- executor reports 157/157 tests passing on local Python 3.12.9.
+
+**Remaining narrow issues:**
+- `RuntimeExecutionResult.executed` is true even when signature validation fails before executor invocation;
+- `ToolExecutionOutcome.success()/from_tool_result()` convert unordered sets to tuples before validation and bypass deterministic-order rejection.
+
+**Next:** apply the two narrow fixes and resubmit TASK-005. TASK-006 remains blocked.
+
+---
