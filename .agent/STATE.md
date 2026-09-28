@@ -17,7 +17,7 @@
 - Work branch: `task/TASK-004-evidence-gate`
 - Status: **CHANGES_REQUESTED**
 - Owner: Execution agent
-- Main-agent review: TASK-004 round-2 final fixes requested after review of `855bfbb6545b596fd427f49b8c3e87f23a5944a6`
+- Main-agent review: TASK-004 final state-ordering fix requested after review of `23830c1dfefb0431e85cbecf594c09223ce52ebe`
 
 ## Main-agent checkpoint
 
@@ -27,7 +27,7 @@
 - TASK-001 accepted after final hardening and integrated to `main` as `48a7ae1cc07025a400b11804c298c2970cfc5107`.
 - TASK-002 accepted and integrated to `main` as `2c71b2509dc82a95a2c3ce298602811f549ac1ff`.
 - TASK-003 accepted and integrated to `main` as `495b23b262d51e076ad2f6c36b81edba4169f4d4`.
-- TASK-004 round-2 fixed deterministic execution resolution, graph updates, and hashing; three narrow EvidenceGate strictness issues remain.
+- TASK-004 round-3 fixed FILE_EXISTS strictness/selectors/command matching; one final temporal state-ordering issue remains for trace-level FILE_EXISTS.
 
 ## Current design decisions
 
