@@ -483,3 +483,28 @@ Next:
 **Next:** fix TASK-007 benchmark semantics and rerun the real benchmark; TASK-008 remains blocked.
 
 ---
+
+## 2026-09-28 — TASK-007 final review and integration
+
+**Final implementation reviewed:** `6b035b5af57241a1be5d22e7e5e122ed9431260b`
+
+**Verdict:** ACCEPTED
+
+**Integration commit:** `12dad52df4b2901905c2ea92c07f8a71d2934d7f`
+
+**Final acceptance:**
+- four benchmark variants remain isolated;
+- 13 deterministic scenarios;
+- TSR/UCR semantics decoupled;
+- extra tool-call metric uses explicit scenario ground truth;
+- FBR counts only false pre-action prevention;
+- repetitions compare deterministic semantic outputs;
+- benchmark tests do not hard-code a winner;
+- signed latency delta retained;
+- executor-reported 222/222 tests passing on local Python 3.12.9.
+
+**Milestone:** M3 Measurable reliability complete.
+
+**Next:** TASK-008 — external integrations and telemetry is active.
+
+---
