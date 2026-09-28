@@ -58,6 +58,26 @@ from agentcontract.trace import (
     TraceStore,
 )
 
+from agentcontract.extraction import (
+    ClaimDraft,
+    ClaimExtractor,
+    ClientExtractionError,
+    ConstraintDraft,
+    ConstraintScopeDraft,
+    DiagnosticSeverity,
+    ExtractionDiagnostic,
+    ExtractionError,
+    ExtractionRequest,
+    ExtractionResult,
+    ExtractionValidationError,
+    FakeStructuredExtractionClient,
+    RequirementExtractor,
+    StructuredExtractionClient,
+    extract_and_verify_claims,
+    get_claim_extraction_schema,
+    get_requirement_extraction_schema,
+)
+
 __version__ = "0.1.0"
 
 __all__ = [
@@ -114,6 +134,24 @@ __all__ = [
     "ToolExecutionOutcome",
     "ToolExecutor",
     "VerificationResult",
+    # Extraction
+    "ClaimDraft",
+    "ClaimExtractor",
+    "ClientExtractionError",
+    "ConstraintDraft",
+    "ConstraintScopeDraft",
+    "DiagnosticSeverity",
+    "ExtractionDiagnostic",
+    "ExtractionError",
+    "ExtractionRequest",
+    "ExtractionResult",
+    "ExtractionValidationError",
+    "FakeStructuredExtractionClient",
+    "RequirementExtractor",
+    "StructuredExtractionClient",
+    "extract_and_verify_claims",
+    "get_claim_extraction_schema",
+    "get_requirement_extraction_schema",
     # Meta
     "__version__",
 ]
