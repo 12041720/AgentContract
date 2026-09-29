@@ -6,18 +6,18 @@
 
 - Name: AgentContract
 - Mission: Runtime constraint tracking and evidence-grounded completion verification for long-horizon tool-using agents.
-- Stage: Measurable Reliability
+- Stage: Integration-ready
 - Architecture version: 0.1
 - Default branch: `main`
 
 ## Current active task
 
-- Task: **TASK-008 — External integration adapters and OpenTelemetry bridge**
-- Task file: `.agent/tasks/TASK-008.md`
-- Work branch: `task/TASK-008-integrations`
-- Status: **CHANGES_REQUESTED**
+- Task: **TASK-009 — CLI/API packaging and documentation**
+- Task file: `.agent/tasks/TASK-009.md`
+- Work branch: `task/TASK-009-packaging`
+- Status: **READY_FOR_EXECUTOR**
 - Owner: Execution agent
-- Main-agent review: TASK-008 final structured-output compatibility fix requested after review of `0a148bb2a9c40142fce59cab1462d3e7047f9e03`
+- Main-agent review: TASK-008 accepted and integrated; TASK-009 ready for execution
 
 ## Main-agent checkpoint
 
@@ -31,7 +31,8 @@
 - TASK-005 accepted and integrated to `main` as `94ec3c32dc685528fa5265e11c8945b16fdbc6b4`.
 - TASK-006 accepted and integrated to `main` as `cc61b75d34e75ea47ee2f289874a719bf4be247f`.
 - TASK-007 accepted and integrated to `main` as `12dad52df4b2901905c2ea92c07f8a71d2934d7f`.
-- TASK-008 OTLP IDs/path typing are fixed; one final real-API Structured Outputs schema compatibility fix remains.
+- TASK-008 accepted and integrated to `main` as `0469bf7a0204eba56aaa2fe44d65edfb63b8b4ac`.
+- External adapters, OTLP bridge, and real OpenAI-compatible extraction quickstart are available.
 
 ## Current design decisions
 
@@ -45,7 +46,7 @@
 
 ## Review gate
 
-The main agent will not activate TASK-009 until TASK-008 satisfies its acceptance criteria and is reviewed.
+The main agent will not mark v0.1 complete until TASK-009 satisfies its acceptance criteria and is reviewed.
 
 ## Resume instructions for the main agent
 
