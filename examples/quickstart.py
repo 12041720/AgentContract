@@ -58,6 +58,7 @@ def run_quickstart() -> int:
             base_url=base_url,
             response_format_mode=response_format,
             api_key=api_key,
+            timeout=120,
         )
     else:
         print("[1] OPENAI_API_KEY not detected; using deterministic offline client for demo.")
