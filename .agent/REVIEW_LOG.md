@@ -552,3 +552,24 @@ Next:
 **Next:** make the actual schema sent by the OpenAI adapter strict-compatible, update quickstart env configuration, rerun tests. TASK-009 remains blocked.
 
 ---
+
+## 2026-09-29 — TASK-008 final review and integration
+
+**Final implementation reviewed:** `47fd8ffa4a7bfa9f27cb69e01dce6d6ff0583934`
+
+**Verdict:** ACCEPTED
+
+**Integration commit:** `0469bf7a0204eba56aaa2fe44d65edfb63b8b4ac`
+
+**Final acceptance:**
+- external tool adapters and strict path typing;
+- deterministic valid OTLP wire IDs with original IDs preserved;
+- OpenAI-compatible exactly-once structured extraction client;
+- strict Structured Outputs compatible provider schemas;
+- JSON mode compatibility fallback;
+- online/offline quickstart environment configuration;
+- executor-reported 268/268 tests passing on local Python 3.12.9.
+
+**Next:** TASK-009 — CLI/API packaging and documentation is active.
+
+---
