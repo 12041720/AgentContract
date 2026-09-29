@@ -15,9 +15,9 @@
 - Task: **TASK-008 — External integration adapters and OpenTelemetry bridge**
 - Task file: `.agent/tasks/TASK-008.md`
 - Work branch: `task/TASK-008-integrations`
-- Status: **READY_FOR_EXECUTOR**
+- Status: **CHANGES_REQUESTED**
 - Owner: Execution agent
-- Main-agent review: TASK-007 accepted and integrated; TASK-008 ready for execution
+- Main-agent review: TASK-008 narrow integration fixes requested after review of `8a11a0c079926c2f98a1f01df380aef2b8484429`
 
 ## Main-agent checkpoint
 
@@ -31,7 +31,7 @@
 - TASK-005 accepted and integrated to `main` as `94ec3c32dc685528fa5265e11c8945b16fdbc6b4`.
 - TASK-006 accepted and integrated to `main` as `cc61b75d34e75ea47ee2f289874a719bf4be247f`.
 - TASK-007 accepted and integrated to `main` as `12dad52df4b2901905c2ea92c07f8a71d2934d7f`.
-- M3 measurable reliability is complete; TASK-008 integration work is now active.
+- TASK-008 first implementation reviewed; OTLP wire IDs and external path typing need narrow fixes.
 
 ## Current design decisions
 
