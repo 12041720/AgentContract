@@ -12,7 +12,7 @@ Status values: `PLANNED`, `READY_FOR_EXECUTOR`, `IN_PROGRESS`, `READY_FOR_REVIEW
 | TASK-006 | LLM-assisted requirement/claim extraction adapters | ACCEPTED | TASK-001, TASK-004 |
 | TASK-007 | Benchmark scenarios and reliability metrics | ACCEPTED | TASK-005, TASK-006 |
 | TASK-008 | OpenTelemetry + external agent adapters | ACCEPTED | TASK-005 |
-| TASK-009 | CLI/API packaging and documentation | READY_FOR_EXECUTOR | TASK-007 |
+| TASK-009 | Integration hardening, CLI/API packaging, and documentation | READY_FOR_EXECUTOR | TASK-007, TASK-008 |
 
 ## Milestones
 
