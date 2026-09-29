@@ -104,7 +104,13 @@ python -m pytest -v
   6. **End-to-End Demonstration (`examples/quickstart.py`)**:
      - Executable walkthrough: natural-language user requirement -> structured extraction -> hard constraint in ledger -> guarded execution via SpecGuard (allowed read, blocked write, allowed pytest) -> completion prose -> claim extraction -> EvidenceGate verification -> OTel trace export.
      - Operates offline out-of-the-box using deterministic client or online with `OPENAI_API_KEY`.
-- 40 unit and integration tests across `tests/adapters/`.
+- Added 46 unit and integration tests across `tests/adapters/`.
+  7. **Strict Structured Outputs API Compatibility**:
+     - Added `to_strict_json_schema`: recursively converts schemas into OpenAI strict Structured Outputs compatible schemas (`additionalProperties: false`, all property keys in `required`, unrestricted objects omitted, optional semantic fields made nullable).
+     - Added provider strict schema builders: `get_openai_requirement_extraction_schema()` and `get_openai_claim_extraction_schema()`.
+     - Added recursive validator `validate_strict_json_schema`.
+     - `OpenAICompatibleExtractionClient` automatically applies `to_strict_json_schema` in `json_schema` mode and supports `OPENAI_MODEL`, `OPENAI_BASE_URL`, and `OPENAI_RESPONSE_FORMAT` env vars.
+     - Quickstart supports `OPENAI_MODEL`, `OPENAI_BASE_URL`, and `OPENAI_RESPONSE_FORMAT` (default `json_schema`, compatible `json_object`).
 
 **Files changed:**  
 - `src/agentcontract/adapters/__init__.py`
@@ -123,8 +129,8 @@ python -m pytest -v
 
 **Tests/checks:**  
 - `python --version` -> `Python 3.12.9`
-- `python -m pytest tests/adapters/ -v` -> 40 passed in 0.43s
-- `python -m pytest -v` -> 262 passed in 1.05s (zero regressions across TASK-001 through TASK-008)
+- `python -m pytest tests/adapters/ -v` -> 46 passed in 0.49s
+- `python -m pytest -v` -> 268 passed in 1.39s (zero regressions across TASK-001 through TASK-008)
 - `python examples/quickstart.py` -> exit code 0, complete end-to-end flow verified offline
 
 **Known limitations:**  
@@ -132,10 +138,10 @@ python -m pytest -v
 - OpenTelemetry export produces standard OTLP JSON dictionary representation; live background exporter daemon is out of scope for v0.1.
 
 **Commit/PR:**  
-Commit SHA: `0a148bb` (implementation) on branch `task/TASK-008-integrations`.
+Commit SHA: `e2990549d15e1088215ce8ea53b49cc831a7b1fe` on branch `task/TASK-008-integrations`.
 
 **Questions/blockers:**  
-None. Blocker 1 (OTLP wire IDs), Blocker 2 (strict external path typing), and Hardening (Structured Outputs json_schema mode) are fully resolved with regression tests. Ready for main agent review.
+None. All review blockers (OTLP wire IDs, strict external path typing, strict Structured Outputs schemas) are fully resolved with recursive validation tests. Ready for main agent review.
 
 ## Main Agent Review
 

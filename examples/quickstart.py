@@ -49,9 +49,14 @@ def run_quickstart() -> int:
     # -------------------------------------------------------------------------
     api_key = os.environ.get("OPENAI_API_KEY")
     if api_key:
-        print("[1] Using OpenAICompatibleExtractionClient with OPENAI_API_KEY.")
+        model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+        base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        response_format = os.environ.get("OPENAI_RESPONSE_FORMAT", "json_schema")
+        print(f"[1] Using OpenAICompatibleExtractionClient (model={model}, mode={response_format}, base_url={base_url}).")
         client = OpenAICompatibleExtractionClient(
-            model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+            model=model,
+            base_url=base_url,
+            response_format_mode=response_format,
             api_key=api_key,
         )
     else:

@@ -5,7 +5,13 @@ from agentcontract.adapters.exceptions import (
     AdapterError,
     AdapterValidationError,
 )
-from agentcontract.adapters.openai import OpenAICompatibleExtractionClient
+from agentcontract.adapters.openai import (
+    OpenAICompatibleExtractionClient,
+    get_openai_claim_extraction_schema,
+    get_openai_requirement_extraction_schema,
+    to_strict_json_schema,
+    validate_strict_json_schema,
+)
 from agentcontract.adapters.otel import (
     OTelSpan,
     OTelTraceBridge,
@@ -36,4 +42,8 @@ __all__ = [
     "to_otlp_trace_id",
     # Extraction provider
     "OpenAICompatibleExtractionClient",
+    "get_openai_claim_extraction_schema",
+    "get_openai_requirement_extraction_schema",
+    "to_strict_json_schema",
+    "validate_strict_json_schema",
 ]

@@ -6,11 +6,21 @@ import urllib.request
 import pytest
 
 from agentcontract.adapters.exceptions import AdapterConfigurationError
-from agentcontract.adapters.openai import OpenAICompatibleExtractionClient
+from agentcontract.adapters.openai import (
+    OpenAICompatibleExtractionClient,
+    get_openai_claim_extraction_schema,
+    get_openai_requirement_extraction_schema,
+    to_strict_json_schema,
+    validate_strict_json_schema,
+)
 from agentcontract.constraints.models import ConstraintSource, ConstraintStrength, RuleEffect
 from agentcontract.extraction.claims import ClaimExtractor
 from agentcontract.extraction.exceptions import ClientExtractionError
-from agentcontract.extraction.models import DiagnosticSeverity
+from agentcontract.extraction.models import (
+    DiagnosticSeverity,
+    get_claim_extraction_schema,
+    get_requirement_extraction_schema,
+)
 from agentcontract.extraction.requirements import RequirementExtractor
 
 
@@ -272,14 +282,16 @@ def test_openai_client_response_format_mode_configurable() -> None:
     assert res1 == {"result": "ok"}
     assert len(captured_payloads) == 1
     p1 = captured_payloads[-1]
+    expected_strict_schema = to_strict_json_schema(schema)
     assert p1["response_format"] == {
         "type": "json_schema",
         "json_schema": {
             "name": "my_task",
             "strict": True,
-            "schema": schema,
+            "schema": expected_strict_schema,
         },
     }
+    validate_strict_json_schema(p1["response_format"]["json_schema"]["schema"])
 
     # Explicit json_object mode (OpenAI JSON Mode for compatible providers)
     client_json_obj = OpenAICompatibleExtractionClient(
@@ -314,4 +326,229 @@ def test_structured_outputs_zero_hidden_retries_on_network_error() -> None:
 
     assert len(attempts) == 1
     assert client.call_count == 1
+
+
+def test_strict_json_schema_validator_rules() -> None:
+    """validate_strict_json_schema must reject non-compliant schemas and accept valid strict schemas."""
+    # Valid strict schema
+    valid_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "title": {"type": "string"},
+            "count": {"type": "integer"},
+        },
+        "required": ["count", "title"],
+    }
+    validate_strict_json_schema(valid_schema)
+
+    # Missing additionalProperties: False
+    invalid_no_add_props = {
+        "type": "object",
+        "properties": {"title": {"type": "string"}},
+        "required": ["title"],
+    }
+    with pytest.raises(AssertionError, match="additionalProperties: False"):
+        validate_strict_json_schema(invalid_no_add_props)
+
+    # Properties not equal to required keys
+    invalid_missing_required = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "title": {"type": "string"},
+            "optional_field": {"type": ["string", "null"]},
+        },
+        "required": ["title"],
+    }
+    with pytest.raises(AssertionError, match="properties keys != required keys"):
+        validate_strict_json_schema(invalid_missing_required)
+
+    # Unrestricted object without properties
+    invalid_unrestricted = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "meta": {"type": "object"},
+        },
+        "required": ["meta"],
+    }
+    with pytest.raises(AssertionError, match="unrestricted object"):
+        validate_strict_json_schema(invalid_unrestricted)
+
+
+def test_requirement_schema_strict_compatible() -> None:
+    """The requirement extraction schema sent to OpenAI must be strict Structured Outputs compatible."""
+    strict_schema = to_strict_json_schema(get_requirement_extraction_schema())
+    validate_strict_json_schema(strict_schema)
+
+    # Helper function produces identical validated schema
+    direct_openai_schema = get_openai_requirement_extraction_schema()
+    validate_strict_json_schema(direct_openai_schema)
+    assert strict_schema == direct_openai_schema
+
+    # Detailed structural checks:
+    # 1. Root object
+    assert strict_schema["type"] == "object"
+    assert strict_schema["additionalProperties"] is False
+    assert set(strict_schema["properties"].keys()) == set(strict_schema["required"])
+
+    # 2. Constraints array items
+    constraint_item = strict_schema["properties"]["constraints"]["items"]
+    assert constraint_item["type"] == "object"
+    assert constraint_item["additionalProperties"] is False
+    assert set(constraint_item["properties"].keys()) == set(constraint_item["required"])
+
+    # 3. Scope object
+    scope = constraint_item["properties"]["scope"]
+    assert scope["type"] == "object"
+    assert scope["additionalProperties"] is False
+    assert set(scope["properties"].keys()) == set(scope["required"])
+    # selectors must NOT be exposed
+    assert "selectors" not in scope["properties"]
+    # optional target_type and description must be nullable
+    assert "null" in scope["properties"]["target_type"]["type"]
+    assert "null" in scope["properties"]["description"]["type"]
+
+    # 4. Compliance scope object
+    comp_scope = constraint_item["properties"]["compliance_scope"]
+    assert "anyOf" in comp_scope
+    anyof_types = [
+        v.get("type") if isinstance(v, dict) else None for v in comp_scope["anyOf"]
+    ]
+    assert "null" in anyof_types
+    inner_scope = [v for v in comp_scope["anyOf"] if v.get("type") == "object"][0]
+    assert inner_scope["additionalProperties"] is False
+    assert set(inner_scope["properties"].keys()) == set(inner_scope["required"])
+    assert "selectors" not in inner_scope["properties"]
+
+
+def test_claim_schema_strict_compatible() -> None:
+    """The claim extraction schema sent to OpenAI must be strict Structured Outputs compatible."""
+    strict_schema = to_strict_json_schema(get_claim_extraction_schema())
+    validate_strict_json_schema(strict_schema)
+
+    # Helper function produces identical validated schema
+    direct_openai_schema = get_openai_claim_extraction_schema()
+    validate_strict_json_schema(direct_openai_schema)
+    assert strict_schema == direct_openai_schema
+
+    # Detailed structural checks:
+    # 1. Root object
+    assert strict_schema["type"] == "object"
+    assert strict_schema["additionalProperties"] is False
+    assert set(strict_schema["properties"].keys()) == set(strict_schema["required"])
+
+    # 2. Claim items
+    claim_item = strict_schema["properties"]["claims"]["items"]
+    assert claim_item["type"] == "object"
+    assert claim_item["additionalProperties"] is False
+    assert set(claim_item["properties"].keys()) == set(claim_item["required"])
+
+    # metadata must NOT be exposed
+    assert "metadata" not in claim_item["properties"]
+
+    # All optional fields must be nullable and in required
+    for opt_field in ["call_id", "tool_name", "command", "target_path", "expected_exit_code"]:
+        assert opt_field in claim_item["properties"]
+        assert opt_field in claim_item["required"]
+        assert "null" in claim_item["properties"][opt_field]["type"]
+
+
+def test_openai_client_captured_payload_has_strict_compatible_schema() -> None:
+    """Verify that HTTP payloads actually captured over the wire contain strict-compatible schemas."""
+    captured_requests = []
+
+    def mock_transport(req: urllib.request.Request):
+        captured_requests.append(req)
+        # Return valid minimal mock responses
+        body = json.loads(req.data.decode("utf-8"))
+        task_name = body["response_format"]["json_schema"]["name"]
+        if task_name == "extract_requirements":
+            resp_content = {
+                "constraints": [
+                    {
+                        "name": "safe_write",
+                        "description": "Do not delete root",
+                        "strength": "HARD",
+                        "rule_effect": "DENY",
+                        "scope": {
+                            "target_type": None,
+                            "paths": ["/root"],
+                            "tools": [],
+                            "actions": ["FILE_DELETE"],
+                            "description": None,
+                        },
+                        "compliance_scope": None,
+                    }
+                ]
+            }
+        else:
+            resp_content = {
+                "claims": [
+                    {
+                        "claim_type": "TESTS_PASSED",
+                        "description": "Tests passed",
+                        "call_id": None,
+                        "tool_name": None,
+                        "command": "pytest",
+                        "target_path": None,
+                        "expected_exit_code": 0,
+                    }
+                ]
+            }
+        return json.dumps({
+            "choices": [{"message": {"content": json.dumps(resp_content)}}]
+        }).encode("utf-8")
+
+    client = OpenAICompatibleExtractionClient(
+        api_key="sk-test",
+        transport=mock_transport,
+    )
+
+    # 1. Requirement extraction over wire
+    req_extractor = RequirementExtractor(client=client)
+    res_req = req_extractor.extract(
+        text="Never delete /root",
+        source=ConstraintSource.USER,
+    )
+    assert len(res_req.items) == 1
+    assert client.call_count == 1
+    assert len(captured_requests) == 1
+
+    req_payload = json.loads(captured_requests[0].data.decode("utf-8"))
+    assert req_payload["response_format"]["type"] == "json_schema"
+    assert req_payload["response_format"]["json_schema"]["strict"] is True
+    sent_req_schema = req_payload["response_format"]["json_schema"]["schema"]
+    validate_strict_json_schema(sent_req_schema)
+
+    # 2. Claim extraction over wire
+    claim_extractor = ClaimExtractor(client=client)
+    res_claim = claim_extractor.extract(
+        text="All tests passed",
+        trace_id="tr_wire_001",
+    )
+    assert len(res_claim.items) == 1
+    assert client.call_count == 2
+    assert len(captured_requests) == 2
+
+    claim_payload = json.loads(captured_requests[1].data.decode("utf-8"))
+    assert claim_payload["response_format"]["type"] == "json_schema"
+    assert claim_payload["response_format"]["json_schema"]["strict"] is True
+    sent_claim_schema = claim_payload["response_format"]["json_schema"]["schema"]
+    validate_strict_json_schema(sent_claim_schema)
+
+
+def test_openai_client_env_var_configuration(monkeypatch) -> None:
+    """Client respects OPENAI_MODEL, OPENAI_BASE_URL, and OPENAI_RESPONSE_FORMAT env vars."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env-key-999")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-4o")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://custom.openai.endpoint/v1")
+    monkeypatch.setenv("OPENAI_RESPONSE_FORMAT", "json_object")
+
+    client = OpenAICompatibleExtractionClient()
+    assert client.model == "gpt-4o"
+    assert client.base_url == "https://custom.openai.endpoint/v1"
+    assert client.response_format_mode == "json_object"
+
 
