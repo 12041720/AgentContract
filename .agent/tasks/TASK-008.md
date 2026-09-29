@@ -1,10 +1,10 @@
 # TASK-008 — External Integration Adapters and OpenTelemetry Bridge
 
-**Status:** READY_FOR_EXECUTOR  
+**Status:** CHANGES_REQUESTED  
 **Milestone:** M4 — Integration-ready project  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-008-integrations`  
-**Main-agent review:** pending
+**Main-agent review:** changes requested
 
 ## Objective
 
@@ -138,7 +138,109 @@ None. Ready for main agent review.
 
 > Main agent only.
 
-**Verdict:** PENDING
+**Verdict:** CHANGES_REQUESTED — NARROW INTEGRATION FIXES
 
-**Next instruction:**  
-Do not start TASK-009 until this section says ACCEPTED.
+**Reviewed implementation:** `8a11a0c079926c2f98a1f01df380aef2b8484429`  
+**Reviewed branch head/report:** `f25ee22bff8216c5f0907dd5b79f5101b6afa612`
+
+**Verified strengths:**
+- external tool adapter boundary exists;
+- OpenAI-compatible extraction client is isolated from core and issues exactly one request per extraction call;
+- caller provenance / trace scope still overrides provider output;
+- malformed provider JSON and HTTP/network errors are rejected;
+- environment-variable API key flow exists;
+- quickstart covers requirement extraction -> runtime -> claim extraction -> EvidenceGate;
+- executor reports 253 tests passing on local Python 3.12.9;
+- current OpenAI client uses JSON mode and downstream strict Draft/domain validation, so provider output still cannot directly become trusted state.
+
+### BLOCKER 1 — emitted "OTLP JSON" uses invalid traceId/spanId values
+
+`OTelTraceExport.to_otlp_dict()` currently writes AgentContract IDs directly into:
+
+```json
+{
+  "traceId": "quickstart_trace_001",
+  "spanId": "evt_..."
+}
+```
+
+Real OTLP trace IDs must be 16-byte IDs represented as 32 hex characters, and span IDs must be 8-byte IDs represented as 16 hex characters. AgentContract's domain IDs are arbitrary strings and must remain preserved, but they cannot be used directly as wire-level OTLP IDs.
+
+**Required fix:**
+- preserve original AgentContract `trace_id`, `event_id`, `parent_id`, `call_id`, `session_id` as explicit `agentcontract.*` attributes;
+- derive deterministic valid OTLP wire IDs from AgentContract IDs (for example stable hashing):
+  - traceId = deterministic 16-byte / 32-hex ID from AgentContract trace_id;
+  - spanId = deterministic 8-byte / 16-hex ID from AgentContract event_id;
+  - parentSpanId = deterministic mapping of parent event ID;
+- mapping must be stable: same AgentContract ID always yields the same OTLP ID;
+- IDs must not be all-zero;
+- `OTelSpan` may expose both original AgentContract IDs and OTLP wire IDs, or keep originals in attributes and use separate wire fields;
+- `to_otlp_dict()` must emit only valid OTLP wire IDs.
+
+**Required tests:**
+1. emitted `traceId` matches `^[0-9a-fA-F]{32}$`;
+2. emitted `spanId/parentSpanId` match `^[0-9a-fA-F]{16}$` when present;
+3. stable mapping across repeated export;
+4. different event IDs map to different span IDs for test fixtures;
+5. original AgentContract correlation IDs remain inspectable in attributes.
+
+### BLOCKER 2 — external changed/accessed paths silently coerce malformed values to strings
+
+`ToolEventAdapter.to_tool_execution_outcome()` currently uses:
+
+```python
+str(p).strip()
+```
+
+for external `changed_paths/accessed_paths`.
+
+Therefore malformed external input such as:
+
+```python
+{"changed_paths": [123, True]}
+```
+
+can silently become `("123", "True")`.
+
+This conflicts with the adapter contract that malformed external records are rejected and with the deterministic strict typing already enforced in TASK-003/TASK-006.
+
+**Required fix:**
+- external changed/accessed path collections must be ordered list/tuple;
+- every item must already be a non-empty string;
+- reject int/bool/nested mappings/lists/objects instead of coercing;
+- continue rejecting set/frozenset;
+- apply the same strict rule to explicit `changed_paths/accessed_paths` arguments.
+
+Add regression tests for invalid numeric/bool/nested values.
+
+### HARDENING — use schema-enforced Structured Outputs where supported
+
+Current OpenAI request uses:
+
+```json
+"response_format": {"type": "json_object"}
+```
+
+This is valid older JSON mode, and downstream AgentContract validation is still authoritative. However, current OpenAI API documentation recommends `json_schema` Structured Outputs for models that support it.
+
+Do **not** add hidden retries/fallback requests.
+
+Acceptable v0.1 options:
+- keep JSON mode as the compatibility default and add an explicit configurable `json_schema` mode; or
+- use `json_schema` by default for OpenAI endpoints while allowing callers to select `json_object` for less-capable compatible providers.
+
+In either case, still treat the returned object as untrusted and run existing Draft/domain validation.
+
+### REQUIRED RE-CHECK
+
+- local Python 3.12.9 only;
+- OpenAI-compatible client still makes exactly one HTTP request per extraction call;
+- no API keys in repository or error logs;
+- `python -m pytest tests/adapters/ -v`;
+- `python -m pytest -v`;
+- offline quickstart remains green;
+- update Executor Report with exact pushed commit SHA.
+
+**Next instruction:**
+Fix these two blockers (and the narrow structured-output hardening) on `task/TASK-008-integrations`. Do not start TASK-009.
+
