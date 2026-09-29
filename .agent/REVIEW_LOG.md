@@ -532,3 +532,23 @@ Next:
 **Next:** fix TASK-008 narrow integration issues; TASK-009 remains blocked.
 
 ---
+
+## 2026-09-29 — TASK-008 second integration review
+
+**Implementation reviewed:** `0a148bb2a9c40142fce59cab1462d3e7047f9e03`
+
+**Verdict:** CHANGES_REQUESTED — FINAL API COMPATIBILITY FIX
+
+**Verified fixed:**
+- valid deterministic OTLP wire IDs;
+- original AgentContract correlation IDs preserved;
+- strict external path typing;
+- configurable json_schema/json_object request mode;
+- exactly one provider request, no hidden retries.
+
+**Remaining blocker:**
+- core extraction JSON Schemas are not strict OpenAI Structured Outputs compatible: not all properties are required and at least one nested object remains open/free-form.
+
+**Next:** make the actual schema sent by the OpenAI adapter strict-compatible, update quickstart env configuration, rerun tests. TASK-009 remains blocked.
+
+---
