@@ -52,12 +52,15 @@ def run_quickstart() -> int:
         model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
         base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
         response_format = os.environ.get("OPENAI_RESPONSE_FORMAT", "json_schema")
-        print(f"[1] Using OpenAICompatibleExtractionClient (model={model}, mode={response_format}, base_url={base_url}).")
+        timeout_env = os.environ.get("OPENAI_TIMEOUT")
+        timeout = float(timeout_env) if timeout_env else 120.0
+        print(f"[1] Using OpenAICompatibleExtractionClient (model={model}, mode={response_format}, timeout={timeout}s, base_url={base_url}).")
         client = OpenAICompatibleExtractionClient(
             model=model,
             base_url=base_url,
             response_format_mode=response_format,
             api_key=api_key,
+            timeout=timeout,
         )
     else:
         print("[1] OPENAI_API_KEY not detected; using deterministic offline client for demo.")
@@ -70,6 +73,7 @@ def run_quickstart() -> int:
                     "rule_effect": "DENY",
                     "strength": "HARD",
                     "scope": {
+                        "target_type": "filesystem",
                         "paths": ["secrets/prod.key", "secrets/*"],
                         "actions": ["FILE_WRITE", "FILE_DELETE", "TOOL_CALL"],
                     },
@@ -110,11 +114,17 @@ def run_quickstart() -> int:
         source=ConstraintSource.USER,
         author="User",
         source_location="chat_prompt_001",
+        strict=False,
     )
+
+    if req_result.diagnostics:
+        print(f"    Extraction diagnostics ({len(req_result.diagnostics)}):")
+        for diag in req_result.diagnostics:
+            print(f"    - [{diag.severity}] {diag.message}")
 
     print(f"    Extracted {len(req_result.items)} formal constraint(s):")
     for c in req_result.items:
-        print(f"    - [{c.strength}] {c.name} (Effect: {c.rule_effect}, Paths: {c.scope.paths})")
+        print(f"    - [{c.strength}] {c.name} (Effect: {c.rule_effect}, Paths: {c.scope.paths}, TargetType: {c.scope.target_type})")
 
     # -------------------------------------------------------------------------
     # 3. Initialize Runtime with Constraints
@@ -151,6 +161,7 @@ def run_quickstart() -> int:
         action_kind=ActionKind.FILE_READ,
         tool_name="read_file",
         target_path="src/main.py",
+        target_type="filesystem",
         paths=("src/main.py",),
     )
     res1 = runtime.execute(act1, executor=simulated_executor)
@@ -161,12 +172,17 @@ def run_quickstart() -> int:
         action_kind=ActionKind.FILE_WRITE,
         tool_name="write_file",
         target_path="secrets/prod.key",
+        target_type="filesystem",
         paths=("secrets/prod.key",),
     )
     res2 = runtime.execute(act2, executor=simulated_executor)
     print(f"    Action 2 (write secrets/prod.key): {res2.pre_decision.decision} -> Blocked: {res2.is_blocked}")
     print(f"    Reason: {res2.pre_decision.reason}")
     print(f"    Tool actually executed? {res2.executed} (Safe!)")
+
+    if not res2.is_blocked or res2.executed:
+        print("\n[!] CRITICAL FAILURE: Prohibited write to 'secrets/prod.key' was NOT blocked by SpecGuard!")
+        return 1
 
     # Action 3: Run pytest
     act3 = Action(

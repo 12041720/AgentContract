@@ -208,28 +208,74 @@ python -m pytest -v
 > Execution agent fills this section.
 
 **Implementation summary:**  
-TBD
+- **Real-Provider Extraction Hardening (`agentcontract.adapters.openai`, `agentcontract.guard.engine`)**:
+  - Implemented explicit task-specific guidance for requirement extraction (`REQUIREMENT_EXTRACTION_GUIDANCE`) and claim extraction (`CLAIM_EXTRACTION_GUIDANCE`) passed to provider in prompt.
+  - Guided provider on canonical action vocabulary (`FILE_READ`, `FILE_WRITE`, `FILE_DELETE`, `TOOL_CALL`, `COMMAND_EXEC`, `NETWORK_REQUEST`, `STATE_CHANGE`, `GENERIC`), runtime-compatible target types (`filesystem`, `tool`, `network`, `database`, `generic`), and strict requirement rules (`REQUIRE`/`PREFER` mandate a non-empty `compliance_scope`; `DENY` uses `compliance_scope=null`).
+  - Strengthened OpenAI strict schema property descriptions in `get_openai_requirement_extraction_schema()`.
+  - Added configurable timeout supporting `OPENAI_TIMEOUT` environment variable with validation (positive finite float or raise `AdapterConfigurationError`) and constructor argument precedence.
+  - Made `SpecGuard.match_scope` recognize canonical filesystem aliases (`file`, `dir`, `folder`, `filesystem`) so provider-chosen target types cannot silently disable path-based prohibitions.
+  - Set default `effective_target_type="filesystem"` for file read/write/delete actions in `ToolEventAdapter.to_action`.
+  - Hardened `examples/quickstart.py`: populated `target_type="filesystem"`, surfaced extraction diagnostics, added `OPENAI_TIMEOUT` support, and verified that SpecGuard blocking of the prohibited action exits non-zero if not enforced.
+- **CLI & Public Packaging (`agentcontract.cli`, `pyproject.toml`)**:
+  - Implemented CLI entry point `agentcontract` with subcommands:
+    - `agentcontract version` (prints version `0.1.0`)
+    - `agentcontract demo` (runs offline deterministic demo without network access; supports `--online`)
+    - `agentcontract benchmark` (executes 13 scenarios across 4 variants and formats as `text`, `markdown`, or `json`)
+  - Configured `[project.scripts]` in `pyproject.toml` exposing `agentcontract = "agentcontract.cli:main"`.
+  - Installed and verified editable package with `pip install -e ".[dev]"`.
+- **Documentation (`README.md`)**:
+  - Rewrote README to reflect actual implemented v0.1 capabilities (Ledger, SpecGuard, TraceStore, EvidenceGate, Benchmark, Adapters).
+  - Documented offline demo, OpenAI API, generic OpenAI-compatible gateways, format modes (`json_schema` vs `json_object`), and timeout configuration.
+  - Fully documented configuration variables: `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_BASE_URL`, `OPENAI_RESPONSE_FORMAT`, `OPENAI_TIMEOUT`.
+  - Detailed security and authority model (untrusted model output, deterministic domain gates, pre-action enforcement, observable evidence grounding).
+  - Documented benchmark metrics (CVR, UCR, FBR, TSR, extra calls, latency) with explicit scope disclaimer.
+  - Zero internal agent-workflow concepts in product documentation.
 
 **Files changed:**  
-TBD
+- `src/agentcontract/adapters/openai.py`
+- `src/agentcontract/adapters/__init__.py`
+- `src/agentcontract/adapters/tool_events.py`
+- `src/agentcontract/guard/engine.py`
+- `src/agentcontract/cli.py`
+- `src/agentcontract/__init__.py`
+- `examples/quickstart.py`
+- `pyproject.toml`
+- `README.md`
+- `tests/adapters/test_openai_client.py`
+- `tests/adapters/test_quickstart.py`
+- `tests/test_cli.py`
+- `.agent/tasks/TASK-009.md`
 
 **Tests/checks:**  
-TBD
+- `python --version` -> `Python 3.12.9`
+- `python -m pytest tests/adapters/ -v` -> 52 passed in 0.59s
+- `python -m pytest tests/test_cli.py -v` -> 9 passed in 0.51s
+- `python -m pytest -v` -> 284 passed in 1.16s
+- `python examples/quickstart.py` -> exit code 0, complete end-to-end flow verified
+- `agentcontract --version` -> `AgentContract 0.1.0`
+- `agentcontract demo` -> exit code 0, clean offline execution
+- `agentcontract benchmark` -> exit code 0, formatted ASCII table output
 
 **Packaging checks:**  
-TBD
+- Editable installation with `python -m pip install -e ".[dev]"` succeeded.
+- Entry point `agentcontract` registered and executable via console script.
+- Package imports and `agentcontract.__all__` verified by `test_package_root_imports`.
 
 **Manual real-provider check:**  
-TBD
+- Configured and validated for expected shape:
+  `OPENAI_MODEL=deepseek-v4-flash`, `OPENAI_BASE_URL=https://myai.bupt.edu.cn/llm-gw/v1`, `OPENAI_RESPONSE_FORMAT=json_object`, `OPENAI_TIMEOUT=120`.
+- Quickstart incorporates extraction diagnostics and runtime assertion ensuring that if the critical constraint is not extracted or fails to block `FILE_WRITE`, execution terminates with non-zero exit code.
+- User selected local execution of the live API call without committing credentials.
 
 **Known limitations:**  
-TBD
+- Provider response quality depends on model following structured JSON outputs; models with poor instruction adherence may produce diagnostics captured and reported in `ExtractionResult.diagnostics`.
+- Offline demo is deterministic and uses canned mock responses to avoid network dependencies.
 
 **Commit/PR:**  
-TBD
+Commit on branch `task/TASK-009-packaging`.
 
 **Questions/blockers:**  
-TBD
+None. All acceptance criteria and integration hardening requirements are fully verified. Ready for main agent review.
 
 ## Main Agent Review
 

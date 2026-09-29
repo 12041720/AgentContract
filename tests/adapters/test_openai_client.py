@@ -552,3 +552,285 @@ def test_openai_client_env_var_configuration(monkeypatch) -> None:
     assert client.response_format_mode == "json_object"
 
 
+def test_captured_provider_prompt_includes_guidance() -> None:
+    """Captured provider prompt must include task-specific guidance on compliance_scope, actions, and target_type."""
+    captured = []
+
+    def mock_transport(req: urllib.request.Request):
+        captured.append(req)
+        return json.dumps({
+            "choices": [{"message": {"content": json.dumps({"constraints": []})}}]
+        }).encode("utf-8")
+
+    client = OpenAICompatibleExtractionClient(api_key="sk-test", transport=mock_transport)
+
+    # 1. Requirement prompt guidance
+    client.extract(task="extract_requirements", text="Do not touch secrets", schema={})
+    assert len(captured) == 1
+    req_body = json.loads(captured[0].data.decode("utf-8"))
+    user_prompt = req_body["messages"][1]["content"]
+
+    assert "Extraction Guidelines for Requirements & Constraints:" in user_prompt
+    assert "compliance_scope" in user_prompt
+    assert "FILE_WRITE" in user_prompt
+    assert "filesystem" in user_prompt
+    assert "target_type" in user_prompt
+    assert "DENY constraints prohibit actions" in user_prompt
+    assert "REQUIRE / PREFER constraints mandate actions" in user_prompt
+
+    # 2. Claim prompt guidance
+    captured.clear()
+
+    def mock_claim_transport(req: urllib.request.Request):
+        captured.append(req)
+        return json.dumps({
+            "choices": [{"message": {"content": json.dumps({"claims": []})}}]
+        }).encode("utf-8")
+
+    client_claim = OpenAICompatibleExtractionClient(api_key="sk-test", transport=mock_claim_transport)
+    client_claim.extract(task="extract_claims", text="Tests passed", schema={})
+    assert len(captured) == 1
+    claim_body = json.loads(captured[0].data.decode("utf-8"))
+    claim_user_prompt = claim_body["messages"][1]["content"]
+
+    assert "Extraction Guidelines for Claims:" in claim_user_prompt
+    assert "TESTS_PASSED" in claim_user_prompt
+    assert "FILE_EXISTS" in claim_user_prompt
+
+
+def test_openai_timeout_configuration(monkeypatch) -> None:
+    """Client handles valid and invalid timeout configuration correctly."""
+    # 1. Default timeout is 30.0
+    c1 = OpenAICompatibleExtractionClient(api_key="sk-test")
+    assert c1.timeout == 30.0
+
+    # 2. Constructor timeout argument
+    c2 = OpenAICompatibleExtractionClient(api_key="sk-test", timeout=120)
+    assert c2.timeout == 120.0
+
+    # 3. Environment variable OPENAI_TIMEOUT
+    monkeypatch.setenv("OPENAI_TIMEOUT", "45.5")
+    c3 = OpenAICompatibleExtractionClient(api_key="sk-test")
+    assert c3.timeout == 45.5
+
+    # 4. Constructor argument overrides env var
+    c4 = OpenAICompatibleExtractionClient(api_key="sk-test", timeout=60)
+    assert c4.timeout == 60.0
+
+    # 5. Invalid timeout <= 0 raises AdapterConfigurationError
+    with pytest.raises(AdapterConfigurationError, match="positive finite number"):
+        OpenAICompatibleExtractionClient(api_key="sk-test", timeout=0)
+
+    with pytest.raises(AdapterConfigurationError, match="positive finite number"):
+        OpenAICompatibleExtractionClient(api_key="sk-test", timeout=-10)
+
+    # 6. Invalid non-numeric or non-finite env var raises AdapterConfigurationError
+    monkeypatch.setenv("OPENAI_TIMEOUT", "invalid_num")
+    with pytest.raises(AdapterConfigurationError, match="Invalid OPENAI_TIMEOUT"):
+        OpenAICompatibleExtractionClient(api_key="sk-test")
+
+    monkeypatch.setenv("OPENAI_TIMEOUT", "nan")
+    with pytest.raises(AdapterConfigurationError, match="Invalid OPENAI_TIMEOUT"):
+        OpenAICompatibleExtractionClient(api_key="sk-test")
+
+
+def test_malformed_require_without_compliance_scope_rejected() -> None:
+    """Malformed REQUIRE without compliance_scope is rejected under domain validation."""
+    from agentcontract.extraction.exceptions import ExtractionValidationError
+
+    mock_resp = {
+        "constraints": [
+            {
+                "name": "mandate_tests",
+                "description": "All tests must pass",
+                "strength": "HARD",
+                "rule_effect": "REQUIRE",
+                "scope": {
+                    "target_type": "tool",
+                    "paths": [],
+                    "tools": ["pytest"],
+                    "actions": ["COMMAND_EXEC"],
+                    "description": None,
+                },
+                "compliance_scope": None,
+            }
+        ]
+    }
+
+    client = OpenAICompatibleExtractionClient(
+        api_key="sk-test",
+        transport=lambda req: json.dumps({"choices": [{"message": {"content": json.dumps(mock_resp)}}]}).encode("utf-8"),
+    )
+
+    # Strict mode -> raises ExtractionValidationError
+    extractor = RequirementExtractor(client=client)
+    with pytest.raises(ExtractionValidationError, match="requires a non-empty compliance_scope"):
+        extractor.extract(text="Run tests", source=ConstraintSource.USER, strict=True)
+
+    # Non-strict mode -> returns diagnostic
+    res = extractor.extract(text="Run tests", source=ConstraintSource.USER, strict=False)
+    assert len(res.items) == 0
+    assert len(res.diagnostics) == 1
+    assert "compliance_scope" in res.diagnostics[0].message
+
+
+def test_valid_require_with_compliance_scope_survives() -> None:
+    """Valid REQUIRE with compliance_scope successfully converts to durable Constraint."""
+    mock_resp = {
+        "constraints": [
+            {
+                "name": "mandate_audit_log",
+                "description": "All file modifications must be logged",
+                "strength": "HARD",
+                "rule_effect": "REQUIRE",
+                "scope": {
+                    "target_type": "filesystem",
+                    "paths": ["src/*"],
+                    "tools": [],
+                    "actions": ["FILE_WRITE"],
+                    "description": None,
+                },
+                "compliance_scope": {
+                    "target_type": "tool",
+                    "paths": ["logs/audit.log"],
+                    "tools": ["log_audit"],
+                    "actions": ["FILE_WRITE"],
+                    "description": None,
+                },
+            }
+        ]
+    }
+
+    client = OpenAICompatibleExtractionClient(
+        api_key="sk-test",
+        transport=lambda req: json.dumps({"choices": [{"message": {"content": json.dumps(mock_resp)}}]}).encode("utf-8"),
+    )
+
+    extractor = RequirementExtractor(client=client)
+    res = extractor.extract(text="All file writes must be logged", source=ConstraintSource.USER)
+    assert len(res.items) == 1
+    c = res.items[0]
+    assert c.rule_effect == RuleEffect.REQUIRE
+    assert c.compliance_scope is not None
+    assert c.compliance_scope.tools == ("log_audit",)
+
+
+def test_extracted_deny_blocks_file_write_end_to_end() -> None:
+    """Critical protected-file DENY blocks FILE_WRITE end-to-end through SpecGuard."""
+    from agentcontract.constraints.ledger import ConstraintLedger
+    from agentcontract.guard.engine import SpecGuard
+    from agentcontract.guard.models import Action, ActionKind, DecisionKind
+
+    # Simulate realistic provider response for 'Never modify secrets/prod.key'
+    mock_resp = {
+        "constraints": [
+            {
+                "name": "protect_keys",
+                "description": "Never write to secrets/prod.key",
+                "strength": "HARD",
+                "rule_effect": "DENY",
+                "scope": {
+                    "target_type": "filesystem",
+                    "paths": ["secrets/prod.key"],
+                    "tools": ["write_file"],
+                    "actions": ["FILE_WRITE"],
+                    "description": None,
+                },
+                "compliance_scope": None,
+            }
+        ]
+    }
+
+    client = OpenAICompatibleExtractionClient(
+        api_key="sk-test",
+        transport=lambda req: json.dumps({"choices": [{"message": {"content": json.dumps(mock_resp)}}]}).encode("utf-8"),
+    )
+
+    extractor = RequirementExtractor(client=client)
+    res = extractor.extract(text="Do NOT write to secrets/prod.key", source=ConstraintSource.USER)
+    assert len(res.items) == 1
+    constraint = res.items[0]
+
+    # Evaluate action against SpecGuard
+    ledger = ConstraintLedger()
+    ledger.add(constraint)
+    guard = SpecGuard(ledger=ledger)
+
+    # 1. Prohibited FILE_WRITE action -> BLOCKED
+    act_prohibited = Action(
+        action_kind=ActionKind.FILE_WRITE,
+        tool_name="write_file",
+        target_path="secrets/prod.key",
+        target_type="filesystem",
+        paths=("secrets/prod.key",),
+    )
+    decision = guard.evaluate(act_prohibited)
+    assert decision.decision == DecisionKind.BLOCK
+    assert constraint.id in decision.matched_constraint_ids
+
+    # 2. Allowed FILE_READ action -> ALLOWED
+    act_allowed = Action(
+        action_kind=ActionKind.FILE_READ,
+        tool_name="read_file",
+        target_path="src/main.py",
+        target_type="filesystem",
+        paths=("src/main.py",),
+    )
+    decision_allowed = guard.evaluate(act_allowed)
+    assert decision_allowed.decision == DecisionKind.ALLOW
+
+
+def test_provider_target_type_compatibility_file_and_filesystem() -> None:
+    """If provider emits target_type='file', SpecGuard still blocks action with target_type='filesystem'."""
+    from agentcontract.constraints.ledger import ConstraintLedger
+    from agentcontract.guard.engine import SpecGuard
+    from agentcontract.guard.models import Action, ActionKind, DecisionKind
+
+    # Provider emitted target_type='file'
+    mock_resp = {
+        "constraints": [
+            {
+                "name": "protect_prod_key",
+                "description": "Do not write to prod.key",
+                "strength": "HARD",
+                "rule_effect": "DENY",
+                "scope": {
+                    "target_type": "file",  # Provider-chosen alias
+                    "paths": ["secrets/prod.key"],
+                    "tools": [],
+                    "actions": ["FILE_WRITE"],
+                    "description": None,
+                },
+                "compliance_scope": None,
+            }
+        ]
+    }
+
+    client = OpenAICompatibleExtractionClient(
+        api_key="sk-test",
+        transport=lambda req: json.dumps({"choices": [{"message": {"content": json.dumps(mock_resp)}}]}).encode("utf-8"),
+    )
+
+    extractor = RequirementExtractor(client=client)
+    res = extractor.extract(text="Do not write to secrets/prod.key", source=ConstraintSource.USER)
+    assert len(res.items) == 1
+    constraint = res.items[0]
+
+    ledger = ConstraintLedger()
+    ledger.add(constraint)
+    guard = SpecGuard(ledger=ledger)
+
+    # Runtime action using canonical 'filesystem' target type -> MUST BE BLOCKED
+    act = Action(
+        action_kind=ActionKind.FILE_WRITE,
+        tool_name="write_file",
+        target_path="secrets/prod.key",
+        target_type="filesystem",
+        paths=("secrets/prod.key",),
+    )
+    decision = guard.evaluate(act)
+    assert decision.decision == DecisionKind.BLOCK
+    assert constraint.id in decision.matched_constraint_ids
+
+
+

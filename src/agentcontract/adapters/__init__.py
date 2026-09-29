@@ -6,7 +6,9 @@ from agentcontract.adapters.exceptions import (
     AdapterValidationError,
 )
 from agentcontract.adapters.openai import (
+    CLAIM_EXTRACTION_GUIDANCE,
     OpenAICompatibleExtractionClient,
+    REQUIREMENT_EXTRACTION_GUIDANCE,
     get_openai_claim_extraction_schema,
     get_openai_requirement_extraction_schema,
     to_strict_json_schema,
@@ -41,7 +43,9 @@ __all__ = [
     "to_otlp_span_id",
     "to_otlp_trace_id",
     # Extraction provider
+    "CLAIM_EXTRACTION_GUIDANCE",
     "OpenAICompatibleExtractionClient",
+    "REQUIREMENT_EXTRACTION_GUIDANCE",
     "get_openai_claim_extraction_schema",
     "get_openai_requirement_extraction_schema",
     "to_strict_json_schema",

@@ -109,8 +109,13 @@ def match_scope(scope: ConstraintScope, action: Action) -> bool:
     if scope.target_type is not None and scope.target_type.strip():
         if not action.target_type:
             return False
-        if scope.target_type.strip().lower() != action.target_type.strip().lower():
-            return False
+        st = scope.target_type.strip().lower()
+        at = action.target_type.strip().lower()
+        if st != at:
+            # Canonical filesystem target-type aliases: "file", "dir", "folder", "filesystem"
+            fs_aliases = {"file", "dir", "folder", "filesystem"}
+            if not (st in fs_aliases and at in fs_aliases):
+                return False
 
     # 2. Tools dimension
     if scope.tools:
