@@ -15,9 +15,9 @@
 - Task: **TASK-009 — Integration hardening, CLI/API packaging, and documentation**
 - Task file: `.agent/tasks/TASK-009.md`
 - Work branch: `task/TASK-009-packaging`
-- Status: **READY_FOR_EXECUTOR**
+- Status: **CHANGES_REQUESTED**
 - Owner: Execution agent
-- Main-agent review: TASK-008 accepted and integrated; TASK-009 ready for execution
+- Main-agent review: TASK-009 final claim/docs/package fixes requested after review of `460c1357ce3cc26b04d70095efe9e27ef038bf8f`
 
 ## Main-agent checkpoint
 
@@ -33,7 +33,7 @@
 - TASK-007 accepted and integrated to `main` as `12dad52df4b2901905c2ea92c07f8a71d2934d7f`.
 - TASK-008 accepted and integrated to `main` as `0469bf7a0204eba56aaa2fe44d65edfb63b8b4ac`.
 - External adapters, OTLP bridge, and real OpenAI-compatible extraction quickstart are available.
-- Live provider trial exposed extraction/runtime semantic gaps (REQUIRE without compliance_scope and target_type mismatch); TASK-009 now includes final integration hardening before packaging.
+- Live provider requirement enforcement is now working, but TASK-009 still needs claim-grounding, documentation-accuracy, and clean packaging fixes before v0.1 acceptance.
 
 ## Current design decisions
 
