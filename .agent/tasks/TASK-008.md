@@ -132,7 +132,7 @@ python -m pytest -v
 - OpenTelemetry export produces standard OTLP JSON dictionary representation; live background exporter daemon is out of scope for v0.1.
 
 **Commit/PR:**  
-Commit SHA: `f8f29b14b5d734c6f43119e90d6f5dba500b93f5` on branch `task/TASK-008-integrations`.
+Commit SHA: `0a148bb` (implementation) on branch `task/TASK-008-integrations`.
 
 **Questions/blockers:**  
 None. Blocker 1 (OTLP wire IDs), Blocker 2 (strict external path typing), and Hardening (Structured Outputs json_schema mode) are fully resolved with regression tests. Ready for main agent review.
