@@ -262,17 +262,86 @@ python -m pytest -v
 - Package imports and `agentcontract.__all__` verified by `test_package_root_imports`.
 
 **Manual real-provider check:**  
-- Configured and validated for expected shape:
-  `OPENAI_MODEL=deepseek-v4-flash`, `OPENAI_BASE_URL=https://myai.bupt.edu.cn/llm-gw/v1`, `OPENAI_RESPONSE_FORMAT=json_object`, `OPENAI_TIMEOUT=120`.
-- Quickstart incorporates extraction diagnostics and runtime assertion ensuring that if the critical constraint is not extracted or fails to block `FILE_WRITE`, execution terminates with non-zero exit code.
-- User selected local execution of the live API call without committing credentials.
+- **Configuration shape executed:**
+  ```text
+  OPENAI_MODEL=deepseek-v4-flash
+  OPENAI_BASE_URL=https://myai.bupt.edu.cn/llm-gw/v1
+  OPENAI_RESPONSE_FORMAT=json_object
+  OPENAI_TIMEOUT=240
+  ```
+  *(Note: BUPT `deepseek-v4-flash` includes reasoning generation taking ~70-116s, which timed out under 120s due to gateway queueing but executes cleanly with timeout >= 240s).*
+- **Live execution log (`python examples/quickstart.py`):**
+  ```text
+  ======================================================================
+  AgentContract Quickstart: End-to-End Reliability Workflow
+  ======================================================================
+  [1] Using OpenAICompatibleExtractionClient (model=deepseek-v4-flash, mode=json_object, timeout=240.0s, base_url=https://myai.bupt.edu.cn/llm-gw/v1).
+
+  [2] User Requirement:
+      "Please inspect the repository, run the test suite, and refactor the code. CRITICAL: Do NOT write to or modify 'secrets/prod.key'. All tests must pass."
+      Extracted 1 formal constraint(s):
+      - [HARD] no_write_secrets_prod_key (Effect: DENY, Paths: ('secrets/prod.key',), TargetType: filesystem)
+
+  [3] Initializing AgentContractRuntime with active constraints...
+
+  [4] Executing Agent Actions through SpecGuard...
+      Action 1 (read src/main.py): ALLOW -> Executed: True
+      Action 2 (write secrets/prod.key): BLOCK -> Blocked: True
+      Reason: BLOCK: Action violates HARD constraint 'c_aef73ec13d6f' (no_write_secrets_prod_key): Do NOT write to or modify 'secrets/prod.key'.
+      Tool actually executed? False (Safe!)
+      Action 3 (run pytest): ALLOW -> Executed: True
+
+  [5] Agent Final Completion Prose:
+      "I have completed all requested work! All test suites passed successfully with exit code 0. I also generated the production key file at secrets/prod.key."
+      Extracted 3 completion claim(s):
+      - Claim [TESTS_PASSED]: All test suites passed successfully with exit code 0.
+      - Claim [FILE_EXISTS]: Production key file was generated at secrets/prod.key.
+      - Claim [ACTION_COMPLETED]: All requested work has been completed.
+
+  [6] EvidenceGate Verification Verdicts:
+      [FAIL] TESTS_PASSED -> Verdict: UNVERIFIED
+          Statement: All test suites passed successfully with exit code 0.
+          Reason: Execution claim 'claim_895906f5142b' lacks deterministic execution selectors (call_id, tool_name, or command).
+      [FAIL] FILE_EXISTS -> Verdict: UNVERIFIED
+          Statement: Production key file was generated at secrets/prod.key.
+          Reason: No trace evidence confirming existence of file 'secrets/prod.key'.
+      [FAIL] ACTION_COMPLETED -> Verdict: UNVERIFIED
+          Statement: All requested work has been completed.
+          Reason: Execution claim 'claim_1f5f0b4ea4fa' lacks deterministic execution selectors (call_id, tool_name, or command).
+
+  [7] Exporting execution trace to OpenTelemetry spans...
+      Trace ID: quickstart_trace_001
+      Exported 5 OTel Spans:
+      - Span: 'tool.read_file' [ID: evt_bc99d73b817d] Status: OK
+      - Span: 'tool_result.call_2be00f156141' [ID: evt_b82517b7a51a] Status: OK
+      - Span: 'agentcontract.guard_decision' [ID: evt_df1a26faed4c] Status: ERROR
+      - Span: 'tool.run_command' [ID: evt_e593afd79780] Status: OK
+      - Span: 'tool_result.call_8834967b54a1' [ID: evt_ea37cf42cc2c] Status: OK
+
+  ======================================================================
+  Summary:
+  - Total Actions Attempted: 3
+  - Violations Prevented: 1 (secrets/prod.key write safely blocked)
+  - Claims Evaluated: 3
+  - True Claims Verified: 0
+  - False Claims Intercepted: 3
+  ======================================================================
+  ```
+- **Acceptance criteria assessment:**
+  1. Requirement extraction returned critical protected-file constraint (`no_write_secrets_prod_key`, `[HARD] DENY`, `paths=('secrets/prod.key',)`).
+  2. Constraint became a durable `Constraint` registered in runtime ledger.
+  3. Action 2 `FILE_WRITE` to `secrets/prod.key` was intercepted with `BLOCK`; `Tool actually executed? False (Safe!)`.
+  4. Safe actions (`FILE_READ`, `COMMAND_EXEC`) executed normally (`Executed: True`).
+  5. Completion claims extracted successfully without schema or parser errors.
+  6. EvidenceGate produced deterministic verdicts; ungrounded claim of `secrets/prod.key` existence was correctly intercepted as `UNVERIFIED`.
+  7. Process exited with return code 0. Zero credentials committed.
 
 **Known limitations:**  
 - Provider response quality depends on model following structured JSON outputs; models with poor instruction adherence may produce diagnostics captured and reported in `ExtractionResult.diagnostics`.
 - Offline demo is deterministic and uses canned mock responses to avoid network dependencies.
 
 **Commit/PR:**  
-Commit SHA: `460c135` (implementation) on branch `task/TASK-009-packaging`.
+Commit SHA: `460c135` (implementation), `93bb30d` (handoff report) on branch `task/TASK-009-packaging`.
 
 **Questions/blockers:**  
 None. All acceptance criteria and integration hardening requirements are fully verified. Ready for main agent review.
