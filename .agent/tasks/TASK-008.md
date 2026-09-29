@@ -141,109 +141,104 @@ None. Blocker 1 (OTLP wire IDs), Blocker 2 (strict external path typing), and Ha
 
 > Main agent only.
 
-**Verdict:** CHANGES_REQUESTED — NARROW INTEGRATION FIXES
+**Verdict:** CHANGES_REQUESTED — FINAL API COMPATIBILITY FIX
 
-**Reviewed implementation:** `8a11a0c079926c2f98a1f01df380aef2b8484429`  
-**Reviewed branch head/report:** `f25ee22bff8216c5f0907dd5b79f5101b6afa612`
+**Reviewed implementation:** `0a148bb2a9c40142fce59cab1462d3e7047f9e03`
 
-**Verified strengths:**
-- external tool adapter boundary exists;
-- OpenAI-compatible extraction client is isolated from core and issues exactly one request per extraction call;
-- caller provenance / trace scope still overrides provider output;
-- malformed provider JSON and HTTP/network errors are rejected;
-- environment-variable API key flow exists;
-- quickstart covers requirement extraction -> runtime -> claim extraction -> EvidenceGate;
-- executor reports 253 tests passing on local Python 3.12.9;
-- current OpenAI client uses JSON mode and downstream strict Draft/domain validation, so provider output still cannot directly become trusted state.
+**Previous blockers verified fixed:**
+- OTLP wire IDs are now deterministic valid 32-hex trace IDs / 16-hex span IDs while original AgentContract IDs remain preserved in attributes;
+- external changed/accessed/action path inputs now reject malformed non-string values instead of coercing;
+- OpenAI-compatible adapter supports explicit `json_schema` and `json_object` modes with exactly one request and no hidden retry;
+- executor reports 262 tests passing on local Python 3.12.9.
 
-### BLOCKER 1 — emitted "OTLP JSON" uses invalid traceId/spanId values
+### FINAL BLOCKER — current extraction schemas are not OpenAI strict Structured Outputs compatible
 
-`OTelTraceExport.to_otlp_dict()` currently writes AgentContract IDs directly into:
+The adapter now defaults to:
 
-```json
-{
-  "traceId": "quickstart_trace_001",
-  "spanId": "evt_..."
-}
+```python
+response_format_mode="json_schema"
+strict=True
 ```
 
-Real OTLP trace IDs must be 16-byte IDs represented as 32 hex characters, and span IDs must be 8-byte IDs represented as 16 hex characters. AgentContract's domain IDs are arbitrary strings and must remain preserved, but they cannot be used directly as wire-level OTLP IDs.
+but the schemas produced by `get_requirement_extraction_schema()` and `get_claim_extraction_schema()` are not valid strict Structured Outputs schemas.
+
+Current examples:
+
+```python
+# Constraint item:
+properties = {
+    "name": ...,
+    "description": ...,
+    "strength": ...,
+    "rule_effect": ...,
+    "scope": ...,
+    "compliance_scope": ...,
+}
+required = ["name", "description", "strength", "rule_effect", "scope"]
+```
+
+and claim items define many optional properties but only require:
+
+```python
+["claim_type", "description"]
+```
+
+OpenAI strict Structured Outputs requires all object properties to be required; optional values should be represented as nullable fields. Every object must also set `additionalProperties: false`.
+
+Additionally, `scope.selectors` is currently:
+
+```python
+{"type": "object"}
+```
+
+which is not a closed strict object schema.
+
+This means mock tests pass but a real OpenAI API request in the default `json_schema` mode can fail before model execution.
 
 **Required fix:**
-- preserve original AgentContract `trace_id`, `event_id`, `parent_id`, `call_id`, `session_id` as explicit `agentcontract.*` attributes;
-- derive deterministic valid OTLP wire IDs from AgentContract IDs (for example stable hashing):
-  - traceId = deterministic 16-byte / 32-hex ID from AgentContract trace_id;
-  - spanId = deterministic 8-byte / 16-hex ID from AgentContract event_id;
-  - parentSpanId = deterministic mapping of parent event ID;
-- mapping must be stable: same AgentContract ID always yields the same OTLP ID;
-- IDs must not be all-zero;
-- `OTelSpan` may expose both original AgentContract IDs and OTLP wire IDs, or keep originals in attributes and use separate wire fields;
-- `to_otlp_dict()` must emit only valid OTLP wire IDs.
+
+Choose one of these clean approaches:
+
+### Preferred
+Add provider-specific strict-schema conversion/builders for the OpenAI adapter while leaving core extraction schemas/domain models provider-neutral.
+
+For every object sent under `strict=True`:
+- `additionalProperties: false`;
+- every declared property appears in `required`;
+- optional semantic values use nullable types, e.g. `["string", "null"]`;
+- optional arrays/objects are represented in a strict-compatible way;
+- do not include unconstrained/free-form object fields such as `selectors` unless represented with a supported closed schema.
+
+For requirement extraction, fields not needed from the provider (e.g. spoof/audit-only authority fields) should preferably be omitted from the provider schema rather than invited as model output.
+
+For claim extraction, optional claim selectors may be emitted as required-but-nullable fields.
+
+### Alternative
+Make `json_object` the compatibility default and require explicit opt-in to `json_schema` only when a strict-compatible schema builder is supplied.
+
+However, if `examples/quickstart.py` is meant to demonstrate current OpenAI Structured Outputs, the preferred approach is better.
 
 **Required tests:**
-1. emitted `traceId` matches `^[0-9a-fA-F]{32}$`;
-2. emitted `spanId/parentSpanId` match `^[0-9a-fA-F]{16}$` when present;
-3. stable mapping across repeated export;
-4. different event IDs map to different span IDs for test fixtures;
-5. original AgentContract correlation IDs remain inspectable in attributes.
+1. recursively assert every object in the actual schema sent in `json_schema` mode has `additionalProperties is False`;
+2. recursively assert each object's `required` contains every key in `properties`;
+3. optional semantic fields are nullable instead of omitted from `required`;
+4. generated requirement schema and claim schema pass the strict-schema validator;
+5. captured HTTP request contains the strict-compatible transformed schema;
+6. exactly one HTTP request remains true;
+7. offline quickstart remains green.
 
-### BLOCKER 2 — external changed/accessed paths silently coerce malformed values to strings
+**Also update quickstart:**
+- allow `OPENAI_BASE_URL` and `OPENAI_RESPONSE_FORMAT` environment variables in addition to `OPENAI_MODEL`;
+- default `OPENAI_RESPONSE_FORMAT=json_schema` only after the schema is strict-compatible;
+- users of less-capable OpenAI-compatible endpoints can set `json_object`.
 
-`ToolEventAdapter.to_tool_execution_outcome()` currently uses:
-
-```python
-str(p).strip()
-```
-
-for external `changed_paths/accessed_paths`.
-
-Therefore malformed external input such as:
-
-```python
-{"changed_paths": [123, True]}
-```
-
-can silently become `("123", "True")`.
-
-This conflicts with the adapter contract that malformed external records are rejected and with the deterministic strict typing already enforced in TASK-003/TASK-006.
-
-**Required fix:**
-- external changed/accessed path collections must be ordered list/tuple;
-- every item must already be a non-empty string;
-- reject int/bool/nested mappings/lists/objects instead of coercing;
-- continue rejecting set/frozenset;
-- apply the same strict rule to explicit `changed_paths/accessed_paths` arguments.
-
-Add regression tests for invalid numeric/bool/nested values.
-
-### HARDENING — use schema-enforced Structured Outputs where supported
-
-Current OpenAI request uses:
-
-```json
-"response_format": {"type": "json_object"}
-```
-
-This is valid older JSON mode, and downstream AgentContract validation is still authoritative. However, current OpenAI API documentation recommends `json_schema` Structured Outputs for models that support it.
-
-Do **not** add hidden retries/fallback requests.
-
-Acceptable v0.1 options:
-- keep JSON mode as the compatibility default and add an explicit configurable `json_schema` mode; or
-- use `json_schema` by default for OpenAI endpoints while allowing callers to select `json_object` for less-capable compatible providers.
-
-In either case, still treat the returned object as untrusted and run existing Draft/domain validation.
-
-### REQUIRED RE-CHECK
-
-- local Python 3.12.9 only;
-- OpenAI-compatible client still makes exactly one HTTP request per extraction call;
-- no API keys in repository or error logs;
+**Required re-check:**
+- local Python 3.12.9;
 - `python -m pytest tests/adapters/ -v`;
 - `python -m pytest -v`;
-- offline quickstart remains green;
+- `python examples/quickstart.py`;
 - update Executor Report with exact pushed commit SHA.
 
 **Next instruction:**
-Fix these two blockers (and the narrow structured-output hardening) on `task/TASK-008-integrations`. Do not start TASK-009.
+Apply this final API-compatibility fix on `task/TASK-008-integrations`. Do not start TASK-009.
 
