@@ -573,3 +573,23 @@ Next:
 **Next:** TASK-009 — CLI/API packaging and documentation is active.
 
 ---
+
+## 2026-09-29 — TASK-009 scope expanded after live provider trial
+
+**Status:** READY_FOR_EXECUTOR
+
+A live OpenAI-compatible `deepseek-v4-flash` requirement-extraction run reached the real provider successfully and returned valid JSON, but exposed semantic integration failures before runtime enforcement:
+
+- provider emitted REQUIRE constraints without non-empty `compliance_scope`, correctly rejected by domain validation;
+- provider emitted `target_type="file"`, which can fail exact runtime target-type matching and make a syntactically valid DENY constraint ineffective.
+
+TASK-009 now includes final real-provider extraction hardening before CLI/package/documentation completion.
+
+Additional acceptance requirements include:
+- task-specific extraction guidance for AgentContract semantics;
+- end-to-end proof that extracted critical DENY constraints actually BLOCK matching runtime actions;
+- no silent semantic repair of untrusted provider output;
+- `OPENAI_TIMEOUT` support;
+- manual OpenAI-compatible smoke test after automated tests.
+
+---
