@@ -129,7 +129,7 @@ python -m pytest -v
 - OpenTelemetry export produces standard OTLP JSON dictionary representation; live background exporter daemon is out of scope for v0.1.
 
 **Commit/PR:**  
-Commit SHA: to be filled on commit.
+Commit SHA: `8a11a0c` on branch `task/TASK-008-integrations`.
 
 **Questions/blockers:**  
 None. Ready for main agent review.
