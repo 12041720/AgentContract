@@ -238,3 +238,60 @@ def test_action_observation_mapping() -> None:
     assert obs.changed_paths == ("output.log",)
     assert obs.action_kind == ActionKind.FILE_WRITE
     assert obs.exit_code == 0
+
+
+def test_tool_events_rejects_non_string_paths_in_to_action() -> None:
+    record = {"call_id": "c1", "tool_name": "write_file", "arguments": {}}
+
+    # Non-string types in paths sequence
+    for invalid_path in [123, True, False, {"file": "a.txt"}, ["nested"], object()]:
+        with pytest.raises(AdapterValidationError, match="items must be strings"):
+            ToolEventAdapter.to_action(record, paths=[invalid_path])  # type: ignore[list-item]
+
+    # Bare string is rejected (must be ordered list/tuple)
+    with pytest.raises(AdapterValidationError, match="ordered list or tuple"):
+        ToolEventAdapter.to_action(record, paths="not_a_list")  # type: ignore[arg-type]
+
+    # Blank string inside sequence is rejected
+    with pytest.raises(AdapterValidationError, match="cannot be empty or blank"):
+        ToolEventAdapter.to_action(record, paths=["   "])
+
+
+def test_tool_events_rejects_non_string_paths_in_outcome_and_observation() -> None:
+    record = {"call_id": "c1", "status": "SUCCESS"}
+
+    # Explicit argument validation
+    for invalid_val in [123, True, False, {"p": "v"}, ["nested"], 4.5]:
+        with pytest.raises(AdapterValidationError, match="items must be strings"):
+            ToolEventAdapter.to_tool_execution_outcome(record, changed_paths=[invalid_val])  # type: ignore[list-item]
+
+        with pytest.raises(AdapterValidationError, match="items must be strings"):
+            ToolEventAdapter.to_tool_execution_outcome(record, accessed_paths=[invalid_val])  # type: ignore[list-item]
+
+    # Bare strings are rejected for changed_paths / accessed_paths
+    with pytest.raises(AdapterValidationError, match="ordered list or tuple"):
+        ToolEventAdapter.to_tool_execution_outcome(record, changed_paths="foo.txt")  # type: ignore[arg-type]
+
+    with pytest.raises(AdapterValidationError, match="ordered list or tuple"):
+        ToolEventAdapter.to_tool_execution_outcome(record, accessed_paths="foo.txt")  # type: ignore[arg-type]
+
+    # External record dictionary paths validation
+    with pytest.raises(AdapterValidationError, match="items must be strings"):
+        ToolEventAdapter.to_tool_execution_outcome({"call_id": "c1", "changed_paths": [123, True]})
+
+    with pytest.raises(AdapterValidationError, match="items must be strings"):
+        ToolEventAdapter.to_tool_execution_outcome({"call_id": "c1", "accessed_paths": [{"nested": "dict"}]})
+
+    with pytest.raises(AdapterValidationError, match="ordered sequence"):
+        ToolEventAdapter.to_tool_execution_outcome({"call_id": "c1", "changed_paths": {"set_a", "set_b"}})
+
+    with pytest.raises(AdapterValidationError, match="ordered sequence"):
+        ToolEventAdapter.to_tool_execution_outcome({"call_id": "c1", "accessed_paths": frozenset(["fz_a"])})
+
+    # ActionObservation propagates the same strict validation
+    with pytest.raises(AdapterValidationError, match="items must be strings"):
+        ToolEventAdapter.to_action_observation(record, changed_paths=[999])  # type: ignore[list-item]
+
+    with pytest.raises(AdapterValidationError, match="items must be strings"):
+        ToolEventAdapter.to_action_observation({"call_id": "c1", "changed_paths": [False]})
+

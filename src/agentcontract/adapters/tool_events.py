@@ -34,6 +34,35 @@ class ExternalToolResultRecord(Protocol):
     output: Any
 
 
+def _validate_path_sequence(paths: Any, field_name: str) -> tuple[str, ...]:
+    """Strictly validate that paths is an ordered sequence (list or tuple) of non-empty strings.
+
+    Rejects sets, frozensets, non-sequences, bare strings, and elements that are not instances of str
+    (such as int, bool, dict, list, float, or custom objects). Coercion via str() is forbidden.
+    """
+    if paths is None:
+        return ()
+    if isinstance(paths, (set, frozenset)):
+        raise AdapterValidationError(f"{field_name} must be an ordered sequence (list or tuple), not a set/frozenset.")
+    if not isinstance(paths, (list, tuple)):
+        raise AdapterValidationError(
+            f"{field_name} must be an ordered list or tuple of strings, got {type(paths).__name__}."
+        )
+
+    result: list[str] = []
+    for idx, item in enumerate(paths):
+        if not isinstance(item, str):
+            raise AdapterValidationError(
+                f"{field_name} items must be strings; item at index {idx} has invalid type '{type(item).__name__}'."
+            )
+        s = item.strip()
+        if not s:
+            raise AdapterValidationError(f"{field_name} item at index {idx} cannot be empty or blank.")
+        if s not in result:
+            result.append(s)
+    return tuple(result)
+
+
 class ToolEventAdapter:
     """Adapter translating external agent/tool records into AgentContract domain models."""
 
@@ -168,10 +197,10 @@ class ToolEventAdapter:
             Validated immutable Action.
 
         Raises:
-            AdapterValidationError: If record is invalid or paths is a set/frozenset.
+            AdapterValidationError: If record is invalid, paths is not an ordered sequence of strings,
+                or items are non-strings.
         """
-        if isinstance(paths, (set, frozenset)):
-            raise AdapterValidationError("paths must be an ordered sequence (list or tuple), not a set/frozenset.")
+        validated_paths = _validate_path_sequence(paths, "paths")
 
         tool_call = cls.to_tool_call(record)
 
@@ -186,8 +215,8 @@ class ToolEventAdapter:
                     break
 
         effective_paths: tuple[str, ...]
-        if paths:
-            effective_paths = tuple(str(p).strip() for p in paths if str(p).strip())
+        if validated_paths:
+            effective_paths = validated_paths
         elif effective_target_path:
             effective_paths = (effective_target_path,)
         else:
@@ -371,32 +400,31 @@ class ToolEventAdapter:
             Validated immutable ToolExecutionOutcome.
 
         Raises:
-            AdapterValidationError: If record is malformed or path sequences are sets/frozensets.
+            AdapterValidationError: If record is malformed, path sequences are sets/frozensets,
+                or path items are non-strings.
         """
-        if isinstance(changed_paths, (set, frozenset)) or isinstance(accessed_paths, (set, frozenset)):
-            raise AdapterValidationError("paths must be an ordered sequence (list or tuple), not a set/frozenset.")
+        validated_changed = _validate_path_sequence(changed_paths, "changed_paths")
+        validated_accessed = _validate_path_sequence(accessed_paths, "accessed_paths")
 
         tool_result = cls.to_tool_result(record)
 
         # Merge path records if present in external mapping
-        merged_changed = list(changed_paths)
-        merged_accessed = list(accessed_paths)
+        merged_changed = list(validated_changed)
+        merged_accessed = list(validated_accessed)
         if isinstance(record, Mapping):
             ext_changed = record.get("changed_paths")
-            if ext_changed:
-                if isinstance(ext_changed, (set, frozenset)):
-                    raise AdapterValidationError("changed_paths in record cannot be a set/frozenset.")
-                for p in ext_changed:
-                    if str(p).strip() and str(p).strip() not in merged_changed:
-                        merged_changed.append(str(p).strip())
+            if ext_changed is not None:
+                record_changed = _validate_path_sequence(ext_changed, "changed_paths in record")
+                for p in record_changed:
+                    if p not in merged_changed:
+                        merged_changed.append(p)
 
             ext_accessed = record.get("accessed_paths")
-            if ext_accessed:
-                if isinstance(ext_accessed, (set, frozenset)):
-                    raise AdapterValidationError("accessed_paths in record cannot be a set/frozenset.")
-                for p in ext_accessed:
-                    if str(p).strip() and str(p).strip() not in merged_accessed:
-                        merged_accessed.append(str(p).strip())
+            if ext_accessed is not None:
+                record_accessed = _validate_path_sequence(ext_accessed, "accessed_paths in record")
+                for p in record_accessed:
+                    if p not in merged_accessed:
+                        merged_accessed.append(p)
 
         return ToolExecutionOutcome.from_tool_result(
             tool_result,
@@ -436,7 +464,8 @@ class ToolEventAdapter:
             Validated immutable ActionObservation.
 
         Raises:
-            AdapterValidationError: If record is malformed or path sequences are sets/frozensets.
+            AdapterValidationError: If record is malformed, path sequences are sets/frozensets,
+                or path items are non-strings.
         """
         outcome = cls.to_tool_execution_outcome(
             record,

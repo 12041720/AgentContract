@@ -100,6 +100,8 @@ from agentcontract.adapters import (
     OTelTraceExport,
     OpenAICompatibleExtractionClient,
     ToolEventAdapter,
+    to_otlp_span_id,
+    to_otlp_trace_id,
 )
 
 __version__ = "0.1.0"
@@ -198,6 +200,8 @@ __all__ = [
     "OTelTraceExport",
     "OpenAICompatibleExtractionClient",
     "ToolEventAdapter",
+    "to_otlp_span_id",
+    "to_otlp_trace_id",
     # Meta
     "__version__",
 ]

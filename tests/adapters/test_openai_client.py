@@ -251,3 +251,67 @@ def test_claim_extractor_with_openai_client_trace_scoping() -> None:
     claim = res.items[0]
     assert claim.trace_id == "authoritative_trace_123", "Caller trace_id must be strictly enforced."
     assert claim.claim_id != "c_fake"
+
+
+def test_openai_client_response_format_mode_configurable() -> None:
+    """Verify json_schema (default) and json_object payload structures."""
+    captured_payloads = []
+
+    def mock_transport(req: urllib.request.Request):
+        captured_payloads.append(json.loads(req.data.decode("utf-8")))
+        return json.dumps({
+            "choices": [{"message": {"content": json.dumps({"result": "ok"})}}]
+        }).encode("utf-8")
+
+    schema = {"type": "object", "properties": {"result": {"type": "string"}}}
+
+    # Default mode is json_schema (OpenAI Structured Outputs)
+    client_default = OpenAICompatibleExtractionClient(api_key="sk-test", transport=mock_transport)
+    assert client_default.response_format_mode == "json_schema"
+    res1 = client_default.extract(task="my_task", text="sample text", schema=schema)
+    assert res1 == {"result": "ok"}
+    assert len(captured_payloads) == 1
+    p1 = captured_payloads[-1]
+    assert p1["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "my_task",
+            "strict": True,
+            "schema": schema,
+        },
+    }
+
+    # Explicit json_object mode (OpenAI JSON Mode for compatible providers)
+    client_json_obj = OpenAICompatibleExtractionClient(
+        api_key="sk-test",
+        response_format_mode="json_object",
+        transport=mock_transport,
+    )
+    assert client_json_obj.response_format_mode == "json_object"
+    res2 = client_json_obj.extract(task="my_task", text="sample text", schema=schema)
+    assert res2 == {"result": "ok"}
+    assert len(captured_payloads) == 2
+    p2 = captured_payloads[-1]
+    assert p2["response_format"] == {"type": "json_object"}
+
+
+def test_openai_client_response_format_mode_invalid_rejected() -> None:
+    with pytest.raises(AdapterConfigurationError, match="Invalid response_format_mode"):
+        OpenAICompatibleExtractionClient(api_key="sk-test", response_format_mode="yaml")
+
+
+def test_structured_outputs_zero_hidden_retries_on_network_error() -> None:
+    """Ensure exactly one attempt is made; errors are never silently retried."""
+    attempts = []
+
+    def failing_transport(req: urllib.request.Request):
+        attempts.append(req)
+        raise urllib.error.URLError("DNS resolution failed")
+
+    client = OpenAICompatibleExtractionClient(api_key="sk-test", transport=failing_transport)
+    with pytest.raises(ClientExtractionError, match="DNS resolution failed"):
+        client.extract(task="task1", text="text1", schema={})
+
+    assert len(attempts) == 1
+    assert client.call_count == 1
+

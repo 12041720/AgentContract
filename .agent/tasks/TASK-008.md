@@ -85,23 +85,26 @@ python -m pytest -v
   2. **External Tool Event Adapters (`agentcontract.adapters.tool_events`)**:
      - Protocols: `ExternalToolCallRecord`, `ExternalToolResultRecord`.
      - `ToolEventAdapter`: converts external tool-call and tool-result records (flat dicts, OpenAI function call format, Python objects) into `ToolCall`, `Action`, `ToolResult`, `ToolExecutionOutcome`, and `ActionObservation`.
-     - Normalizes result statuses (`SUCCESS`, `ERROR`, `TIMEOUT`, `CANCELLED`), decodes JSON strings, auto-discovers target paths from arguments, and strictly rejects sets/frozensets or malformed inputs.
+     - Normalizes result statuses (`SUCCESS`, `ERROR`, `TIMEOUT`, `CANCELLED`), decodes JSON strings, auto-discovers target paths from arguments.
+     - **Strict Path Typing**: `changed_paths`, `accessed_paths`, and `paths` strictly accept ordered `list` or `tuple` of non-empty strings. Bare strings, sets, frozensets, and non-sequence containers are rejected. Elements must be instances of `str`; non-string types (`int`, `bool`, `dict`, `list`, `float`, custom objects) are rejected with `AdapterValidationError` instead of coercing via `str()`.
   3. **OpenTelemetry Trace Bridge (`agentcontract.adapters.otel`)**:
      - Models: `OTelSpan`, `OTelTraceExport`.
      - `OTelTraceBridge`: exports `TraceStore` and `TraceEvent`s into OpenTelemetry-compatible spans.
-     - Strictly preserves correlation IDs (`trace_id`, `session_id`, `call_id`, `event_id`, `parent_id`).
-     - Ensures deterministic key-sorted attributes and clean standard OTLP JSON dictionary export (`to_otlp_dict()`) with zero dependency on external telemetry collectors.
+     - Strictly preserves correlation IDs (`trace_id`, `session_id`, `call_id`, `event_id`, `parent_id`) in `OTelSpan` properties and explicit `agentcontract.*` attributes.
+     - **OTLP Wire IDs**: Implemented deterministic, stable mappings `to_otlp_trace_id` (32 hex characters) and `to_otlp_span_id` (16 hex characters) with non-zero guarantee and lowercase normalization.
+     - `to_otlp_dict()` emits standard 32-hex `traceId`, 16-hex `spanId`, and 16-hex / `""` `parentSpanId`.
   4. **OpenAI-Compatible Extraction Client (`agentcontract.adapters.openai`)**:
      - `OpenAICompatibleExtractionClient`: practical extraction client implementing `StructuredExtractionClient` protocol using standard library `urllib.request` (zero third-party dependencies).
-     - Issues exactly one model request per extraction call (no hidden retries duplicating side effects).
-     - Treats model response as completely untrusted raw JSON, preventing model from overriding caller authority, author, source location, or trace scoping.
+     - **Zero Hidden Retries**: issues exactly one model request per extraction call; errors raise immediately without duplicate side effects.
+     - **Structured Outputs**: configurable `response_format_mode`: supports `"json_schema"` (OpenAI Structured Outputs, default) and `"json_object"` (JSON Mode for compatible providers). Validates format mode on init.
+     - Downstream AgentContract Draft and domain validation remains authoritative; model output is treated as untrusted raw JSON.
      - Handles secrets securely (reads `OPENAI_API_KEY`, masks key in `__repr__`).
   5. **Top-Level Package Integration**:
-     - Re-exported all adapter models and classes at `agentcontract` root.
+     - Re-exported all adapter models and helper functions (`to_otlp_trace_id`, `to_otlp_span_id`) at `agentcontract` root.
   6. **End-to-End Demonstration (`examples/quickstart.py`)**:
      - Executable walkthrough: natural-language user requirement -> structured extraction -> hard constraint in ledger -> guarded execution via SpecGuard (allowed read, blocked write, allowed pytest) -> completion prose -> claim extraction -> EvidenceGate verification -> OTel trace export.
      - Operates offline out-of-the-box using deterministic client or online with `OPENAI_API_KEY`.
-- Added 31 unit and integration tests across `tests/adapters/`.
+- 40 unit and integration tests across `tests/adapters/`.
 
 **Files changed:**  
 - `src/agentcontract/adapters/__init__.py`
@@ -120,19 +123,19 @@ python -m pytest -v
 
 **Tests/checks:**  
 - `python --version` -> `Python 3.12.9`
-- `python -m pytest tests/adapters/ -v` -> 31 passed in 0.71s
-- `python -m pytest -v` -> 253 passed in 2.96s (zero regressions across TASK-001 through TASK-007)
-- `python examples/quickstart.py` -> exit code 0, complete end-to-end flow verified
+- `python -m pytest tests/adapters/ -v` -> 40 passed in 0.43s
+- `python -m pytest -v` -> 262 passed in 1.05s (zero regressions across TASK-001 through TASK-008)
+- `python examples/quickstart.py` -> exit code 0, complete end-to-end flow verified offline
 
 **Known limitations:**  
 - `OpenAICompatibleExtractionClient` uses synchronous standard library HTTP requests; streaming / async transports are deferred to future tasks if needed.
 - OpenTelemetry export produces standard OTLP JSON dictionary representation; live background exporter daemon is out of scope for v0.1.
 
 **Commit/PR:**  
-Commit SHA: `8a11a0c` on branch `task/TASK-008-integrations`.
+Commit SHA: `f8f29b14b5d734c6f43119e90d6f5dba500b93f5` on branch `task/TASK-008-integrations`.
 
 **Questions/blockers:**  
-None. Ready for main agent review.
+None. Blocker 1 (OTLP wire IDs), Blocker 2 (strict external path typing), and Hardening (Structured Outputs json_schema mode) are fully resolved with regression tests. Ready for main agent review.
 
 ## Main Agent Review
 

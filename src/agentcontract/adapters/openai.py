@@ -32,6 +32,7 @@ class OpenAICompatibleExtractionClient(StructuredExtractionClient):
         base_url: str = "https://api.openai.com/v1",
         timeout: float = 30.0,
         temperature: float = 0.0,
+        response_format_mode: str = "json_schema",
         transport: Callable[[urllib.request.Request], Any] | None = None,
     ) -> None:
         """Initialize the extraction client.
@@ -42,13 +43,22 @@ class OpenAICompatibleExtractionClient(StructuredExtractionClient):
             base_url: Base API URL (defaults to 'https://api.openai.com/v1').
             timeout: Network request timeout in seconds.
             temperature: Sampling temperature (defaults to 0.0 for deterministic extraction).
+            response_format_mode: Extraction format mode: 'json_schema' (OpenAI Structured Outputs,
+                recommended default) or 'json_object' (JSON Mode for compatible providers).
             transport: Optional custom transport callable for tests or custom HTTP handling.
         """
+        if response_format_mode not in ("json_schema", "json_object"):
+            raise AdapterConfigurationError(
+                f"Invalid response_format_mode '{response_format_mode}'. "
+                f"Supported modes are 'json_schema' (OpenAI Structured Outputs) and 'json_object' (JSON Mode)."
+            )
+
         self._model = model.strip()
         self._api_key = api_key.strip() if api_key else os.environ.get("OPENAI_API_KEY")
         self._base_url = base_url.rstrip("/")
         self._timeout = float(timeout)
         self._temperature = float(temperature)
+        self._response_format_mode = response_format_mode
         self._transport = transport
         self._call_count: int = 0
 
@@ -61,6 +71,11 @@ class OpenAICompatibleExtractionClient(StructuredExtractionClient):
     def base_url(self) -> str:
         """Base API URL."""
         return self._base_url
+
+    @property
+    def response_format_mode(self) -> str:
+        """Configured response format mode ('json_schema' or 'json_object')."""
+        return self._response_format_mode
 
     @property
     def call_count(self) -> int:
@@ -126,13 +141,25 @@ class OpenAICompatibleExtractionClient(StructuredExtractionClient):
             f"Target JSON Schema:\n{json.dumps(dict(schema), indent=2)}"
         )
 
+        if self._response_format_mode == "json_schema":
+            resp_format: dict[str, Any] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": task,
+                    "strict": True,
+                    "schema": dict(schema),
+                },
+            }
+        else:
+            resp_format = {"type": "json_object"}
+
         payload: dict[str, Any] = {
             "model": self._model,
             "messages": [
                 {"role": "system", "content": system_content},
                 {"role": "user", "content": user_content},
             ],
-            "response_format": {"type": "json_object"},
+            "response_format": resp_format,
             "temperature": self._temperature,
         }
 

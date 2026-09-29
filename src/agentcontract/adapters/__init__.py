@@ -10,6 +10,8 @@ from agentcontract.adapters.otel import (
     OTelSpan,
     OTelTraceBridge,
     OTelTraceExport,
+    to_otlp_span_id,
+    to_otlp_trace_id,
 )
 from agentcontract.adapters.tool_events import (
     ExternalToolCallRecord,
@@ -30,6 +32,8 @@ __all__ = [
     "OTelSpan",
     "OTelTraceBridge",
     "OTelTraceExport",
+    "to_otlp_span_id",
+    "to_otlp_trace_id",
     # Extraction provider
     "OpenAICompatibleExtractionClient",
 ]

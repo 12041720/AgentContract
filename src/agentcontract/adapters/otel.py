@@ -2,9 +2,11 @@
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
+import hashlib
 import json
+import re
 from typing import Any
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 from typing_extensions import Self
 
 from agentcontract.common.immutable import FrozenDict
@@ -18,6 +20,38 @@ from agentcontract.trace.models import (
     TraceEvent,
 )
 from agentcontract.trace.store import TraceStore
+
+
+def to_otlp_trace_id(raw_id: str) -> str:
+    """Deterministically convert an arbitrary AgentContract trace identifier into a 32-hex OTLP trace ID.
+
+    If raw_id is already a valid non-zero 32-hex string, it is normalized to lowercase.
+    Otherwise, a stable SHA-256 hash prefix is used to produce a valid 32-hex string.
+    The resulting ID is guaranteed to be non-zero and match ^[0-9a-f]{32}$.
+    """
+    cleaned = raw_id.strip()
+    if len(cleaned) == 32 and re.fullmatch(r"^[0-9a-fA-F]{32}$", cleaned) and cleaned != "0" * 32:
+        return cleaned.lower()
+    hashed = hashlib.sha256(f"agentcontract:trace:{cleaned}".encode("utf-8")).hexdigest()[:32]
+    if hashed == "0" * 32:
+        return "1" + "0" * 31
+    return hashed
+
+
+def to_otlp_span_id(raw_id: str) -> str:
+    """Deterministically convert an arbitrary AgentContract event identifier into a 16-hex OTLP span ID.
+
+    If raw_id is already a valid non-zero 16-hex string, it is normalized to lowercase.
+    Otherwise, a stable SHA-256 hash prefix is used to produce a valid 16-hex string.
+    The resulting ID is guaranteed to be non-zero and match ^[0-9a-f]{16}$.
+    """
+    cleaned = raw_id.strip()
+    if len(cleaned) == 16 and re.fullmatch(r"^[0-9a-fA-F]{16}$", cleaned) and cleaned != "0" * 16:
+        return cleaned.lower()
+    hashed = hashlib.sha256(f"agentcontract:event:{cleaned}".encode("utf-8")).hexdigest()[:16]
+    if hashed == "0" * 16:
+        return "1" + "0" * 15
+    return hashed
 
 
 def _to_unix_nano(dt: datetime) -> int:
@@ -54,6 +88,18 @@ class OTelSpan(BaseModel):
     session_id: str | None = Field(
         default=None,
         description="Optional correlated session identifier.",
+    )
+    otlp_trace_id: str = Field(
+        default="",
+        description="Standard 32-hex character OpenTelemetry trace ID.",
+    )
+    otlp_span_id: str = Field(
+        default="",
+        description="Standard 16-hex character OpenTelemetry span ID.",
+    )
+    otlp_parent_span_id: str | None = Field(
+        default=None,
+        description="Standard 16-hex character OpenTelemetry parent span ID.",
     )
     start_time_unix_nano: int = Field(..., ge=0, description="Start timestamp in unix nanoseconds.")
     end_time_unix_nano: int = Field(..., ge=0, description="End timestamp in unix nanoseconds.")
@@ -105,6 +151,16 @@ class OTelSpan(BaseModel):
             return tuple(result)
         return ()
 
+    @model_validator(mode="after")
+    def _populate_otlp_wire_ids(self) -> Self:
+        if not self.otlp_trace_id:
+            object.__setattr__(self, "otlp_trace_id", to_otlp_trace_id(self.trace_id))
+        if not self.otlp_span_id:
+            object.__setattr__(self, "otlp_span_id", to_otlp_span_id(self.span_id))
+        if self.parent_span_id and not self.otlp_parent_span_id:
+            object.__setattr__(self, "otlp_parent_span_id", to_otlp_span_id(self.parent_span_id))
+        return self
+
     def to_dict(self) -> dict[str, Any]:
         """Convert span to a JSON-serializable dictionary."""
         return self.model_dump(mode="json")
@@ -147,9 +203,9 @@ class OTelTraceExport(BaseModel):
                 span_attrs.append({"key": str(k), "value": val_obj})
 
             span_dict = {
-                "traceId": span.trace_id,
-                "spanId": span.span_id,
-                "parentSpanId": span.parent_span_id or "",
+                "traceId": span.otlp_trace_id,
+                "spanId": span.otlp_span_id,
+                "parentSpanId": span.otlp_parent_span_id or "",
                 "name": span.name,
                 "kind": 1,  # SPAN_KIND_INTERNAL
                 "startTimeUnixNano": str(span.start_time_unix_nano),
