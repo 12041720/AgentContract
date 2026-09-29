@@ -508,3 +508,27 @@ Next:
 **Next:** TASK-008 — external integrations and telemetry is active.
 
 ---
+
+## 2026-09-29 — TASK-008 first integration review
+
+**Implementation reviewed:** `8a11a0c079926c2f98a1f01df380aef2b8484429`
+
+**Verdict:** CHANGES_REQUESTED
+
+**Verified strengths:**
+- external tool adapter boundary;
+- exactly-once OpenAI-compatible extraction HTTP request;
+- provider output remains untrusted and caller authority remains enforced;
+- offline/online quickstart path exists;
+- executor reports 253/253 tests passing on local Python 3.12.9.
+
+**Blocking findings:**
+- OTLP JSON uses arbitrary AgentContract IDs directly as OTLP traceId/spanId, which violates OTLP wire ID format;
+- external changed/accessed paths silently stringify malformed non-string values.
+
+**Hardening requested:**
+- configurable schema-enforced Structured Outputs mode, without hidden retries.
+
+**Next:** fix TASK-008 narrow integration issues; TASK-009 remains blocked.
+
+---
