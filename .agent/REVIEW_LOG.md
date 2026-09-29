@@ -593,3 +593,27 @@ Additional acceptance requirements include:
 - manual OpenAI-compatible smoke test after automated tests.
 
 ---
+
+## 2026-09-29 — TASK-009 first final review
+
+**Implementation reviewed:** `460c1357ce3cc26b04d70095efe9e27ef038bf8f`
+
+**Verdict:** CHANGES_REQUESTED
+
+**Verified:**
+- real provider returned durable critical DENY;
+- SpecGuard blocked protected FILE_WRITE before execution;
+- safe actions remained executable;
+- REQUIRE/PREFER guidance and timeout configuration added;
+- CLI/package entry point exists;
+- executor reports 284 tests passing.
+
+**Blocking findings:**
+- claim prompt advertises unsupported FILE_MODIFIED / FILE_ABSENT values not present in ClaimType/schema;
+- real pytest success claim remains UNVERIFIED because extraction omitted deterministic selectors;
+- README falsely claims automatic conflict detection although current ledger requires explicit conflict marking;
+- original TASK-009 acceptance still lacks concrete invalid-online-config, README-command, and built-package smoke checks.
+
+**Next:** narrow final fixes on TASK-009 branch; v0.1 remains unaccepted.
+
+---
