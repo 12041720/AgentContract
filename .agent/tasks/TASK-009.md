@@ -272,7 +272,7 @@ python -m pytest -v
 - Offline demo is deterministic and uses canned mock responses to avoid network dependencies.
 
 **Commit/PR:**  
-Commit on branch `task/TASK-009-packaging`.
+Commit SHA: `460c135` (implementation) on branch `task/TASK-009-packaging`.
 
 **Questions/blockers:**  
 None. All acceptance criteria and integration hardening requirements are fully verified. Ready for main agent review.
