@@ -79,22 +79,60 @@ python -m pytest -v
 > Execution agent fills this section.
 
 **Implementation summary:**  
-TBD
+- Implemented `agentcontract.adapters` package providing clean external integration boundaries and OpenTelemetry mapping without compromising deterministic core guarantees:
+  1. **Domain Exceptions (`agentcontract.adapters.exceptions`)**:
+     - `AdapterError`, `AdapterValidationError`, `AdapterConfigurationError`.
+  2. **External Tool Event Adapters (`agentcontract.adapters.tool_events`)**:
+     - Protocols: `ExternalToolCallRecord`, `ExternalToolResultRecord`.
+     - `ToolEventAdapter`: converts external tool-call and tool-result records (flat dicts, OpenAI function call format, Python objects) into `ToolCall`, `Action`, `ToolResult`, `ToolExecutionOutcome`, and `ActionObservation`.
+     - Normalizes result statuses (`SUCCESS`, `ERROR`, `TIMEOUT`, `CANCELLED`), decodes JSON strings, auto-discovers target paths from arguments, and strictly rejects sets/frozensets or malformed inputs.
+  3. **OpenTelemetry Trace Bridge (`agentcontract.adapters.otel`)**:
+     - Models: `OTelSpan`, `OTelTraceExport`.
+     - `OTelTraceBridge`: exports `TraceStore` and `TraceEvent`s into OpenTelemetry-compatible spans.
+     - Strictly preserves correlation IDs (`trace_id`, `session_id`, `call_id`, `event_id`, `parent_id`).
+     - Ensures deterministic key-sorted attributes and clean standard OTLP JSON dictionary export (`to_otlp_dict()`) with zero dependency on external telemetry collectors.
+  4. **OpenAI-Compatible Extraction Client (`agentcontract.adapters.openai`)**:
+     - `OpenAICompatibleExtractionClient`: practical extraction client implementing `StructuredExtractionClient` protocol using standard library `urllib.request` (zero third-party dependencies).
+     - Issues exactly one model request per extraction call (no hidden retries duplicating side effects).
+     - Treats model response as completely untrusted raw JSON, preventing model from overriding caller authority, author, source location, or trace scoping.
+     - Handles secrets securely (reads `OPENAI_API_KEY`, masks key in `__repr__`).
+  5. **Top-Level Package Integration**:
+     - Re-exported all adapter models and classes at `agentcontract` root.
+  6. **End-to-End Demonstration (`examples/quickstart.py`)**:
+     - Executable walkthrough: natural-language user requirement -> structured extraction -> hard constraint in ledger -> guarded execution via SpecGuard (allowed read, blocked write, allowed pytest) -> completion prose -> claim extraction -> EvidenceGate verification -> OTel trace export.
+     - Operates offline out-of-the-box using deterministic client or online with `OPENAI_API_KEY`.
+- Added 31 unit and integration tests across `tests/adapters/`.
 
 **Files changed:**  
-TBD
+- `src/agentcontract/adapters/__init__.py`
+- `src/agentcontract/adapters/exceptions.py`
+- `src/agentcontract/adapters/tool_events.py`
+- `src/agentcontract/adapters/otel.py`
+- `src/agentcontract/adapters/openai.py`
+- `src/agentcontract/__init__.py`
+- `examples/quickstart.py`
+- `tests/adapters/__init__.py`
+- `tests/adapters/test_tool_events.py`
+- `tests/adapters/test_otel.py`
+- `tests/adapters/test_openai_client.py`
+- `tests/adapters/test_quickstart.py`
+- `.agent/tasks/TASK-008.md`
 
 **Tests/checks:**  
-TBD
+- `python --version` -> `Python 3.12.9`
+- `python -m pytest tests/adapters/ -v` -> 31 passed in 0.71s
+- `python -m pytest -v` -> 253 passed in 2.96s (zero regressions across TASK-001 through TASK-007)
+- `python examples/quickstart.py` -> exit code 0, complete end-to-end flow verified
 
 **Known limitations:**  
-TBD
+- `OpenAICompatibleExtractionClient` uses synchronous standard library HTTP requests; streaming / async transports are deferred to future tasks if needed.
+- OpenTelemetry export produces standard OTLP JSON dictionary representation; live background exporter daemon is out of scope for v0.1.
 
 **Commit/PR:**  
-TBD
+Commit SHA: to be filled on commit.
 
 **Questions/blockers:**  
-TBD
+None. Ready for main agent review.
 
 ## Main Agent Review
 

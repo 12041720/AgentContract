@@ -89,6 +89,18 @@ from agentcontract.benchmark import (
     ScriptedAction,
     get_standard_scenarios,
 )
+from agentcontract.adapters import (
+    AdapterConfigurationError,
+    AdapterError,
+    AdapterValidationError,
+    ExternalToolCallRecord,
+    ExternalToolResultRecord,
+    OTelSpan,
+    OTelTraceBridge,
+    OTelTraceExport,
+    OpenAICompatibleExtractionClient,
+    ToolEventAdapter,
+)
 
 __version__ = "0.1.0"
 
@@ -175,6 +187,17 @@ __all__ = [
     "ScenarioResult",
     "ScriptedAction",
     "get_standard_scenarios",
+    # Adapters
+    "AdapterConfigurationError",
+    "AdapterError",
+    "AdapterValidationError",
+    "ExternalToolCallRecord",
+    "ExternalToolResultRecord",
+    "OTelSpan",
+    "OTelTraceBridge",
+    "OTelTraceExport",
+    "OpenAICompatibleExtractionClient",
+    "ToolEventAdapter",
     # Meta
     "__version__",
 ]
