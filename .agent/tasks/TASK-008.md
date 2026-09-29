@@ -1,10 +1,10 @@
 # TASK-008 — External Integration Adapters and OpenTelemetry Bridge
 
-**Status:** CHANGES_REQUESTED  
+**Status:** ACCEPTED  
 **Milestone:** M4 — Integration-ready project  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-008-integrations`  
-**Main-agent review:** changes requested
+**Main-agent review:** accepted and integrated
 
 ## Objective
 
@@ -104,7 +104,13 @@ python -m pytest -v
   6. **End-to-End Demonstration (`examples/quickstart.py`)**:
      - Executable walkthrough: natural-language user requirement -> structured extraction -> hard constraint in ledger -> guarded execution via SpecGuard (allowed read, blocked write, allowed pytest) -> completion prose -> claim extraction -> EvidenceGate verification -> OTel trace export.
      - Operates offline out-of-the-box using deterministic client or online with `OPENAI_API_KEY`.
-- 40 unit and integration tests across `tests/adapters/`.
+- Added 46 unit and integration tests across `tests/adapters/`.
+  7. **Strict Structured Outputs API Compatibility**:
+     - Added `to_strict_json_schema`: recursively converts schemas into OpenAI strict Structured Outputs compatible schemas (`additionalProperties: false`, all property keys in `required`, unrestricted objects omitted, optional semantic fields made nullable).
+     - Added provider strict schema builders: `get_openai_requirement_extraction_schema()` and `get_openai_claim_extraction_schema()`.
+     - Added recursive validator `validate_strict_json_schema`.
+     - `OpenAICompatibleExtractionClient` automatically applies `to_strict_json_schema` in `json_schema` mode and supports `OPENAI_MODEL`, `OPENAI_BASE_URL`, and `OPENAI_RESPONSE_FORMAT` env vars.
+     - Quickstart supports `OPENAI_MODEL`, `OPENAI_BASE_URL`, and `OPENAI_RESPONSE_FORMAT` (default `json_schema`, compatible `json_object`).
 
 **Files changed:**  
 - `src/agentcontract/adapters/__init__.py`
@@ -123,8 +129,8 @@ python -m pytest -v
 
 **Tests/checks:**  
 - `python --version` -> `Python 3.12.9`
-- `python -m pytest tests/adapters/ -v` -> 40 passed in 0.43s
-- `python -m pytest -v` -> 262 passed in 1.05s (zero regressions across TASK-001 through TASK-008)
+- `python -m pytest tests/adapters/ -v` -> 46 passed in 0.49s
+- `python -m pytest -v` -> 268 passed in 1.39s (zero regressions across TASK-001 through TASK-008)
 - `python examples/quickstart.py` -> exit code 0, complete end-to-end flow verified offline
 
 **Known limitations:**  
@@ -132,113 +138,32 @@ python -m pytest -v
 - OpenTelemetry export produces standard OTLP JSON dictionary representation; live background exporter daemon is out of scope for v0.1.
 
 **Commit/PR:**  
-Commit SHA: `0a148bb` (implementation) on branch `task/TASK-008-integrations`.
+Commit SHA: `47fd8ff` (implementation) on branch `task/TASK-008-integrations`.
 
 **Questions/blockers:**  
-None. Blocker 1 (OTLP wire IDs), Blocker 2 (strict external path typing), and Hardening (Structured Outputs json_schema mode) are fully resolved with regression tests. Ready for main agent review.
+None. All review blockers (OTLP wire IDs, strict external path typing, strict Structured Outputs schemas) are fully resolved with recursive validation tests. Ready for main agent review.
 
 ## Main Agent Review
 
 > Main agent only.
 
-**Verdict:** CHANGES_REQUESTED — FINAL API COMPATIBILITY FIX
+**Verdict:** ACCEPTED
 
-**Reviewed implementation:** `0a148bb2a9c40142fce59cab1462d3e7047f9e03`
+**Final implementation reviewed:** `47fd8ffa4a7bfa9f27cb69e01dce6d6ff0583934`  
+**Final branch head/report:** `38754fd47442306aa88d8282431208f35285fae3`  
+**Integrated to main:** `0469bf7a0204eba56aaa2fe44d65edfb63b8b4ac`
 
-**Previous blockers verified fixed:**
-- OTLP wire IDs are now deterministic valid 32-hex trace IDs / 16-hex span IDs while original AgentContract IDs remain preserved in attributes;
-- external changed/accessed/action path inputs now reject malformed non-string values instead of coercing;
-- OpenAI-compatible adapter supports explicit `json_schema` and `json_object` modes with exactly one request and no hidden retry;
-- executor reports 262 tests passing on local Python 3.12.9.
-
-### FINAL BLOCKER — current extraction schemas are not OpenAI strict Structured Outputs compatible
-
-The adapter now defaults to:
-
-```python
-response_format_mode="json_schema"
-strict=True
-```
-
-but the schemas produced by `get_requirement_extraction_schema()` and `get_claim_extraction_schema()` are not valid strict Structured Outputs schemas.
-
-Current examples:
-
-```python
-# Constraint item:
-properties = {
-    "name": ...,
-    "description": ...,
-    "strength": ...,
-    "rule_effect": ...,
-    "scope": ...,
-    "compliance_scope": ...,
-}
-required = ["name", "description", "strength", "rule_effect", "scope"]
-```
-
-and claim items define many optional properties but only require:
-
-```python
-["claim_type", "description"]
-```
-
-OpenAI strict Structured Outputs requires all object properties to be required; optional values should be represented as nullable fields. Every object must also set `additionalProperties: false`.
-
-Additionally, `scope.selectors` is currently:
-
-```python
-{"type": "object"}
-```
-
-which is not a closed strict object schema.
-
-This means mock tests pass but a real OpenAI API request in the default `json_schema` mode can fail before model execution.
-
-**Required fix:**
-
-Choose one of these clean approaches:
-
-### Preferred
-Add provider-specific strict-schema conversion/builders for the OpenAI adapter while leaving core extraction schemas/domain models provider-neutral.
-
-For every object sent under `strict=True`:
-- `additionalProperties: false`;
-- every declared property appears in `required`;
-- optional semantic values use nullable types, e.g. `["string", "null"]`;
-- optional arrays/objects are represented in a strict-compatible way;
-- do not include unconstrained/free-form object fields such as `selectors` unless represented with a supported closed schema.
-
-For requirement extraction, fields not needed from the provider (e.g. spoof/audit-only authority fields) should preferably be omitted from the provider schema rather than invited as model output.
-
-For claim extraction, optional claim selectors may be emitted as required-but-nullable fields.
-
-### Alternative
-Make `json_object` the compatibility default and require explicit opt-in to `json_schema` only when a strict-compatible schema builder is supplied.
-
-However, if `examples/quickstart.py` is meant to demonstrate current OpenAI Structured Outputs, the preferred approach is better.
-
-**Required tests:**
-1. recursively assert every object in the actual schema sent in `json_schema` mode has `additionalProperties is False`;
-2. recursively assert each object's `required` contains every key in `properties`;
-3. optional semantic fields are nullable instead of omitted from `required`;
-4. generated requirement schema and claim schema pass the strict-schema validator;
-5. captured HTTP request contains the strict-compatible transformed schema;
-6. exactly one HTTP request remains true;
-7. offline quickstart remains green.
-
-**Also update quickstart:**
-- allow `OPENAI_BASE_URL` and `OPENAI_RESPONSE_FORMAT` environment variables in addition to `OPENAI_MODEL`;
-- default `OPENAI_RESPONSE_FORMAT=json_schema` only after the schema is strict-compatible;
-- users of less-capable OpenAI-compatible endpoints can set `json_object`.
-
-**Required re-check:**
-- local Python 3.12.9;
-- `python -m pytest tests/adapters/ -v`;
-- `python -m pytest -v`;
-- `python examples/quickstart.py`;
-- update Executor Report with exact pushed commit SHA.
+**Acceptance summary:**
+- external tool-event adapter boundary is implemented with strict validation;
+- OpenAI-compatible extraction client supports exactly-once requests with no hidden retry;
+- caller provenance and trace/session authority remain enforced;
+- strict Structured Outputs schemas are recursively closed and all properties required;
+- optional semantic fields are nullable;
+- JSON mode remains available for compatible providers;
+- valid deterministic OTLP wire IDs are emitted while original AgentContract IDs remain preserved;
+- offline quickstart demonstrates the full natural-language extraction -> guard -> trace -> claim verification flow;
+- executor reports **268 tests passed** on local Python 3.12.9.
 
 **Next instruction:**
-Apply this final API-compatibility fix on `task/TASK-008-integrations`. Do not start TASK-009.
+TASK-008 is complete. Proceed only with TASK-009 referenced by `.agent/STATE.md`.
 
