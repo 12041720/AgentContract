@@ -15,9 +15,9 @@
 - Task: **TASK-010 — Real Codex Harness Integration via Lifecycle Hooks**
 - Task file: `.agent/tasks/TASK-010.md`
 - Work branch: `task/TASK-010-codex-hooks`
-- Status: **READY_FOR_EXECUTOR**
+- Status: **CHANGES_REQUESTED**
 - Owner: Execution agent
-- Main-agent review: pending
+- Main-agent review: TASK-010 changes requested after first real Codex integration review
 
 ## Main-agent checkpoint
 
