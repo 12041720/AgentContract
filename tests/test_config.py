@@ -39,19 +39,19 @@ def test_parse_config_variable_expansion(monkeypatch) -> None:
 
 
 def test_parse_config_powershell_syntax(monkeypatch) -> None:
-    monkeypatch.setenv("BUPT_API_KEY", "bupt-key-999")
+    monkeypatch.setenv("UPSTREAM_API_KEY", "mock-upstream-key-999")
 
     content = """
-    $env:OPENAI_API_KEY = $env:BUPT_API_KEY
-    $env:OPENAI_MODEL = "deepseek-v4-flash"
-    $env:OPENAI_BASE_URL = "https://myai.bupt.edu.cn/llm-gw/v1"
+    $env:OPENAI_API_KEY = $env:UPSTREAM_API_KEY
+    $env:OPENAI_MODEL = "custom-model-v1"
+    $env:OPENAI_BASE_URL = "https://gateway.example.com/llm/v1"
     $env:OPENAI_RESPONSE_FORMAT = "json_object"
     $env:OPENAI_TIMEOUT = "240"
     """
     parsed = parse_config_content(content)
-    assert parsed["OPENAI_API_KEY"] == "bupt-key-999"
-    assert parsed["OPENAI_MODEL"] == "deepseek-v4-flash"
-    assert parsed["OPENAI_BASE_URL"] == "https://myai.bupt.edu.cn/llm-gw/v1"
+    assert parsed["OPENAI_API_KEY"] == "mock-upstream-key-999"
+    assert parsed["OPENAI_MODEL"] == "custom-model-v1"
+    assert parsed["OPENAI_BASE_URL"] == "https://gateway.example.com/llm/v1"
     assert parsed["OPENAI_RESPONSE_FORMAT"] == "json_object"
     assert parsed["OPENAI_TIMEOUT"] == "240"
 

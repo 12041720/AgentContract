@@ -2,6 +2,8 @@
 
 **Runtime Constraint Tracking and Evidence-Grounded Verification for Long-Horizon Agents**
 
+[English](README.md) | [简体中文](README_zh.md)
+
 AgentContract is a deterministic reliability and safety control plane for tool-using AI agents. It extracts requirements from user instructions, translates them into enforceable runtime constraints, intercepts prohibited tool actions before execution, and verifies completion claims against observable trace evidence.
 
 ```text
@@ -141,11 +143,15 @@ AgentContract automatically discovers and loads configuration from `.env` or `.a
 
 ```ini
 # .env (automatically ignored by git)
-$env:OPENAI_API_KEY = $env:BUPT_API_KEY
-$env:OPENAI_MODEL = "deepseek-v4-flash"
-$env:OPENAI_BASE_URL = "https://myai.bupt.edu.cn/llm-gw/v1"
-$env:OPENAI_RESPONSE_FORMAT = "json_object"
-$env:OPENAI_TIMEOUT = "240"
+OPENAI_API_KEY="your-api-key"
+OPENAI_MODEL="gpt-4o-mini"
+OPENAI_BASE_URL="https://api.openai.com/v1"
+OPENAI_RESPONSE_FORMAT="json_schema"
+OPENAI_TIMEOUT="30"
+
+# Also supports variable expansion and PowerShell syntax, e.g.:
+# OPENAI_API_KEY="${HOST_KEY}"
+# $env:OPENAI_API_KEY = $env:HOST_KEY
 ```
 
 ### Using Generic OpenAI-Compatible Endpoints
