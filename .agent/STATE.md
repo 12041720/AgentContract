@@ -6,18 +6,18 @@
 
 - Name: AgentContract
 - Mission: Runtime constraint tracking and evidence-grounded completion verification for long-horizon tool-using agents.
-- Stage: Integration-ready
+- Stage: v0.1 complete
 - Architecture version: 0.1
 - Default branch: `main`
 
 ## Current active task
 
-- Task: **TASK-009 — Integration hardening, CLI/API packaging, and documentation**
-- Task file: `.agent/tasks/TASK-009.md`
-- Work branch: `task/TASK-009-packaging`
-- Status: **CHANGES_REQUESTED**
+- Task: **None — v0.1 milestone complete**
+- Last completed task: `.agent/tasks/TASK-009.md`
+- Work branch: none
+- Status: **ACCEPTED / COMPLETE**
 - Owner: Execution agent
-- Main-agent review: TASK-009 final claim/docs/package fixes requested after review of `460c1357ce3cc26b04d70095efe9e27ef038bf8f`
+- Main-agent review: TASK-009 accepted and integrated; AgentContract v0.1 milestone complete
 
 ## Main-agent checkpoint
 
@@ -60,3 +60,11 @@ On a new session:
 6. Write verdict to the task file and `.agent/REVIEW_LOG.md`.
 7. Update this file and `.agent/TASKS.md`.
 8. Activate exactly one next task unless parallel work is explicitly introduced.
+
+## v0.1 completion checkpoint
+
+- TASK-009 accepted and integrated to `main` as `6c24d9f749e0249a8a75da89effccbdcdb5c6e5e`.
+- All TASK-001 through TASK-009 are accepted.
+- Executor-reported full suite: 288 tests passed on Python 3.12.9.
+- CLI/package/documentation and real OpenAI-compatible provider smoke path are complete for v0.1.
+- No subsequent task is active by default.
