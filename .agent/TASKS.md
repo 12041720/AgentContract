@@ -55,3 +55,11 @@ The main agent promotes backlog items only when the core is stable.
 Status: **COMPLETE**
 
 TASK-001 through TASK-009 are accepted. No next task is activated automatically.
+
+## M5 — Real Agent Harness Integration
+
+| Task | Title | Status | Depends on |
+|---|---|---|---|
+| TASK-010 | Real Codex Harness Integration via Lifecycle Hooks | READY_FOR_EXECUTOR | TASK-009 |
+
+Goal: prove AgentContract against a real autonomous coding-agent tool loop rather than canned demo actions.
