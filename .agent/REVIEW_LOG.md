@@ -617,3 +617,29 @@ Additional acceptance requirements include:
 **Next:** narrow final fixes on TASK-009 branch; v0.1 remains unaccepted.
 
 ---
+
+## 2026-09-30 — TASK-009 final review and v0.1 completion
+
+**Final implementation reviewed:** `9cdbea938a588a0bbd5a0cb93d9cf04a71771679`
+
+**Final branch head/report:** `c9e066081c0747094a2763daa1ad981deac39e86`
+
+**Verdict:** ACCEPTED
+
+**Integration commit:** `6c24d9f749e0249a8a75da89effccbdcdb5c6e5e`
+
+**Verified end-to-end outcome:**
+- critical protected-file write -> BLOCK before execution;
+- genuine pytest success claim -> VERIFIED from trace ToolResult;
+- fabricated protected-file existence claim -> UNVERIFIED;
+- safe actions remain executable;
+- provider claim vocabulary matches domain ClaimType/schema;
+- README corrected to explicit conflict lifecycle and implemented claim types;
+- CLI/package surfaces are installable and documented;
+- executor reports 288/288 tests passing on Python 3.12.9;
+- executor reports clean wheel build and isolated package import/CLI smoke test;
+- live OpenAI-compatible `deepseek-v4-flash` smoke test passed the v0.1 acceptance path.
+
+**Milestone:** AgentContract v0.1 complete.
+
+---
