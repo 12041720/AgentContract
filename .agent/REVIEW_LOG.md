@@ -643,3 +643,27 @@ Additional acceptance requirements include:
 **Milestone:** AgentContract v0.1 complete.
 
 ---
+
+## 2026-09-30 — TASK-010 first real Codex integration review
+
+**Actual branch head reviewed:** `1d1600b29f54b9272b169e68a5f3e5fc5e9de49c`
+
+**Verdict:** CHANGES_REQUESTED
+
+**Verified progress:**
+- real Codex lifecycle hook integration exists for SessionStart/UserPromptSubmit/PreToolUse/PostToolUse/Stop;
+- real Codex CLI acceptance run was performed;
+- protected-file attempts were observed and file hash remained unchanged in the reported run;
+- PostToolUse trace/evidence and Stop EvidenceGate plumbing are present;
+- executor reports 313 tests passing.
+
+**Blocking findings:**
+- configured OpenAICompatibleExtractionClient is never actually used because adapter calls nonexistent extract_requirements/extract_claims methods and silently falls back to regex;
+- PreToolUse response emits unsupported Codex fields such as continue and legacy approve, conflicting with current official hook semantics;
+- required opaque/destructive Bash fail-closed/approval policy is not implemented;
+- session store has atomic file replacement but no cross-process transaction lock, so concurrent hooks can lose state;
+- standalone plugin manifest shape needs alignment with the current documented Codex plugin contract.
+
+**Next:** fix on `task/TASK-010-codex-hooks`, rerun full tests and a real Codex session, and report exact final branch SHA.
+
+---
