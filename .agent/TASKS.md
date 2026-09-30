@@ -12,7 +12,7 @@ Status values: `PLANNED`, `READY_FOR_EXECUTOR`, `IN_PROGRESS`, `READY_FOR_REVIEW
 | TASK-006 | LLM-assisted requirement/claim extraction adapters | ACCEPTED | TASK-001, TASK-004 |
 | TASK-007 | Benchmark scenarios and reliability metrics | ACCEPTED | TASK-005, TASK-006 |
 | TASK-008 | OpenTelemetry + external agent adapters | ACCEPTED | TASK-005 |
-| TASK-009 | Integration hardening, CLI/API packaging, and documentation | CHANGES_REQUESTED | TASK-007, TASK-008 |
+| TASK-009 | Integration hardening, CLI/API packaging, and documentation | ACCEPTED | TASK-007, TASK-008 |
 
 ## Milestones
 
@@ -49,3 +49,9 @@ These are deliberately not active yet:
 - long-context constraint retention benchmark.
 
 The main agent promotes backlog items only when the core is stable.
+
+### M4 — v0.1 Completion
+
+Status: **COMPLETE**
+
+TASK-001 through TASK-009 are accepted. No next task is activated automatically.
