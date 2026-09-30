@@ -80,18 +80,21 @@ def format_benchmark_markdown(report: BenchmarkReport) -> str:
 
 def run_demo_command(online: bool = False) -> int:
     """Run the end-to-end quickstart demonstration."""
-    from examples.quickstart import run_quickstart
+    from agentcontract.demo import run_quickstart
 
     if not online:
         # Guarantee offline execution without network calls
         orig_key = os.environ.pop("OPENAI_API_KEY", None)
         try:
-            return run_quickstart()
+            return run_quickstart(force_online=False)
         finally:
             if orig_key is not None:
                 os.environ["OPENAI_API_KEY"] = orig_key
     else:
-        return run_quickstart()
+        if not os.environ.get("OPENAI_API_KEY"):
+            print("Error: 'agentcontract demo --online' requires the OPENAI_API_KEY environment variable.", file=sys.stderr)
+            return 1
+        return run_quickstart(force_online=True)
 
 
 def run_benchmark_command(repetitions: int = 1, fmt: str = "text") -> int:

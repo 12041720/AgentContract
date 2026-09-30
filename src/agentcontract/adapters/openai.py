@@ -39,14 +39,17 @@ CLAIM_EXTRACTION_GUIDANCE = (
     "Extraction Guidelines for Claims:\n"
     "1. Extract atomic, objective completion claims asserted by the agent regarding task completion or execution state.\n"
     "2. Supported Claim Types:\n"
-    "   - TESTS_PASSED: Asserts test execution passed (e.g. pytest exit code 0).\n"
-    "   - FILE_EXISTS: Asserts a specific file exists on disk.\n"
-    "   - FILE_MODIFIED: Asserts a specific file was modified or written.\n"
-    "   - FILE_ABSENT: Asserts a specific file was deleted or absent.\n"
-    "   - TOOL_SUCCEEDED: Asserts a specific tool call succeeded.\n"
-    "   - ACTION_COMPLETED / GENERIC: Other factual execution claims.\n"
-    "3. Keep claims atomic; do not merge distinct test and file claims into a single item.\n"
-    "4. Model output cannot self-verify claims; EvidenceGate will evaluate them against trace evidence."
+    "   - TESTS_PASSED: Asserts test execution passed. When the text mentions a test command (e.g. 'pytest'), populate command (e.g. command='pytest') and expected_exit_code=0.\n"
+    "   - COMMAND_EXITED_ZERO: Asserts a specific command exited with code 0. Populate command with the exact command string (e.g. command='python script.py').\n"
+    "   - FILE_EXISTS: Asserts a specific file exists on disk. Populate target_path with the exact file path (e.g. target_path='secrets/prod.key').\n"
+    "   - TOOL_SUCCEEDED: Asserts a specific tool call succeeded. Populate tool_name and/or call_id only when explicitly stated in the text.\n"
+    "   - ACTION_COMPLETED / GENERIC: Other factual execution claims without specific verification targets.\n"
+    "3. Deterministic Grounding & Selectors:\n"
+    "   - Populate selectors (command, target_path, tool_name, call_id) ONLY when explicitly stated or directly inferable from the completion text.\n"
+    "   - When a test suite or command is mentioned in text (such as 'pytest'), include it in the 'command' field so EvidenceGate can locate the execution.\n"
+    "   - Never invent fictitious call IDs or paths not present in the supplied text.\n"
+    "4. Keep claims atomic; do not merge distinct test and file claims into a single item.\n"
+    "5. Model output cannot self-verify claims; EvidenceGate will evaluate them against trace evidence."
 )
 
 
@@ -237,11 +240,26 @@ def get_openai_claim_extraction_schema() -> dict[str, Any]:
             "type": "string",
             "description": "Atomic statement of what is claimed.",
         },
-        "call_id": {"type": ["string", "null"]},
-        "tool_name": {"type": ["string", "null"]},
-        "command": {"type": ["string", "null"]},
-        "target_path": {"type": ["string", "null"]},
-        "expected_exit_code": {"type": ["integer", "null"]},
+        "call_id": {
+            "type": ["string", "null"],
+            "description": "Tool call identifier if explicitly mentioned in text (e.g. 'call_123'), otherwise null.",
+        },
+        "tool_name": {
+            "type": ["string", "null"],
+            "description": "Exact tool name if explicitly stated in text (e.g. 'read_file'), otherwise null.",
+        },
+        "command": {
+            "type": ["string", "null"],
+            "description": "Exact command string (e.g. 'pytest', 'python script.py') if stated in text for TESTS_PASSED or COMMAND_EXITED_ZERO, otherwise null.",
+        },
+        "target_path": {
+            "type": ["string", "null"],
+            "description": "Exact file or resource path for FILE_EXISTS (e.g. 'secrets/prod.key'), otherwise null.",
+        },
+        "expected_exit_code": {
+            "type": ["integer", "null"],
+            "description": "Expected numeric process exit code (e.g. 0), or null.",
+        },
     }
     return {
         "type": "object",

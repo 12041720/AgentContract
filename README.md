@@ -42,7 +42,7 @@ Verified Completion & OpenTelemetry Export
 ### 2. Constraint Ledger (`agentcontract.constraints`)
 - **Versioned Lifecycle Tracking**: Explicit states (`ACTIVE`, `REVOKED`, `SUPERSEDED`, `CONFLICTED`) with validated transition graphs.
 - **Fine-Grained Scopes**: Scopes support target resource paths (globs and directory hierarchies), tool identifiers, canonical action kinds (`FILE_READ`, `FILE_WRITE`, `FILE_DELETE`, `TOOL_CALL`, `COMMAND_EXEC`), and target types (`filesystem`, `tool`, `network`, `database`).
-- **Conflict Detection**: Automatically detects and flags conflicting constraints (e.g., simultaneous `DENY` and `REQUIRE` on the same path).
+- **Conflict Lifecycle**: Supports explicit conflict marking and resolution (`mark_conflicted()`, `resolve_conflict()`) with audit provenance.
 
 ### 3. SpecGuard Runtime Enforcement (`agentcontract.guard`)
 - **Pre-Action Interception**: Evaluates actions before execution. Violations of `HARD` constraints trigger immediate `BLOCK`, preventing tool invocation completely.
@@ -54,7 +54,7 @@ Verified Completion & OpenTelemetry Export
 - **Deterministic Correlation IDs**: Generates stable 32-hex `traceId` and 16-hex `spanId` representations compliant with the OpenTelemetry (OTLP) wire specification while retaining original identifiers in `agentcontract.*` attributes.
 
 ### 5. EvidenceGate Verification (`agentcontract.evidence`)
-- **Atomic Verification**: Claims are broken down into discrete statements (`TESTS_PASSED`, `FILE_EXISTS`, `FILE_MODIFIED`, `TOOL_SUCCEEDED`).
+- **Atomic Verification**: Claims are broken down into discrete statements (`TESTS_PASSED`, `FILE_EXISTS`, `TOOL_SUCCEEDED`, `COMMAND_EXITED_ZERO`, `ACTION_COMPLETED`).
 - **Deterministic Verdicts**: Evaluates claims directly against trace evidence:
   - `VERIFIED`: Supported by concrete, recorded trace events.
   - `CONTRADICTED`: Proven false by contradictory trace data (e.g. tool returned error status).
@@ -99,10 +99,14 @@ The package provides a built-in CLI for demonstrations and benchmarking:
 agentcontract version
 ```
 
-### 2. Run Offline Demo
-Runs a complete, deterministic reliability workflow without needing API keys or network access:
+### 2. Run Demonstration
+Runs the end-to-end reliability workflow demonstration:
 ```bash
+# Offline deterministic demo (default, no network calls or API keys needed)
 agentcontract demo
+
+# Online demo using configured OpenAI/compatible model gateway (requires OPENAI_API_KEY)
+agentcontract demo --online
 ```
 
 ### 3. Run Benchmark Suite

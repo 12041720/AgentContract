@@ -42,6 +42,25 @@ def test_cli_offline_demo(capsys) -> None:
     assert "Summary:" in captured.out
 
 
+def test_cli_online_demo_missing_api_key_returns_nonzero(monkeypatch, capsys) -> None:
+    """agentcontract demo --online without OPENAI_API_KEY must fail non-zero."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    ret = main(["demo", "--online"])
+    assert ret != 0
+    captured = capsys.readouterr()
+    assert "requires the OPENAI_API_KEY" in captured.err or "OPENAI_API_KEY" in captured.err
+
+
+def test_cli_online_demo_invalid_config_returns_nonzero(monkeypatch, capsys) -> None:
+    """agentcontract demo --online with invalid OPENAI_TIMEOUT must fail non-zero."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-mock-key")
+    monkeypatch.setenv("OPENAI_TIMEOUT", "not-a-number")
+    ret = main(["demo", "--online"])
+    assert ret != 0
+    captured = capsys.readouterr()
+    assert "Configuration Error" in captured.err or "Invalid OPENAI_TIMEOUT" in captured.err
+
+
 def test_cli_benchmark_text(capsys) -> None:
     """agentcontract benchmark prints formatted text report table."""
     ret = main(["benchmark", "--format", "text"])
