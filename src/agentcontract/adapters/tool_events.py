@@ -237,12 +237,20 @@ class ToolEventAdapter:
             else:
                 effective_kind = ActionKind.TOOL_CALL
 
+        effective_target_type = target_type
+        if effective_target_type is None and effective_kind in (
+            ActionKind.FILE_WRITE,
+            ActionKind.FILE_DELETE,
+            ActionKind.FILE_READ,
+        ):
+            effective_target_type = "filesystem"
+
         return Action.from_tool_call(
             tool_call=tool_call,
             action_kind=effective_kind,
             target_path=effective_target_path,
             paths=effective_paths,
-            target_type=target_type,
+            target_type=effective_target_type,
             operation=operation,
             trace_pointer=trace_pointer,
             context=context,

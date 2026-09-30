@@ -61,3 +61,40 @@ def test_quickstart_execution_with_custom_env_vars(monkeypatch) -> None:
     exit_code = run_quickstart()
     assert exit_code == 0
 
+
+def test_quickstart_exits_nonzero_when_protection_fails(monkeypatch) -> None:
+    """If provider emits no constraints or ineffective constraint, quickstart fails with non-zero exit."""
+    from agentcontract.adapters.openai import OpenAICompatibleExtractionClient
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-mock-key")
+
+    # Ineffective constraint: applies to completely different path
+    ineffective_resp = {
+        "constraints": [
+            {
+                "name": "unrelated",
+                "description": "Do not write to /tmp",
+                "rule_effect": "DENY",
+                "strength": "HARD",
+                "scope": {
+                    "paths": ["/tmp/*"],
+                    "actions": ["FILE_WRITE"],
+                },
+            }
+        ]
+    }
+    claim_resp = {"claims": []}
+    responses = [ineffective_resp, claim_resp]
+    idx = [0]
+
+    def mock_extract(self, *, task, text, schema, context=None):
+        r = responses[idx[0]]
+        idx[0] += 1
+        return r
+
+    monkeypatch.setattr(OpenAICompatibleExtractionClient, "extract", mock_extract)
+
+    exit_code = run_quickstart()
+    assert exit_code != 0
+
+

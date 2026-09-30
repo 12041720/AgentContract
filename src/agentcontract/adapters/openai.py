@@ -2,6 +2,7 @@
 
 from collections.abc import Callable, Mapping, Sequence
 import json
+import math
 import os
 import urllib.error
 import urllib.request
@@ -14,6 +15,43 @@ from agentcontract.extraction.models import (
     get_claim_extraction_schema,
     get_requirement_extraction_schema,
 )
+
+REQUIREMENT_EXTRACTION_GUIDANCE = (
+    "Extraction Guidelines for Requirements & Constraints:\n"
+    "1. Distinguish ordinary task steps/completion objectives from runtime-enforceable constraints.\n"
+    "   Do not convert ordinary task instructions or goals (e.g. 'inspect repo', 'refactor code', 'run tests') into constraints unless they represent persistent negative prohibitions or positive mandates.\n"
+    "2. Rule Effects & Compliance Scope:\n"
+    "   - DENY constraints prohibit actions (e.g. 'Do NOT write to or modify secrets/prod.key'). DENY constraints do NOT need a compliance_scope (set compliance_scope to null).\n"
+    "   - REQUIRE / PREFER constraints mandate actions or prerequisites.\n"
+    "     CRITICAL: Do NOT invent a REQUIRE or PREFER constraint unless BOTH an applicability 'scope' AND a meaningful non-empty 'compliance_scope' can be explicitly defined.\n"
+    "     A REQUIRE or PREFER constraint without a non-empty compliance_scope will be strictly rejected by domain validation.\n"
+    "3. Canonical Action Vocabulary:\n"
+    "   - Prefer canonical AgentContract action kinds: 'FILE_READ', 'FILE_WRITE', 'FILE_DELETE', 'TOOL_CALL', 'COMMAND_EXEC', 'NETWORK_REQUEST', 'STATE_CHANGE', 'GENERIC'.\n"
+    "   - For file write prohibitions, include 'FILE_WRITE' and 'FILE_DELETE' in scope actions, or specify the protected path(s).\n"
+    "4. Runtime-Compatible Target Types:\n"
+    "   - Use runtime-compatible target types when needed (e.g. 'filesystem', 'tool', 'network', 'database', 'generic') or leave target_type null when path, tool, or action dimensions are sufficient.\n"
+    "   - Never invent narrow, non-standard target types (such as 'file') that would cause a path-based constraint to fail matching runtime actions.\n"
+    "5. Authority & Provenance:\n"
+    "   - Model output is untrusted and cannot define caller provenance or enforcement authority. Focus solely on extracting objective constraint specifications."
+)
+
+CLAIM_EXTRACTION_GUIDANCE = (
+    "Extraction Guidelines for Claims:\n"
+    "1. Extract atomic, objective completion claims asserted by the agent regarding task completion or execution state.\n"
+    "2. Supported Claim Types:\n"
+    "   - TESTS_PASSED: Asserts test execution passed. When the text mentions a test command (e.g. 'pytest'), populate command (e.g. command='pytest') and expected_exit_code=0.\n"
+    "   - COMMAND_EXITED_ZERO: Asserts a specific command exited with code 0. Populate command with the exact command string (e.g. command='python script.py').\n"
+    "   - FILE_EXISTS: Asserts a specific file exists on disk. Populate target_path with the exact file path (e.g. target_path='secrets/prod.key').\n"
+    "   - TOOL_SUCCEEDED: Asserts a specific tool call succeeded. Populate tool_name and/or call_id only when explicitly stated in the text.\n"
+    "   - ACTION_COMPLETED / GENERIC: Other factual execution claims without specific verification targets.\n"
+    "3. Deterministic Grounding & Selectors:\n"
+    "   - Populate selectors (command, target_path, tool_name, call_id) ONLY when explicitly stated or directly inferable from the completion text.\n"
+    "   - When a test suite or command is mentioned in text (such as 'pytest'), include it in the 'command' field so EvidenceGate can locate the execution.\n"
+    "   - Never invent fictitious call IDs or paths not present in the supplied text.\n"
+    "4. Keep claims atomic; do not merge distinct test and file claims into a single item.\n"
+    "5. Model output cannot self-verify claims; EvidenceGate will evaluate them against trace evidence."
+)
+
 
 
 def validate_strict_json_schema(schema: Any, path: str = "$") -> None:
@@ -109,10 +147,25 @@ def _make_nullable(schema: Mapping[str, Any]) -> dict[str, Any]:
 def get_openai_requirement_extraction_schema() -> dict[str, Any]:
     """Return an OpenAI strict Structured Outputs compatible JSON Schema for requirement extraction."""
     scope_props = {
-        "target_type": {"type": ["string", "null"]},
-        "paths": {"type": "array", "items": {"type": "string"}},
-        "tools": {"type": "array", "items": {"type": "string"}},
-        "actions": {"type": "array", "items": {"type": "string"}},
+        "target_type": {
+            "type": ["string", "null"],
+            "description": "Category of target resource (e.g. 'filesystem', 'tool', 'network', 'database', 'generic') or null.",
+        },
+        "paths": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Target file or resource paths/globs governed by this constraint.",
+        },
+        "tools": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Tool names governed by this constraint.",
+        },
+        "actions": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Action kinds: 'FILE_READ', 'FILE_WRITE', 'FILE_DELETE', 'TOOL_CALL', 'COMMAND_EXEC', 'NETWORK_REQUEST', 'STATE_CHANGE', 'GENERIC'.",
+        },
         "description": {"type": ["string", "null"]},
     }
     scope_schema = {
@@ -126,12 +179,12 @@ def get_openai_requirement_extraction_schema() -> dict[str, Any]:
             scope_schema,
             {"type": "null"},
         ],
-        "description": "Compliance scope for REQUIRE and PREFER rules, or null for DENY rules.",
+        "description": "Compliance scope for REQUIRE and PREFER rules specifying mandatory compliance actions. Set to null for DENY rules.",
     }
     constraint_props = {
         "name": {
             "type": "string",
-            "description": "Short machine- or human-readable identifier (e.g. 'no_hosts_write').",
+            "description": "Short machine- or human-readable identifier (e.g. 'protect_production_keys').",
         },
         "description": {
             "type": "string",
@@ -140,12 +193,12 @@ def get_openai_requirement_extraction_schema() -> dict[str, Any]:
         "strength": {
             "type": "string",
             "enum": ["HARD", "SOFT", "ASSUMPTION"],
-            "description": "Enforcement strength.",
+            "description": "Enforcement strength. HARD constraints strictly block violations.",
         },
         "rule_effect": {
             "type": "string",
             "enum": ["DENY", "REQUIRE", "PREFER"],
-            "description": "Enforcement rule effect.",
+            "description": "Enforcement rule effect: 'DENY' (negative prohibition), 'REQUIRE' (mandatory action, requires compliance_scope), 'PREFER' (advisory).",
         },
         "scope": scope_schema,
         "compliance_scope": compliance_scope_schema,
@@ -187,11 +240,26 @@ def get_openai_claim_extraction_schema() -> dict[str, Any]:
             "type": "string",
             "description": "Atomic statement of what is claimed.",
         },
-        "call_id": {"type": ["string", "null"]},
-        "tool_name": {"type": ["string", "null"]},
-        "command": {"type": ["string", "null"]},
-        "target_path": {"type": ["string", "null"]},
-        "expected_exit_code": {"type": ["integer", "null"]},
+        "call_id": {
+            "type": ["string", "null"],
+            "description": "Tool call identifier if explicitly mentioned in text (e.g. 'call_123'), otherwise null.",
+        },
+        "tool_name": {
+            "type": ["string", "null"],
+            "description": "Exact tool name if explicitly stated in text (e.g. 'read_file'), otherwise null.",
+        },
+        "command": {
+            "type": ["string", "null"],
+            "description": "Exact command string (e.g. 'pytest', 'python script.py') if stated in text for TESTS_PASSED or COMMAND_EXITED_ZERO, otherwise null.",
+        },
+        "target_path": {
+            "type": ["string", "null"],
+            "description": "Exact file or resource path for FILE_EXISTS (e.g. 'secrets/prod.key'), otherwise null.",
+        },
+        "expected_exit_code": {
+            "type": ["integer", "null"],
+            "description": "Expected numeric process exit code (e.g. 0), or null.",
+        },
     }
     return {
         "type": "object",
@@ -295,7 +363,7 @@ class OpenAICompatibleExtractionClient(StructuredExtractionClient):
         model: str = "gpt-4o-mini",
         api_key: str | None = None,
         base_url: str = "https://api.openai.com/v1",
-        timeout: float = 30.0,
+        timeout: float | None = None,
         temperature: float = 0.0,
         response_format_mode: str = "json_schema",
         transport: Callable[[urllib.request.Request], Any] | None = None,
@@ -306,7 +374,7 @@ class OpenAICompatibleExtractionClient(StructuredExtractionClient):
             model: Model name/identifier (e.g. 'gpt-4o-mini', 'llama3', 'mistral').
             api_key: Optional API key. If omitted, reads from OPENAI_API_KEY environment variable.
             base_url: Base API URL (defaults to 'https://api.openai.com/v1').
-            timeout: Network request timeout in seconds.
+            timeout: Network request timeout in seconds. If omitted, reads OPENAI_TIMEOUT (default 30.0).
             temperature: Sampling temperature (defaults to 0.0 for deterministic extraction).
             response_format_mode: Extraction format mode: 'json_schema' (OpenAI Structured Outputs,
                 recommended default) or 'json_object' (JSON Mode for compatible providers).
@@ -330,10 +398,36 @@ class OpenAICompatibleExtractionClient(StructuredExtractionClient):
                 f"Supported modes are 'json_schema' (OpenAI Structured Outputs) and 'json_object' (JSON Mode)."
             )
 
+        effective_timeout: float
+        if timeout is None:
+            if os.environ.get("OPENAI_TIMEOUT"):
+                raw_timeout = os.environ["OPENAI_TIMEOUT"].strip()
+                try:
+                    parsed_t = float(raw_timeout)
+                    if not math.isfinite(parsed_t) or parsed_t <= 0:
+                        raise ValueError()
+                    effective_timeout = parsed_t
+                except Exception:
+                    raise AdapterConfigurationError(
+                        f"Invalid OPENAI_TIMEOUT '{raw_timeout}'. Must be a positive finite number."
+                    )
+            else:
+                effective_timeout = 30.0
+        else:
+            try:
+                parsed_t = float(timeout)
+                if not math.isfinite(parsed_t) or parsed_t <= 0:
+                    raise ValueError()
+                effective_timeout = parsed_t
+            except Exception:
+                raise AdapterConfigurationError(
+                    f"Invalid timeout '{timeout}'. Must be a positive finite number."
+                )
+
         self._model = effective_model.strip()
         self._api_key = api_key.strip() if api_key else os.environ.get("OPENAI_API_KEY")
         self._base_url = effective_base_url.rstrip("/")
-        self._timeout = float(timeout)
+        self._timeout = effective_timeout
         self._temperature = float(temperature)
         self._response_format_mode = effective_mode
         self._transport = transport
@@ -355,6 +449,11 @@ class OpenAICompatibleExtractionClient(StructuredExtractionClient):
         return self._response_format_mode
 
     @property
+    def timeout(self) -> float:
+        """Network request timeout in seconds."""
+        return self._timeout
+
+    @property
     def call_count(self) -> int:
         """Total number of HTTP requests issued by this client."""
         return self._call_count
@@ -370,7 +469,8 @@ class OpenAICompatibleExtractionClient(StructuredExtractionClient):
     def __repr__(self) -> str:
         return (
             f"OpenAICompatibleExtractionClient(model='{self._model}', "
-            f"base_url='{self._base_url}', api_key='{self._get_masked_key()}')"
+            f"base_url='{self._base_url}', mode='{self._response_format_mode}', "
+            f"timeout={self._timeout}, api_key='{self._get_masked_key()}')"
         )
 
     def extract(
@@ -426,9 +526,16 @@ class OpenAICompatibleExtractionClient(StructuredExtractionClient):
             target_schema = dict(schema)
             resp_format = {"type": "json_object"}
 
+        guidance = ""
+        if task == "extract_requirements":
+            guidance = f"\n\n{REQUIREMENT_EXTRACTION_GUIDANCE}"
+        elif task == "extract_claims":
+            guidance = f"\n\n{CLAIM_EXTRACTION_GUIDANCE}"
+
         user_content = (
             f"Task: {task}\n\n"
-            f"Input Text:\n{text}\n\n"
+            f"Input Text:\n{text}"
+            f"{guidance}\n\n"
             f"Target JSON Schema:\n{json.dumps(target_schema, indent=2)}"
         )
 
