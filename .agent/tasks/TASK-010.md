@@ -1,10 +1,10 @@
 # TASK-010 — Real Codex Harness Integration via Lifecycle Hooks
 
-**Status:** READY_FOR_EXECUTOR  
+**Status:** CHANGES_REQUESTED  
 **Milestone:** M5 — Real Agent Harness Integration  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-010-codex-hooks`  
-**Main-agent review:** pending
+**Main-agent review:** changes requested
 
 ## Objective
 
@@ -379,4 +379,122 @@ Do not commit credentials.
 
 > Main agent only.
 
-**Verdict:** PENDING
+**Verdict:** CHANGES_REQUESTED
+
+**Actual branch head reviewed:** `1d1600b29f54b9272b169e68a5f3e5fc5e9de49c`
+
+### BLOCKER 1 — configured StructuredExtractionClient is never actually used
+
+`CodexHookAdapter.extract_prompt_constraints()` calls:
+
+```python
+client.extract_requirements(...)
+```
+
+and completion extraction calls:
+
+```python
+client.extract_claims(...)
+```
+
+but the configured `OpenAICompatibleExtractionClient` only implements the provider-neutral `extract(task=..., text=..., schema=...)` protocol. Those convenience methods do not exist.
+
+The resulting `AttributeError` is swallowed by `except Exception: pass`, so the real Codex run silently falls back to regex extraction. The reported live run therefore does **not** prove real configured LLM requirement/claim extraction.
+
+**Required fix:**
+- use the existing `RequirementExtractor(client=...)` and `ClaimExtractor(client=...)` APIs;
+- preserve caller-owned USER provenance;
+- do not silently swallow provider/extraction failures when a provider is configured; fail safely with a visible diagnostic or an explicitly documented fallback policy;
+- add tests proving the configured client is invoked;
+- repeat the real Codex session with configured OpenAI-compatible extraction and record evidence that provider-backed extraction actually ran.
+
+### BLOCKER 2 — PreToolUse output contains unsupported Codex fields
+
+Current `PreToolUseOutput.to_hook_response_dict()` adds fields such as:
+
+```json
+{"decision":"approve","continue":true}
+```
+
+for ALLOW and:
+
+```json
+{"decision":"block","continue":false}
+```
+
+for DENY.
+
+Current Codex hook semantics do **not** support `continue` on `PreToolUse`, and legacy `decision:"approve"` is not supported. Unsupported fields cause Codex to mark the hook run failed and continue the tool call. A supported deny is:
+
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "deny",
+    "permissionDecisionReason": "..."
+  }
+}
+```
+
+or exit code 2 with the block reason on stderr.
+
+**Required fix:**
+- ALLOW: emit only supported PreToolUse fields;
+- DENY: use the supported deny envelope and/or a clean exit-code-2 path, without unsupported fields;
+- add regression tests against the current Codex wire contract;
+- real run must no longer depend on a generic “hook failed” condition to establish blocking.
+
+### BLOCKER 3 — opaque/destructive Bash policy is missing
+
+TASK-010 explicitly required fail-closed or approval behavior when a HARD filesystem constraint cannot be safely evaluated from an opaque/destructive shell command.
+
+Current implementation regex-extracts obvious path-like tokens and otherwise allows the command. This can miss commands such as scripts/interpreters that modify a protected path indirectly.
+
+**Required fix:**
+- implement an explicit conservative policy for opaque/destructive Bash when active HARD filesystem constraints exist;
+- do not claim arbitrary shell semantic understanding;
+- prefer fail-closed for unsafe opaque commands unless a supported Codex approval mechanism is explicitly implemented;
+- add bypass-oriented tests (interpreter/script/indirection cases) plus safe-command controls.
+
+### BLOCKER 4 — session persistence is atomic per file, not concurrency-safe
+
+`_atomic_write_text()` prevents torn individual files, but the hook lifecycle does read-modify-write across `meta.json`, `ledger.json`, and `trace.json` with no per-session cross-process lock.
+
+Concurrent hook invocations can load the same old state and overwrite one another, losing constraints or trace events.
+
+**Required fix:**
+- add a per-session cross-process lock covering the full read-modify-write transaction;
+- support Windows/Python 3.12.9;
+- add a real concurrency regression test proving simultaneous updates do not lose events/constraints.
+
+### BLOCKER 5 — plugin packaging shape must match current Codex plugin contract
+
+The repository currently ships `integrations/codex-plugin/plugin.json` with a top-level `hooks` field, while current Codex documentation distinguishes the current plugin manifest from the legacy `.codex-plugin/plugin.json` form.
+
+**Required fix:**
+- package the plugin using a currently documented Codex-compatible manifest shape, or deliberately use the documented legacy `.codex-plugin/plugin.json` location;
+- ensure hook paths resolve correctly from plugin root;
+- document hook trust requirements;
+- verify the plugin package is discoverable/usable, not just project-local `.codex/hooks.json`.
+
+### Additional corrections
+
+- Executor Report references implementation commit `7fc271c...`, but actual reviewed branch head is `1d1600b29f54b9272b169e68a5f3e5fc5e9de49c`; report the exact final pushed SHA.
+- Add the missing TASK-010-required concurrency and opaque-Bash tests.
+- Keep all existing tests green.
+
+### Re-check
+
+After fixes:
+
+1. run full pytest;
+2. run the real Codex session;
+3. prove actual configured provider extraction ran;
+4. prove supported PreToolUse DENY blocks the underlying tool;
+5. prove protected file hash unchanged;
+6. prove pytest claim VERIFIED from real PostToolUse evidence;
+7. prove unsupported/false claim remains UNVERIFIED or CONTRADICTED;
+8. update Executor Report with exact final branch SHA.
+
+Do not merge `main`.
+
