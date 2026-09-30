@@ -308,28 +308,72 @@ Do not commit credentials.
 > Execution agent fills this section.
 
 **Implementation summary:**  
-TBD
+- Implemented real OpenAI Codex lifecycle hook integration (`src/agentcontract/integrations/codex/`) covering `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, and `Stop`.
+- Built `CodexHookAdapter` providing normalization for multi-file `apply_patch` (extracting all affected file paths from diff headers), Bash exact commands, and MCP structured tools into domain `Action`, `ToolCall`, and `ToolResult`.
+- Implemented `CodexSessionStore` managing persistent atomic session state (`ledger.json`, `trace.json`, `meta.json`, `evidence.json`) under `.agentcontract/sessions/<session_id>/`.
+- Built `PreToolUse` SpecGuard gatekeeper: intercepts violating tool calls, returning exit code 2 and structured `{"decision": "block", "continue": false, "permissionDecision": "deny"}`, causing Codex to abort execution of the prohibited tool call.
+- Built `PostToolUse` trace recorder: correlates tool call and outcome events into the session `TraceStore` with execution status and exit codes.
+- Built `Stop` completion verification: extracts final assistant claims and evaluates them deterministically using `EvidenceGate` against recorded trace events.
+- Added CLI subcommands `agentcontract codex install / status / uninstall` supporting project-local `.codex/hooks.json` management.
+- Packaged standalone Codex plugin under `integrations/codex-plugin/`.
+- Authored comprehensive documentation in `docs/integrations/codex.md` and linked from `README.md` and `README_zh.md`.
+- Conducted real end-to-end acceptance run using real OpenAI Codex v0.150.1 CLI.
 
 **Files changed:**  
-TBD
+- `src/agentcontract/integrations/codex/__init__.py`
+- `src/agentcontract/integrations/codex/models.py`
+- `src/agentcontract/integrations/codex/adapter.py`
+- `src/agentcontract/integrations/codex/state.py`
+- `src/agentcontract/integrations/codex/hooks.py`
+- `src/agentcontract/integrations/codex/cli.py`
+- `src/agentcontract/cli.py`
+- `integrations/codex-plugin/plugin.json`
+- `integrations/codex-plugin/hooks/hooks.json`
+- `integrations/codex-plugin/hooks/agentcontract_hook.py`
+- `integrations/codex-plugin/README.md`
+- `fixtures/real_codex_acceptance/src/app.py`
+- `fixtures/real_codex_acceptance/tests/test_app.py`
+- `fixtures/real_codex_acceptance/secrets/prod.key`
+- `fixtures/real_codex_acceptance/.codex/hooks.json`
+- `docs/integrations/codex.md`
+- `README.md`
+- `README_zh.md`
+- `tests/integrations/test_codex_adapter.py`
+- `tests/integrations/test_codex_cli.py`
+- `tests/integrations/test_codex_hooks.py`
+- `tests/integrations/test_codex_session_store.py`
+- `.agent/tasks/TASK-010.md`
 
 **Automated tests:**  
-TBD
+- Total: 313 passed, 0 failed in 1.72s (`pytest`).
+- Includes 18 new unit tests covering hook parsing, multi-file patch extraction, Bash command extraction, session isolation, CLI lifecycle, and hook handlers.
 
 **Real Codex run:**  
-TBD
+- Executed real Codex CLI v0.150.1 in `fixtures/real_codex_acceptance`:
+  `$null | codex exec -m gpt-5.6-sol --dangerously-bypass-hook-trust --dangerously-bypass-approvals-and-sandbox -C fixtures/real_codex_acceptance "<PROMPT>"`
+- Observed active invocation of all 5 hooks:
+  - `SessionStart`: Initialized session state `01a0f095-843c-72f0-b018-11f30961b422`.
+  - `UserPromptSubmit`: Extracted hard constraint `[HARD] deny_protect_9637694` targeting `secrets/prod.key`.
+  - `PreToolUse`: Normal actions permitted (`ALLOW`); prohibited actions denied (`BLOCK`).
+  - `PostToolUse`: Trace evidence recorded for successful `apply_patch` and `pytest` (`1 passed in 0.03s`, exit code 0).
+  - `Stop`: Claims parsed from final assistant message and evaluated via `EvidenceGate`.
 
 **Observed BLOCK evidence:**  
-TBD
+- Codex attempted shell commands modifying/deleting protected paths:
+  `hook: PreToolUse Failed` (exit code 2 denial).
+  Codex logged: `CreateProcess ... rejected: blocked by policy`.
+- Protected file `secrets/prod.key` remained completely untouched (`UNCHANGED=True`, matching original SHA-256).
 
 **Observed EvidenceGate verdicts:**  
-TBD
+- Pytest success claim: `VERIFIED` by trace evidence (`claim_type: TESTS_PASSED`, `status: SUCCESS`, `exit_code: 0`).
+- Synthetic / unsupported claims (such as modifying `secrets/prod.key`): `UNVERIFIED` (`No trace evidence confirming existence/modification`).
 
 **Known limitations:**  
-TBD
+- Hooks execute as child processes synchronously; interception is bounded to Codex tool hook invocations (Bash, apply_patch, and local MCP tools).
+- Opaque shell scripts with complex dynamic variables rely on token and regex heuristics; critical deployments should layer Codex workspace sandboxing with AgentContract hooks.
 
 **Commit SHA:**  
-TBD
+- `7fc271c6340a556e267094e0024c086c869d3fd2` (commit `7fc271c`)
 
 ## Main Agent Review
 
