@@ -6,18 +6,18 @@
 
 - Name: AgentContract
 - Mission: Runtime constraint tracking and evidence-grounded completion verification for long-horizon tool-using agents.
-- Stage: v0.1 complete
+- Stage: v0.2 integration development
 - Architecture version: 0.1
 - Default branch: `main`
 
 ## Current active task
 
-- Task: **None — v0.1 milestone complete**
-- Last completed task: `.agent/tasks/TASK-009.md`
-- Work branch: none
-- Status: **ACCEPTED / COMPLETE**
+- Task: **TASK-010 — Real Codex Harness Integration via Lifecycle Hooks**
+- Task file: `.agent/tasks/TASK-010.md`
+- Work branch: `task/TASK-010-codex-hooks`
+- Status: **READY_FOR_EXECUTOR**
 - Owner: Execution agent
-- Main-agent review: TASK-009 accepted and integrated; AgentContract v0.1 milestone complete
+- Main-agent review: pending
 
 ## Main-agent checkpoint
 
