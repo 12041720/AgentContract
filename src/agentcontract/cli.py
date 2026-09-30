@@ -9,6 +9,7 @@ from typing import Sequence
 import agentcontract
 from agentcontract.benchmark.models import BenchmarkReport, BenchmarkVariant
 from agentcontract.benchmark.runner import BenchmarkRunner
+from agentcontract.common.config import load_config
 
 
 def format_benchmark_text(report: BenchmarkReport) -> str:
@@ -86,15 +87,16 @@ def run_demo_command(online: bool = False) -> int:
         # Guarantee offline execution without network calls
         orig_key = os.environ.pop("OPENAI_API_KEY", None)
         try:
-            return run_quickstart(force_online=False)
+            return run_quickstart(force_online=False, load_env=False)
         finally:
             if orig_key is not None:
                 os.environ["OPENAI_API_KEY"] = orig_key
     else:
+        load_config()
         if not os.environ.get("OPENAI_API_KEY"):
             print("Error: 'agentcontract demo --online' requires the OPENAI_API_KEY environment variable.", file=sys.stderr)
             return 1
-        return run_quickstart(force_online=True)
+        return run_quickstart(force_online=True, load_env=True)
 
 
 def run_benchmark_command(repetitions: int = 1, fmt: str = "text") -> int:
@@ -160,6 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Main CLI entry point."""
+    load_config()
     parser = build_parser()
     args = parser.parse_args(argv)
 

@@ -1,5 +1,6 @@
 """AgentContract: reliability primitives for long-horizon tool-using agents."""
 
+from agentcontract.common.config import load_config, parse_config_content
 from agentcontract.common.immutable import FrozenDict
 from agentcontract.constraints import (
     Constraint,
@@ -214,6 +215,9 @@ __all__ = [
     "to_otlp_trace_id",
     "to_strict_json_schema",
     "validate_strict_json_schema",
+    # Config
+    "load_config",
+    "parse_config_content",
     # Meta
     "__version__",
 ]

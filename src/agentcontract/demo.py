@@ -6,6 +6,7 @@ import sys
 from agentcontract.adapters.exceptions import AdapterConfigurationError
 from agentcontract.adapters.openai import OpenAICompatibleExtractionClient
 from agentcontract.adapters.otel import OTelTraceBridge
+from agentcontract.common.config import load_config
 from agentcontract.constraints.models import (
     ConstraintProvenance,
     ConstraintScope,
@@ -24,8 +25,11 @@ from agentcontract.runtime.models import ToolExecutionOutcome
 from agentcontract.runtime import AgentContractRuntime
 
 
-def run_quickstart(force_online: bool = False) -> int:
+def run_quickstart(force_online: bool = False, load_env: bool = True) -> int:
     """Run the complete end-to-end reliability workflow."""
+    if load_env:
+        load_config()
+
     print("=" * 70)
     print("AgentContract Quickstart: End-to-End Reliability Workflow")
     print("=" * 70)

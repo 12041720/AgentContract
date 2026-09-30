@@ -9,6 +9,7 @@ import urllib.request
 from typing import Any
 
 from agentcontract.adapters.exceptions import AdapterConfigurationError
+from agentcontract.common.config import load_config
 from agentcontract.extraction.client import StructuredExtractionClient
 from agentcontract.extraction.exceptions import ClientExtractionError
 from agentcontract.extraction.models import (
@@ -380,6 +381,7 @@ class OpenAICompatibleExtractionClient(StructuredExtractionClient):
                 recommended default) or 'json_object' (JSON Mode for compatible providers).
             transport: Optional custom transport callable for tests or custom HTTP handling.
         """
+        load_config()
         effective_model = model
         if effective_model == "gpt-4o-mini" and os.environ.get("OPENAI_MODEL"):
             effective_model = os.environ["OPENAI_MODEL"].strip()

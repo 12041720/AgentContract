@@ -11,3 +11,8 @@ build/
 .idea/
 .vscode/
 .DS_Store
+
+# Local environment and configuration files
+.env
+.env.*
+*.env

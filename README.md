@@ -136,6 +136,18 @@ The OpenAI-compatible extraction adapter (`OpenAICompatibleExtractionClient`) an
 | `OPENAI_RESPONSE_FORMAT` | Format mode: `json_schema` (strict Structured Outputs) or `json_object` (JSON mode) | `json_schema` |
 | `OPENAI_TIMEOUT` | Network request timeout in seconds (must be a positive number) | `30.0` (or `120.0` in quickstart) |
 
+### Configuration Files (.env)
+AgentContract automatically discovers and loads configuration from `.env` or `.agentcontract.env` in the working directory or parent directories. It supports environment variable expansion (including PowerShell `$env:VAR` and standard `${VAR}` / `$VAR` syntax):
+
+```ini
+# .env (automatically ignored by git)
+$env:OPENAI_API_KEY = $env:BUPT_API_KEY
+$env:OPENAI_MODEL = "deepseek-v4-flash"
+$env:OPENAI_BASE_URL = "https://myai.bupt.edu.cn/llm-gw/v1"
+$env:OPENAI_RESPONSE_FORMAT = "json_object"
+$env:OPENAI_TIMEOUT = "240"
+```
+
 ### Using Generic OpenAI-Compatible Endpoints
 To use AgentContract with third-party gateways (e.g. DeepSeek, vLLM, LiteLLM, Ollama):
 ```bash
