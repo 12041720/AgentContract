@@ -3,6 +3,7 @@
 from collections.abc import Mapping, Sequence
 import json
 import re
+import sys
 from typing import Any
 
 from agentcontract.adapters.tool_events import ToolEventAdapter
@@ -15,7 +16,9 @@ from agentcontract.constraints.models import (
     RuleEffect,
 )
 from agentcontract.evidence.models import Claim, ClaimType
+from agentcontract.extraction.claims import ClaimExtractor
 from agentcontract.extraction.client import StructuredExtractionClient
+from agentcontract.extraction.requirements import RequirementExtractor
 from agentcontract.guard.models import Action, ActionKind
 from agentcontract.integrations.codex.models import (
     PostToolUsePayload,
@@ -32,6 +35,7 @@ def parse_patch_paths(patch_text: str) -> tuple[str, ...]:
     """Deterministically extract all affected target paths from a unified diff / patch.
 
     Extracts paths from git diff headers, unified diff (--- / +++), context diff (***),
+    Codex patch markers (*** Update File: / *** Add File: / *** Delete File:),
     and Index markers. Discards '/dev/null' and normalizes directory prefixes.
     """
     if not patch_text or not isinstance(patch_text, str):
@@ -41,6 +45,7 @@ def parse_patch_paths(patch_text: str) -> tuple[str, ...]:
 
     def _clean_path(raw: str) -> str | None:
         p = raw.strip().strip("'\"")
+        p = re.sub(r"[/\\]+", "/", p)
         # Remove trailing timestamp if present (e.g. +++ file.txt 2026-09-30 ...)
         p = re.split(r"\s+", p)[0]
         if not p or p == "/dev/null":
@@ -54,6 +59,18 @@ def parse_patch_paths(patch_text: str) -> tuple[str, ...]:
     lines = patch_text.splitlines()
     for line in lines:
         line_str = line.strip()
+        # Skip patch boundary markers
+        if any(line_str.startswith(marker) for marker in ("*** Begin", "*** End")):
+            continue
+
+        # Codex custom patch headers (*** Update File: path, *** Add File: path, *** Delete File: path)
+        if line_str.startswith("*** ") and ":" in line_str:
+            raw = line_str.split(":", 1)[1].strip()
+            p = _clean_path(raw)
+            if p and p not in discovered:
+                discovered.append(p)
+            continue
+
         # diff --git a/path b/path
         if line_str.startswith("diff --git "):
             parts = line_str.split()
@@ -82,8 +99,8 @@ def parse_patch_paths(patch_text: str) -> tuple[str, ...]:
                 discovered.append(p)
             continue
 
-        # *** path
-        if line_str.startswith("*** "):
+        # *** path (classic context diff)
+        if line_str.startswith("*** ") and not line_str.startswith("*** *"):
             raw = line_str[4:].strip()
             p = _clean_path(raw)
             if p and p not in discovered:
@@ -109,7 +126,7 @@ def parse_command_paths(command: str) -> tuple[str, ...]:
     discovered: list[str] = []
 
     def _add(p: str) -> None:
-        cleaned = p.strip().strip("'\"").strip()
+        cleaned = p.strip().strip("'\"").strip().replace("\\", "/")
         if cleaned and cleaned not in discovered and not cleaned.startswith("-"):
             discovered.append(cleaned)
 
@@ -117,14 +134,111 @@ def parse_command_paths(command: str) -> tuple[str, ...]:
     for match in re.finditer(r"(?:>|>>)\s*([^\s;&|]+)", command):
         _add(match.group(1))
 
-    # 2. Common destructive/modifying commands: rm, cp, mv, touch, cat, echo, truncate, sed
+    # 2. PowerShell parameter paths (-LiteralPath 'file', -Path 'file', -FilePath 'file')
+    for match in re.finditer(r"(?:-LiteralPath|-Path|-FilePath)\s+['\"]?([^\s'\";&|]+)", command, re.IGNORECASE):
+        _add(match.group(1))
+
+    # 3. Quoted path-like tokens containing an extension
+    for match in re.finditer(r"['\"]([A-Za-z0-9_./\\-]+\.[A-Za-z0-9_]+)['\"]", command):
+        _add(match.group(1))
+
+    # 4. Common destructive/modifying commands tokens
     cmd_tokens = command.split()
     for token in cmd_tokens:
-        # Check for path-like structures containing / or \ or known extensions
-        if ("/" in token or "\\" in token or token.endswith((".key", ".py", ".json", ".txt", ".md", ".env"))):
+        if "/" in token or "\\" in token or token.endswith((".key", ".py", ".json", ".txt", ".md", ".env")):
             _add(token)
 
     return tuple(discovered)
+
+
+def is_opaque_destructive_command(command: str) -> tuple[bool, str]:
+    """Deterministically determine if a shell command is opaque or destructive.
+
+    Returns:
+        Tuple of `(is_opaque: bool, reason: str)`.
+        If True, the command cannot be statically proven harmless to protected filesystem targets.
+    """
+    if not command or not isinstance(command, str):
+        return False, "empty_command"
+
+    raw = command.strip()
+    if not raw:
+        return False, "empty_command"
+
+    # Split chained commands (;, &&, ||) and evaluate each sub-command
+    sub_commands = re.split(r"(?:\s*;\s*|\s*&&\s*|\s*\|\|\s*)", raw)
+    if len(sub_commands) > 1:
+        for sub in sub_commands:
+            sub = sub.strip()
+            if not sub:
+                continue
+            is_op, reason = is_opaque_destructive_command(sub)
+            if is_op:
+                return True, f"Chained sub-command '{sub}' is opaque/destructive: {reason}"
+        return False, "all_subcommands_safe"
+
+    # 1. Pipeline into shell interpreters (e.g. curl ... | sh, echo ... | bash)
+    if re.search(r"\|\s*(?:bash|sh|zsh|pwsh|powershell|cmd|python|python3|py|node|perl|ruby)\b", raw, re.IGNORECASE):
+        return True, "Pipeline execution into interpreter or shell"
+
+    # 2. Dynamic evaluation primitives
+    if re.search(r"\b(?:eval|exec|source)\s+", raw, re.IGNORECASE) or raw.startswith(". "):
+        return True, "Dynamic command evaluation (eval/exec/source)"
+
+    # 3. Wildcard destructive commands (rm *, del *, Remove-Item *, truncate *)
+    if re.search(r"\b(?:rm|del|erase|truncate)\b.*[\*\?]", raw, re.IGNORECASE) or re.search(r"\bRemove-Item\b.*[\*\?]", raw, re.IGNORECASE):
+        return True, "Wildcard filesystem deletion or truncation"
+
+    # 4. Check for safe test runners without redirection
+    has_redirection = bool(re.search(r"(?:>|>>)", raw))
+    test_runner_match = re.match(
+        r"^(?:pytest|python3?\s+-m\s+pytest|py\s+-m\s+pytest|python3?\s+-m\s+unittest|py\s+-m\s+unittest|npm\s+test|cargo\s+test|go\s+test)\b",
+        raw,
+        re.IGNORECASE,
+    )
+    if test_runner_match:
+        if has_redirection:
+            return True, "Test runner output redirection to file may modify filesystem"
+        return False, "safe_test_runner"
+
+    # 5. Check for safe read-only inspection commands without redirection
+    safe_read_tools = (
+        "cat", "head", "tail", "grep", "rg", "find", "ls", "dir", "tree", "stat",
+        "wc", "diff", "file", "pwd", "cd", "type",
+        "git status", "git diff", "git log", "git show", "git branch", "git tag", "git rev-parse",
+        "get-content", "get-childitem", "get-filehash", "select-string",
+    )
+    lower_raw = raw.lower()
+    for srt in safe_read_tools:
+        if lower_raw == srt or lower_raw.startswith(srt + " "):
+            if has_redirection:
+                return True, f"Inspection command '{srt}' output redirection to file may modify filesystem"
+            return False, "safe_read_only"
+
+    # Safe echo / printf without redirection
+    if lower_raw.startswith("echo ") or lower_raw.startswith("printf "):
+        if not has_redirection and "|" not in raw:
+            return False, "safe_echo"
+
+    # 6. Arbitrary interpreter or script execution:
+    # python <script.py>, python -c "...", bash <script.sh>, sh ..., pwsh ..., powershell ...
+    interpreter_match = re.match(
+        r"^(?:python3?|py|node|perl|ruby|bash|sh|zsh|pwsh|powershell|cmd(?:\.exe)?)\b",
+        raw,
+        re.IGNORECASE,
+    )
+    if interpreter_match:
+        return True, f"Arbitrary interpreter execution ({interpreter_match.group(0)}) cannot statically guarantee filesystem safety"
+
+    # 7. Redirection with variables or wildcards
+    if re.search(r"(?:>|>>)\s*[\$\*]", raw):
+        return True, "Dynamic or wildcard file redirection"
+
+    # 8. By default, if command contains wildcards:
+    if "*" in raw or "?" in raw:
+        return True, "Unrecognized command with wildcards cannot statically guarantee filesystem safety"
+
+    return False, "known_command"
 
 
 class CodexHookAdapter:
@@ -145,8 +259,16 @@ class CodexHookAdapter:
                 tool_input.get("patch")
                 or tool_input.get("diff")
                 or tool_input.get("content")
+                or tool_input.get("command")
+                or tool_input.get("input")
                 or ""
             )
+            if not patch_content:
+                for v in tool_input.values():
+                    if isinstance(v, str) and any(m in v for m in ("*** Begin Patch", "diff --git", "--- ", "+++ ", "*** Update File")):
+                        patch_content = v
+                        break
+
             extracted_paths = list(parse_patch_paths(str(patch_content)))
 
             # If explicit path or file_path is given in tool_input, include it
@@ -160,7 +282,7 @@ class CodexHookAdapter:
 
             action_kind = ActionKind.FILE_WRITE
             if "delete" in str(patch_content).lower() or "/dev/null" in str(patch_content):
-                action_kind = ActionKind.FILE_WRITE  # Guard checks both or specific actions
+                action_kind = ActionKind.FILE_DELETE
 
             return Action(
                 action_kind=action_kind,
@@ -188,6 +310,7 @@ class CodexHookAdapter:
             )
             cmd_paths = parse_command_paths(command_str)
             primary_path = cmd_paths[0] if cmd_paths else None
+            is_opaque, opaque_reason = is_opaque_destructive_command(command_str)
 
             # Policy: if command targets a filesystem path, note target_type as filesystem
             target_type = "filesystem" if cmd_paths else "command"
@@ -205,6 +328,8 @@ class CodexHookAdapter:
                     "command": command_str,
                     "target_paths": cmd_paths,
                     "session_id": payload.session_id,
+                    "is_opaque": is_opaque,
+                    "opaque_reason": opaque_reason,
                 },
             )
 
@@ -294,10 +419,24 @@ class CodexHookAdapter:
         # If extraction client provided, run model extraction
         if client is not None:
             try:
-                extraction = client.extract_requirements(prompt)
-                return list(extraction.constraints)
-            except Exception:
-                pass
+                extractor = RequirementExtractor(client=client)
+                extraction = extractor.extract(
+                    text=prompt,
+                    source=ConstraintSource.USER,
+                    author="User",
+                    strict=False,
+                )
+                if extraction.items:
+                    return list(extraction.items)
+                if extraction.diagnostics:
+                    sys.stderr.write(
+                        f"[AgentContract] Provider requirement extraction returned {len(extraction.diagnostics)} diagnostic(s) but no constraints.\n"
+                    )
+            except Exception as exc:
+                sys.stderr.write(
+                    f"[AgentContract WARNING] Configured provider requirement extraction failed: {exc}. "
+                    "Falling back to deterministic rule-based extraction.\n"
+                )
 
         # Deterministic rule-based extraction fallback
         constraints: list[Constraint] = []
@@ -340,6 +479,7 @@ class CodexHookAdapter:
         prose: str,
         trace_id: str,
         client: StructuredExtractionClient | None = None,
+        session_id: str | None = None,
     ) -> list[Claim]:
         """Extract verifiable completion claims from agent prose."""
         if not prose or not prose.strip():
@@ -347,10 +487,24 @@ class CodexHookAdapter:
 
         if client is not None:
             try:
-                extraction = client.extract_claims(prose, trace_id=trace_id)
-                return list(extraction.claims)
-            except Exception:
-                pass
+                extractor = ClaimExtractor(client=client)
+                extraction = extractor.extract(
+                    text=prose,
+                    trace_id=trace_id,
+                    session_id=session_id,
+                    strict=False,
+                )
+                if extraction.items:
+                    return list(extraction.items)
+                if extraction.diagnostics:
+                    sys.stderr.write(
+                        f"[AgentContract] Provider claim extraction returned {len(extraction.diagnostics)} diagnostic(s) but no claims.\n"
+                    )
+            except Exception as exc:
+                sys.stderr.write(
+                    f"[AgentContract WARNING] Configured provider claim extraction failed: {exc}. "
+                    "Falling back to deterministic rule-based extraction.\n"
+                )
 
         # Deterministic extraction fallback
         claims: list[Claim] = []

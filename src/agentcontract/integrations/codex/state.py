@@ -1,15 +1,105 @@
 """Session persistence store for Codex lifecycle hooks."""
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 import re
+import sys
 import tempfile
-from typing import Any
+import time
+from typing import Any, Iterator
 
 from agentcontract.constraints.ledger import ConstraintLedger
 from agentcontract.trace.store import TraceStore
+
+
+class SessionLock:
+    """Cross-process per-session file lock supporting both Windows and POSIX."""
+
+    def __init__(
+        self,
+        lock_path: str | Path,
+        timeout: float = 10.0,
+        retry_interval: float = 0.05,
+    ) -> None:
+        self.lock_path = Path(lock_path)
+        self.timeout = timeout
+        self.retry_interval = retry_interval
+        self._fd: int | None = None
+
+    def acquire(self) -> None:
+        """Acquire lock within timeout seconds, or raise TimeoutError."""
+        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        start_time = time.monotonic()
+        fd = os.open(str(self.lock_path), os.O_RDWR | os.O_CREAT)
+
+        while True:
+            try:
+                if sys.platform == "win32":
+                    import msvcrt
+                    # Lock first byte non-blocking
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self._fd = fd
+                return
+            except (OSError, BlockingIOError, PermissionError):
+                elapsed = time.monotonic() - start_time
+                if elapsed >= self.timeout:
+                    os.close(fd)
+                    raise TimeoutError(
+                        f"Timed out after {self.timeout:.1f}s waiting for session lock at {self.lock_path}"
+                    )
+                time.sleep(self.retry_interval)
+
+    def release(self) -> None:
+        """Release lock and close file descriptor."""
+        if self._fd is not None:
+            try:
+                if sys.platform == "win32":
+                    import msvcrt
+                    try:
+                        msvcrt.locking(self._fd, msvcrt.LK_UNLCK, 1)
+                    except OSError:
+                        pass
+                else:
+                    import fcntl
+                    try:
+                        fcntl.flock(self._fd, fcntl.LOCK_UN)
+                    except OSError:
+                        pass
+            finally:
+                os.close(self._fd)
+                self._fd = None
+
+    def __enter__(self) -> "SessionLock":
+        self.acquire()
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.release()
+
+
+class SessionTransaction:
+    """Active transaction context for atomic, concurrency-safe session operations."""
+
+    def __init__(
+        self,
+        session_id: str,
+        trace_id: str,
+        ledger: ConstraintLedger,
+        trace_store: TraceStore,
+        meta: dict[str, Any],
+    ) -> None:
+        self.session_id = session_id
+        self.trace_id = trace_id
+        self.ledger = ledger
+        self.trace_store = trace_store
+        self.meta = meta
+        self.evidence: dict[str, Any] | None = None
 
 
 def _sanitize_session_id(session_id: str) -> str:
@@ -152,6 +242,38 @@ class CodexSessionStore:
 
         if evidence is not None:
             _atomic_write_text(sdir / "evidence.json", json.dumps(evidence, indent=2))
+
+    @contextmanager
+    def session_transaction(
+        self, session_id: str, timeout: float = 10.0
+    ) -> Iterator[SessionTransaction]:
+        """Execute a concurrency-safe read-modify-write session transaction.
+
+        Acquires a cross-process lock for the session, loads current state,
+        yields a SessionTransaction object, and automatically saves the updated
+        state upon exiting the context.
+        """
+        clean_id = _sanitize_session_id(session_id)
+        self._base_dir.mkdir(parents=True, exist_ok=True)
+        lock_path = self._base_dir / f"{clean_id}.lock"
+
+        with SessionLock(lock_path, timeout=timeout):
+            trace_id, ledger, trace_store, meta = self.get_or_create_session(session_id)
+            tx = SessionTransaction(
+                session_id=session_id,
+                trace_id=trace_id,
+                ledger=ledger,
+                trace_store=trace_store,
+                meta=meta,
+            )
+            yield tx
+            self.save_session(
+                session_id=session_id,
+                ledger=tx.ledger,
+                trace_store=tx.trace_store,
+                meta=tx.meta,
+                evidence=tx.evidence,
+            )
 
     def list_sessions(self) -> list[dict[str, Any]]:
         """List summary information for all stored sessions."""

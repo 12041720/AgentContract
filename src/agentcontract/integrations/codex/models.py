@@ -87,14 +87,6 @@ class PreToolUseOutput(BaseModel):
         }
         if self.permissionDecisionReason:
             output["permissionDecisionReason"] = self.permissionDecisionReason
-        resp: dict[str, Any] = {
+        return {
             "hookSpecificOutput": output,
         }
-        if self.permissionDecision == HookDecision.DENY:
-            resp["decision"] = "block"
-            resp["continue"] = False
-            resp["reason"] = self.permissionDecisionReason
-        else:
-            resp["decision"] = "approve"
-            resp["continue"] = True
-        return resp

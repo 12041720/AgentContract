@@ -100,11 +100,11 @@ def test_lifecycle_workflow_end_to_end(tmp_path: Path) -> None:
         tool_use_id="call_patch_bad",
     )
     code, resp = handle_pre_tool_use(deny_patch_payload, store)
-    assert code == 2  # Hard BLOCK exit code
+    assert code == 0  # Clean hook execution returning structured DENY
     assert resp["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert "BLOCK:" in resp["hookSpecificOutput"]["permissionDecisionReason"]
 
-    # 7. PreToolUse: FORBIDDEN Bash modifying secrets/prod.key -> MUST BLOCK (exit code 2)
+    # 7. PreToolUse: FORBIDDEN Bash modifying secrets/prod.key -> MUST BLOCK
     deny_bash_payload = PreToolUsePayload(
         session_id=session_id,
         hook_event_name="PreToolUse",
@@ -113,7 +113,7 @@ def test_lifecycle_workflow_end_to_end(tmp_path: Path) -> None:
         tool_use_id="call_bash_bad",
     )
     code, resp = handle_pre_tool_use(deny_bash_payload, store)
-    assert code == 2
+    assert code == 0
     assert resp["hookSpecificOutput"]["permissionDecision"] == "deny"
 
     # 8. PreToolUse & PostToolUse: Running pytest (Allowed)
@@ -173,3 +173,113 @@ def test_run_hook_empty_input_fails_safely(tmp_path: Path) -> None:
     code, resp = run_hook(stdin_data="", session_store=store)
     assert code == 0
     assert resp == {}
+
+
+def test_opaque_bash_fail_closed_with_active_hard_constraint(tmp_path: Path) -> None:
+    store = CodexSessionStore(base_dir=tmp_path / "sessions")
+    session_id = "sess_opaque_test"
+
+    # Add hard filesystem constraint to session ledger
+    with store.session_transaction(session_id) as tx:
+        from agentcontract.constraints.models import (
+            Constraint,
+            ConstraintProvenance,
+            ConstraintScope,
+            ConstraintSource,
+            ConstraintStrength,
+            RuleEffect,
+        )
+        tx.ledger.add(
+            Constraint(
+                id="c_hard_secret",
+                name="protect_secrets",
+                description="Do not touch secrets/prod.key",
+                strength=ConstraintStrength.HARD,
+                rule_effect=RuleEffect.DENY,
+                provenance=ConstraintProvenance(source=ConstraintSource.USER, author="User"),
+                scope=ConstraintScope(target_type="filesystem", paths=("secrets/prod.key",)),
+            )
+        )
+
+    # 1. Opaque python script -> MUST BLOCK fail-closed (exit 2)
+    py_script_payload = PreToolUsePayload(
+        session_id=session_id,
+        hook_event_name="PreToolUse",
+        tool_name="Bash",
+        tool_input={"command": "python script.py"},
+    )
+    code, resp = handle_pre_tool_use(py_script_payload, store)
+    assert code == 0
+    assert resp["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "fail-closed policy" in resp["hookSpecificOutput"]["permissionDecisionReason"]
+
+    # 2. Opaque inline python -> MUST BLOCK fail-closed (deny)
+    py_c_payload = PreToolUsePayload(
+        session_id=session_id,
+        hook_event_name="PreToolUse",
+        tool_name="Bash",
+        tool_input={"command": "python -c \"import os; os.remove('secrets/prod.key')\""},
+    )
+    code, resp = handle_pre_tool_use(py_c_payload, store)
+    assert code == 0
+    assert resp["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    # 3. Opaque shell script -> MUST BLOCK fail-closed (deny)
+    sh_payload = PreToolUsePayload(
+        session_id=session_id,
+        hook_event_name="PreToolUse",
+        tool_name="Bash",
+        tool_input={"command": "bash run_indirection.sh"},
+    )
+    code, resp = handle_pre_tool_use(sh_payload, store)
+    assert code == 0
+    assert resp["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    # 4. Destructive wildcard rm -> MUST BLOCK fail-closed (deny)
+    rm_payload = PreToolUsePayload(
+        session_id=session_id,
+        hook_event_name="PreToolUse",
+        tool_name="Bash",
+        tool_input={"command": "rm -rf *"},
+    )
+    code, resp = handle_pre_tool_use(rm_payload, store)
+    assert code == 0
+    assert resp["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    # 5. Safe test runner -> MUST BE ALLOWED (exit 0)
+    pytest_payload = PreToolUsePayload(
+        session_id=session_id,
+        hook_event_name="PreToolUse",
+        tool_name="Bash",
+        tool_input={"command": "pytest tests/test_app.py"},
+    )
+    code, resp = handle_pre_tool_use(pytest_payload, store)
+    assert code == 0
+    assert resp["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+    # 6. Safe inspection command -> MUST BE ALLOWED (exit 0)
+    cat_payload = PreToolUsePayload(
+        session_id=session_id,
+        hook_event_name="PreToolUse",
+        tool_name="Bash",
+        tool_input={"command": "cat src/app.py"},
+    )
+    code, resp = handle_pre_tool_use(cat_payload, store)
+    assert code == 0
+    assert resp["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+
+def test_opaque_bash_allowed_when_no_hard_filesystem_constraints(tmp_path: Path) -> None:
+    store = CodexSessionStore(base_dir=tmp_path / "sessions")
+    session_id = "sess_no_constraints"
+
+    # With empty ledger, opaque python script should be allowed
+    py_payload = PreToolUsePayload(
+        session_id=session_id,
+        hook_event_name="PreToolUse",
+        tool_name="Bash",
+        tool_input={"command": "python setup.py build"},
+    )
+    code, resp = handle_pre_tool_use(py_payload, store)
+    assert code == 0
+    assert resp["hookSpecificOutput"]["permissionDecision"] == "allow"
