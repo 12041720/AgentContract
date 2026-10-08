@@ -703,3 +703,19 @@ See Main Agent Review in `.agent/tasks/TASK-010.md` for exact fixes. No main mer
 Full repair acceptance instructions persisted in `.agent/tasks/TASK-010.md`; no merge to main.
 
 ---
+
+## 2026-10-08 — TASK-010 fourth review
+
+**Implementation reviewed:** `ed68dffa7176d390ac10a87b34a278e0b0c6b173`  
+**Branch head reviewed:** `f45bab73a65a4e4dabf84b2995d983c1f90c7b71`  
+**Verdict:** CHANGES_REQUESTED
+
+**Progress:** Round-3 guard correctness fixes are present: fine-grained mixed-patch evaluation; missing ledger/trace fail-closed; malformed PreToolUse deny; official nested plugin hook manifest. Executor reports 340 passing tests and live Codex DENY/VERIFIED/UNVERIFIED.
+
+**Remaining blockers:**
+1. Uncaught PreToolUse exceptions, especially per-session `SessionLock` TimeoutError or I/O errors, can exit hook without explicit DENY; Codex hook failures can fail open.
+2. Real Codex plugin marketplace install/list proves discovery and enablement but not that plugin hooks were trusted and executed; real safety session used project-local hooks instead.
+
+See precise acceptance checks in `.agent/tasks/TASK-010.md`. Keep task on branch; no main merge.
+
+---
