@@ -186,16 +186,56 @@ def handle_pre_tool_use(
                 sys.stderr.write(f"\n[AgentContract SpecGuard] BLOCKED: {block_reason}\n")
                 return 0, output.to_hook_response_dict()
 
-            # 4. Standard SpecGuard evaluation
-            guard = SpecGuard(ledger=tx.ledger)
-            decision = guard.evaluate(action)
-
-            # If action has fine-grained patch operations, evaluate each (path, kind) independently
+            # 4. Patch inspection & fine-grained evaluation
+            is_patch_tool = (action.operation == "apply_patch") or any(
+                alias in payload.tool_name.lower()
+                for alias in ("apply_patch", "patch", "edit_file", "patch_file")
+            )
             patch_ops = action.context.get("patch_operations")
-            if patch_ops and not decision.is_blocked:
+
+            # Check uninspectable patch under active HARD filesystem constraints
+            if is_patch_tool and (not action.paths or not patch_ops) and active_hard_fs:
+                block_reason = (
+                    "BLOCK: Uninspectable patch with no deterministically extractable target paths "
+                    "rejected under active HARD filesystem constraints (fail-closed policy)."
+                )
+                events = tx.trace_store.list_events(tx.trace_id)
+                seq = events[-1].sequence + 1 if events else 0
+                guard_event = TraceEvent(
+                    event_id=f"evt_guard_{seq}_{abs(hash(str(payload.tool_input))) % 1000000:06d}",
+                    trace_id=tx.trace_id,
+                    session_id=payload.session_id,
+                    sequence=seq,
+                    timestamp=datetime.now(timezone.utc),
+                    actor=ActorKind.GUARD,
+                    event_kind=EventKind.GUARD_DECISION,
+                    payload={
+                        "decision": "BLOCK",
+                        "reason": block_reason,
+                        "action": action.model_dump(mode="json"),
+                    },
+                    metadata=FrozenDict({
+                        "tool_name": payload.tool_name,
+                        "verdict": "BLOCK",
+                        "policy": "uninspectable_patch_fail_closed",
+                    }),
+                )
+                tx.trace_store.append(guard_event)
+
+                output = PreToolUseOutput(
+                    permissionDecision=HookDecision.DENY,
+                    permissionDecisionReason=block_reason,
+                )
+                sys.stderr.write(f"\n[AgentContract SpecGuard] BLOCKED: {block_reason}\n")
+                return 0, output.to_hook_response_dict()
+
+            # 5. SpecGuard evaluation: evaluate each (path, action_kind) sub-action independently for patches
+            guard = SpecGuard(ledger=tx.ledger)
+            if is_patch_tool and patch_ops:
+                sub_decisions: list[GuardDecision] = []
                 for p_path, p_kind in patch_ops:
                     sub_action = Action(
-                        action_kind=ActionKind(p_kind),
+                        action_kind=ActionKind(p_kind) if isinstance(p_kind, str) else p_kind,
                         tool_name=payload.tool_name,
                         target_path=p_path,
                         paths=(p_path,),
@@ -209,9 +249,10 @@ def handle_pre_tool_use(
                         }),
                     )
                     sub_dec = guard.evaluate(sub_action)
-                    if sub_dec.is_blocked:
-                        decision = sub_dec
-                        break
+                    sub_decisions.append(sub_dec)
+                decision = guard._aggregate_decisions(action=action, decisions=sub_decisions)
+            else:
+                decision = guard.evaluate(action)
 
             # 5. Record guard decision in trace
             events = tx.trace_store.list_events(tx.trace_id)
@@ -449,6 +490,14 @@ def handle_stop(
     return 0, resp
 
 
+def _is_pre_tool_event(event: str | None) -> bool:
+    """Check whether an event name indicates a PreToolUse hook."""
+    if not event:
+        return False
+    norm = str(event).replace("-", "_").lower()
+    return "pre_tool" in norm or norm == "pretooluse"
+
+
 def run_hook(
     stdin_data: str | None = None,
     event_name: str | None = None,
@@ -465,18 +514,51 @@ def run_hook(
             stdin_data = ""
 
     if not stdin_data or not stdin_data.strip():
+        if _is_pre_tool_event(event_name):
+            block_reason = "BLOCK: Empty or missing stdin payload for PreToolUse hook."
+            sys.stderr.write(f"\n[AgentContract SpecGuard] BLOCKED: {block_reason}\n")
+            output = PreToolUseOutput(
+                permissionDecision=HookDecision.DENY,
+                permissionDecisionReason=block_reason,
+            )
+            return 0, output.to_hook_response_dict()
         return 0, {}
 
     try:
         raw_data = json.loads(stdin_data)
     except Exception as err:
         sys.stderr.write(f"AgentContract: Failed to parse hook stdin JSON: {err}\n")
+        is_pre_tool = _is_pre_tool_event(event_name) or (
+            "pretooluse" in stdin_data.replace("-", "").replace("_", "").lower()
+        )
+        if is_pre_tool:
+            block_reason = f"BLOCK: Malformed or unparseable JSON in PreToolUse hook: {err}"
+            sys.stderr.write(f"\n[AgentContract SpecGuard] BLOCKED: {block_reason}\n")
+            output = PreToolUseOutput(
+                permissionDecision=HookDecision.DENY,
+                permissionDecisionReason=block_reason,
+            )
+            return 0, output.to_hook_response_dict()
+        return 0, {}
+
+    if not isinstance(raw_data, dict):
+        if _is_pre_tool_event(event_name):
+            block_reason = "BLOCK: Hook payload JSON must be an object/dict."
+            sys.stderr.write(f"\n[AgentContract SpecGuard] BLOCKED: {block_reason}\n")
+            output = PreToolUseOutput(
+                permissionDecision=HookDecision.DENY,
+                permissionDecisionReason=block_reason,
+            )
+            return 0, output.to_hook_response_dict()
         return 0, {}
 
     # Identify hook event name
     effective_event = event_name or raw_data.get("hook_event_name") or raw_data.get("hookEventName")
     if not effective_event:
-        return 0, {}
+        if "tool_name" in raw_data or "tool_use_id" in raw_data:
+            effective_event = "PostToolUse" if "tool_response" in raw_data else "PreToolUse"
+        else:
+            return 0, {}
 
     # Normalize event name
     event_str = str(effective_event).replace("-", "_").lower()
@@ -491,7 +573,16 @@ def run_hook(
             return handle_user_prompt_submit(payload, store, client=client)
 
         if "pre_tool" in event_str or event_str == "pretooluse":
-            payload = PreToolUsePayload.model_validate(raw_data)
+            try:
+                payload = PreToolUsePayload.model_validate(raw_data)
+            except Exception as val_err:
+                block_reason = f"BLOCK: Invalid PreToolUse payload schema: {val_err}"
+                sys.stderr.write(f"\n[AgentContract SpecGuard] BLOCKED: {block_reason}\n")
+                output = PreToolUseOutput(
+                    permissionDecision=HookDecision.DENY,
+                    permissionDecisionReason=block_reason,
+                )
+                return 0, output.to_hook_response_dict()
             return handle_pre_tool_use(payload, store)
 
         if "post_tool" in event_str or event_str == "posttooluse":

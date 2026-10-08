@@ -184,7 +184,9 @@ class CodexSessionStore:
 
         now_iso = datetime.now(timezone.utc).isoformat()
 
-        if meta_file.is_file():
+        session_is_existing = meta_file.is_file()
+
+        if session_is_existing:
             raw_meta = meta_file.read_text(encoding="utf-8")
             try:
                 meta = json.loads(raw_meta)
@@ -213,6 +215,10 @@ class CodexSessionStore:
                 raise CorruptedLedgerError(
                     f"Corrupted or invalid constraint ledger file at '{ledger_file}': {exc}"
                 ) from exc
+        elif session_is_existing:
+            raise CorruptedLedgerError(
+                f"Missing constraint ledger file for existing session '{session_id}' at '{ledger_file}'"
+            )
         else:
             ledger = ConstraintLedger()
 
@@ -225,10 +231,14 @@ class CodexSessionStore:
                 raise CorruptedSessionStateError(
                     f"Corrupted or invalid trace store file at '{trace_file}': {exc}"
                 ) from exc
+        elif session_is_existing:
+            raise CorruptedSessionStateError(
+                f"Missing trace store file for existing session '{session_id}' at '{trace_file}'"
+            )
         else:
             trace_store = TraceStore()
 
-        if not meta_file.is_file():
+        if not session_is_existing:
             self.save_session(session_id, ledger, trace_store, meta)
 
         return trace_id, ledger, trace_store, meta

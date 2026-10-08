@@ -228,3 +228,21 @@ def test_session_store_corrupted_trace_raises_error(tmp_path: Path) -> None:
 
     with pytest.raises(CorruptedSessionStateError):
         store.get_or_create_session(session_id)
+
+
+def test_session_store_missing_ledger_on_existing_session_raises_error(tmp_path: Path) -> None:
+    base_dir = tmp_path / "sessions"
+    store = CodexSessionStore(base_dir=base_dir)
+    session_id = "missing_ledger_existing_session"
+
+    # Create session with meta.json and ledger.json
+    store.get_or_create_session(session_id)
+    ledger_path = store.get_session_dir(session_id) / "ledger.json"
+    assert ledger_path.is_file()
+
+    # Delete ledger.json from existing session
+    ledger_path.unlink()
+
+    with pytest.raises(CorruptedLedgerError) as exc_info:
+        store.get_or_create_session(session_id)
+    assert "Missing constraint ledger file for existing session" in str(exc_info.value)

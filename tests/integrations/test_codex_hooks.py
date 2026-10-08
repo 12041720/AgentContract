@@ -493,3 +493,272 @@ def test_corrupted_ledger_fails_closed_in_pre_tool_use(tmp_path: Path) -> None:
 
     # File on disk remains intact and was not overwritten
     assert ledger_path.read_text(encoding="utf-8") == corrupt_content
+
+
+def test_mixed_patch_allowed_when_only_unrelated_path_is_deleted(tmp_path: Path) -> None:
+    # Regression for Blocker 1: Update on secrets/prod.key + Delete on tmp.txt
+    # When constraint DENY FILE_DELETE on secrets/prod.key exists, MUST ALLOW because secrets/prod.key is only written, not deleted.
+    store = CodexSessionStore(base_dir=tmp_path / "sessions")
+    session_id = "sess_mixed_patch_allowed"
+
+    with store.session_transaction(session_id) as tx:
+        from agentcontract.constraints.models import (
+            Constraint,
+            ConstraintProvenance,
+            ConstraintScope,
+            ConstraintSource,
+            ConstraintStrength,
+            RuleEffect,
+        )
+        tx.ledger.add(
+            Constraint(
+                id="c_deny_delete_secret",
+                name="no_delete_secrets",
+                description="Do not delete secrets/prod.key (writes are permitted)",
+                strength=ConstraintStrength.HARD,
+                rule_effect=RuleEffect.DENY,
+                provenance=ConstraintProvenance(source=ConstraintSource.USER, author="User"),
+                scope=ConstraintScope(
+                    target_type="filesystem",
+                    paths=("secrets/prod.key",),
+                    actions=("FILE_DELETE",),
+                ),
+            )
+        )
+
+    patch_text = """*** Begin Patch
+*** Update File: secrets/prod.key
+@@ -1,1 +1,1 @@
+-old
++new
+*** Delete File: tmp.txt
+@@ -1,1 +0,0 @@
+-temp
+*** End Patch"""
+
+    payload = PreToolUsePayload(
+        session_id=session_id,
+        hook_event_name="PreToolUse",
+        tool_name="apply_patch",
+        tool_input={"patch": patch_text},
+        tool_use_id="call_patch_allowed",
+    )
+    code, resp = handle_pre_tool_use(payload, store)
+    assert code == 0
+    # Must NOT false-BLOCK: write on secrets/prod.key is permitted, and delete is on tmp.txt
+    assert resp["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+
+def test_mixed_patch_denied_when_matched_pair_violates(tmp_path: Path) -> None:
+    # Regression for Blocker 1: Update on secrets/prod.key + Delete on tmp.txt
+    # When constraint DENY FILE_WRITE on secrets/prod.key exists, MUST BLOCK.
+    store = CodexSessionStore(base_dir=tmp_path / "sessions")
+    session_id = "sess_mixed_patch_denied"
+
+    with store.session_transaction(session_id) as tx:
+        from agentcontract.constraints.models import (
+            Constraint,
+            ConstraintProvenance,
+            ConstraintScope,
+            ConstraintSource,
+            ConstraintStrength,
+            RuleEffect,
+        )
+        tx.ledger.add(
+            Constraint(
+                id="c_deny_write_secret",
+                name="no_write_secrets",
+                description="Do not modify secrets/prod.key",
+                strength=ConstraintStrength.HARD,
+                rule_effect=RuleEffect.DENY,
+                provenance=ConstraintProvenance(source=ConstraintSource.USER, author="User"),
+                scope=ConstraintScope(
+                    target_type="filesystem",
+                    paths=("secrets/prod.key",),
+                    actions=("FILE_WRITE",),
+                ),
+            )
+        )
+
+    patch_text = """*** Begin Patch
+*** Update File: secrets/prod.key
+@@ -1,1 +1,1 @@
+-old
++new
+*** Delete File: tmp.txt
+@@ -1,1 +0,0 @@
+-temp
+*** End Patch"""
+
+    payload = PreToolUsePayload(
+        session_id=session_id,
+        hook_event_name="PreToolUse",
+        tool_name="apply_patch",
+        tool_input={"patch": patch_text},
+        tool_use_id="call_patch_denied",
+    )
+    code, resp = handle_pre_tool_use(payload, store)
+    assert code == 0
+    assert resp["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "BLOCK: Action violates constraint" in resp["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_uninspectable_patch_denied_under_hard_constraints(tmp_path: Path) -> None:
+    # Regression for Blocker 1: uninspectable patch with no extractable paths must fail-closed under HARD constraints
+    store = CodexSessionStore(base_dir=tmp_path / "sessions")
+    session_id = "sess_uninspectable_patch"
+
+    with store.session_transaction(session_id) as tx:
+        from agentcontract.constraints.models import (
+            Constraint,
+            ConstraintProvenance,
+            ConstraintScope,
+            ConstraintSource,
+            ConstraintStrength,
+            RuleEffect,
+        )
+        tx.ledger.add(
+            Constraint(
+                id="c_hard_secret",
+                name="protect_secrets",
+                description="Do not touch secrets/prod.key",
+                strength=ConstraintStrength.HARD,
+                rule_effect=RuleEffect.DENY,
+                provenance=ConstraintProvenance(source=ConstraintSource.USER, author="User"),
+                scope=ConstraintScope(target_type="filesystem", paths=("secrets/prod.key",)),
+            )
+        )
+
+    payload = PreToolUsePayload(
+        session_id=session_id,
+        hook_event_name="PreToolUse",
+        tool_name="apply_patch",
+        tool_input={"patch": "completely corrupted diff with no files @@ ++ --"},
+        tool_use_id="call_uninspectable_patch",
+    )
+    code, resp = handle_pre_tool_use(payload, store)
+    assert code == 0
+    assert resp["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "Uninspectable patch with no deterministically extractable target paths" in resp["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_missing_ledger_on_existing_session_blocks_pre_tool_use(tmp_path: Path) -> None:
+    # Regression for Blocker 2: existing session missing ledger.json must fail-closed with deny
+    store = CodexSessionStore(base_dir=tmp_path / "sessions")
+    session_id = "sess_missing_ledger_fail_closed"
+
+    # 1. Initialize session with a HARD constraint
+    with store.session_transaction(session_id) as tx:
+        from agentcontract.constraints.models import (
+            Constraint,
+            ConstraintProvenance,
+            ConstraintScope,
+            ConstraintSource,
+            ConstraintStrength,
+            RuleEffect,
+        )
+        tx.ledger.add(
+            Constraint(
+                id="c_hard_secret",
+                name="protect_secrets",
+                description="Do not touch secrets/prod.key",
+                strength=ConstraintStrength.HARD,
+                rule_effect=RuleEffect.DENY,
+                provenance=ConstraintProvenance(source=ConstraintSource.USER, author="User"),
+                scope=ConstraintScope(target_type="filesystem", paths=("secrets/prod.key",)),
+            )
+        )
+
+    # 2. Delete ledger.json from disk
+    ledger_file = store.get_session_dir(session_id) / "ledger.json"
+    assert ledger_file.is_file()
+    ledger_file.unlink()
+
+    # 3. Call PreToolUse hook
+    payload = PreToolUsePayload(
+        session_id=session_id,
+        hook_event_name="PreToolUse",
+        tool_name="Bash",
+        tool_input={"command": "cat src/app.py"},
+        tool_use_id="call_check_missing_ledger",
+    )
+    code, resp = handle_pre_tool_use(payload, store)
+    assert code == 0
+    assert resp["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "Missing constraint ledger file for existing session" in resp["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_pre_tool_use_malformed_inputs_fail_closed(tmp_path: Path) -> None:
+    # Regression for Blocker 3: empty stdin, bad JSON, missing tool_name, invalid tool_input
+    store = CodexSessionStore(base_dir=tmp_path / "sessions")
+
+    # 1. Empty stdin
+    code, resp = run_hook(stdin_data="", event_name="PreToolUse", session_store=store)
+    assert code == 0
+    assert resp["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "Empty or missing stdin payload" in resp["hookSpecificOutput"]["permissionDecisionReason"]
+
+    # 2. Malformed JSON with PreToolUse event name
+    code, resp = run_hook(stdin_data="{ broken json", event_name="PreToolUse", session_store=store)
+    assert code == 0
+    assert resp["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "Malformed or unparseable JSON" in resp["hookSpecificOutput"]["permissionDecisionReason"]
+
+    # 3. Malformed JSON containing PreToolUse in raw text without explicit event_name
+    code, resp = run_hook(stdin_data="{\"hook_event_name\": \"PreToolUse\", corrupted...", session_store=store)
+    assert code == 0
+    assert resp["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    # 4. Missing tool_name
+    bad_payload = json.dumps({"session_id": "sess_bad", "hook_event_name": "PreToolUse"})
+    code, resp = run_hook(stdin_data=bad_payload, session_store=store)
+    assert code == 0
+    assert resp["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "Invalid PreToolUse payload schema" in resp["hookSpecificOutput"]["permissionDecisionReason"]
+
+    # 5. Invalid tool_input (not a dictionary/mapping)
+    bad_input_payload = json.dumps({
+        "session_id": "sess_bad",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": "should_be_a_dict_not_a_string",
+    })
+    code, resp = run_hook(stdin_data=bad_input_payload, session_store=store)
+    assert code == 0
+    assert resp["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "Invalid PreToolUse payload schema" in resp["hookSpecificOutput"]["permissionDecisionReason"]
+
+    # 6. Non-dict root JSON
+    code, resp = run_hook(stdin_data="[1, 2, 3]", event_name="PreToolUse", session_store=store)
+    assert code == 0
+    assert resp["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "must be an object/dict" in resp["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_pre_tool_use_cli_subprocess_fail_closed() -> None:
+    # Regression for Blocker 3: CLI execution of hooks PreToolUse must fail-closed
+    import subprocess
+    import sys
+
+    # Run with empty stdin
+    res = subprocess.run(
+        [sys.executable, "-m", "agentcontract.integrations.codex.hooks", "PreToolUse"],
+        input="",
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0
+    data = json.loads(res.stdout)
+    assert data["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    # Run with bad JSON
+    res2 = subprocess.run(
+        [sys.executable, "-m", "agentcontract.integrations.codex.hooks", "PreToolUse"],
+        input="{ bad json",
+        capture_output=True,
+        text=True,
+    )
+    assert res2.returncode == 0
+    data2 = json.loads(res2.stdout)
+    assert data2["hookSpecificOutput"]["permissionDecision"] == "deny"
+

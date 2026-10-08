@@ -154,16 +154,6 @@ def match_scope(scope: ConstraintScope, action: Action) -> bool:
 
         if action.operation:
             action_candidates.add(action.operation.strip().lower())
-
-        if "action_kinds" in action.context:
-            for ak in action.context["action_kinds"]:
-                ak_str = str(ak).lower()
-                action_candidates.add(ak_str)
-                if ak_str in ("file_write", "write"):
-                    action_candidates.update({"write", "modify", "update", "create", "edit", "save"})
-                elif ak_str in ("file_delete", "delete"):
-                    action_candidates.update({"delete", "remove", "rm", "unlink"})
-
         if not (action_candidates & normalized_scope_actions):
             return False
 
