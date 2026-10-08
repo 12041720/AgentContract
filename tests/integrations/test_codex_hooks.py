@@ -2,9 +2,11 @@
 
 import json
 from pathlib import Path
+from typing import Any
 import pytest
 
 from agentcontract.constraints.models import ConstraintStatus
+from agentcontract.integrations.codex.adapter import CodexHookAdapter
 from agentcontract.integrations.codex.hooks import (
     handle_post_tool_use,
     handle_pre_tool_use,
@@ -761,4 +763,79 @@ def test_pre_tool_use_cli_subprocess_fail_closed() -> None:
     assert res2.returncode == 0
     data2 = json.loads(res2.stdout)
     assert data2["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_pre_tool_use_lock_timeout_fails_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Regression for Round 4 Blocker 1: forced lock timeout must return structured DENY
+    from agentcontract.integrations.codex.state import SessionLock
+
+    def _fake_acquire(self: SessionLock) -> None:
+        raise TimeoutError("Lock acquisition timed out after 10.0s")
+
+    monkeypatch.setattr(SessionLock, "acquire", _fake_acquire)
+
+    store = CodexSessionStore(base_dir=tmp_path / "sessions")
+    payload = PreToolUsePayload(
+        session_id="sess_timeout_test",
+        hook_event_name="PreToolUse",
+        tool_name="Bash",
+        tool_input={"command": "cat secrets/prod.key"},
+    )
+    code, resp = handle_pre_tool_use(payload, store)
+    assert code == 0
+    assert resp["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "timed out" in resp["hookSpecificOutput"]["permissionDecisionReason"].lower()
+
+
+def test_pre_tool_use_unexpected_exception_fails_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Regression for Round 4 Blocker 1: unexpected internal error must return structured DENY
+    store = CodexSessionStore(base_dir=tmp_path / "sessions")
+
+    def _faulty_to_action(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("Simulated unexpected fault in adapter")
+
+    monkeypatch.setattr(CodexHookAdapter, "to_action", _faulty_to_action)
+
+    payload_json = json.dumps({
+        "session_id": "sess_fault_test",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": "echo test"},
+    })
+    code, resp = run_hook(stdin_data=payload_json, event_name="PreToolUse", session_store=store)
+    assert code == 0
+    assert resp["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "fail-closed" in resp["hookSpecificOutput"]["permissionDecisionReason"].lower()
+
+
+def test_pre_tool_use_cli_subprocess_forced_lock_timeout(tmp_path: Path) -> None:
+    # Regression for Round 4 Blocker 1: CLI subprocess with forced lock timeout outputs structured DENY
+    import subprocess
+    import sys
+
+    # Run CLI using a monkeypatched helper or script that triggers TimeoutError
+    code_snippet = (
+        "import sys, json; "
+        "from agentcontract.integrations.codex.state import SessionLock; "
+        "from agentcontract.integrations.codex.hooks import main; "
+        "SessionLock.acquire = lambda self: (_ for _ in ()).throw(TimeoutError('Subprocess lock timed out')); "
+        "main()"
+    )
+    payload_json = json.dumps({
+        "session_id": "sess_cli_timeout",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": "echo test"},
+    })
+    res = subprocess.run(
+        [sys.executable, "-c", code_snippet, "PreToolUse"],
+        input=payload_json,
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0
+    data = json.loads(res.stdout)
+    assert data["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "timed out" in data["hookSpecificOutput"]["permissionDecisionReason"].lower()
+
 

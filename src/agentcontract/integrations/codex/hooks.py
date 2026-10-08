@@ -298,6 +298,36 @@ def handle_pre_tool_use(
             permissionDecisionReason=block_reason,
         )
         return 0, output.to_hook_response_dict()
+    except TimeoutError as exc:
+        block_reason = (
+            f"BLOCK: Session lock acquisition timed out ({exc}): fail-closed safety block."
+        )
+        sys.stderr.write(f"\n[AgentContract SpecGuard] BLOCKED: {block_reason}\n")
+        output = PreToolUseOutput(
+            permissionDecision=HookDecision.DENY,
+            permissionDecisionReason=block_reason,
+        )
+        return 0, output.to_hook_response_dict()
+    except OSError as exc:
+        block_reason = (
+            f"BLOCK: File system or I/O error during PreToolUse evaluation ({type(exc).__name__}): fail-closed safety block."
+        )
+        sys.stderr.write(f"\n[AgentContract SpecGuard] BLOCKED: {block_reason}\n")
+        output = PreToolUseOutput(
+            permissionDecision=HookDecision.DENY,
+            permissionDecisionReason=block_reason,
+        )
+        return 0, output.to_hook_response_dict()
+    except Exception as exc:
+        block_reason = (
+            f"BLOCK: Unexpected internal error during PreToolUse evaluation ({type(exc).__name__}): fail-closed safety block."
+        )
+        sys.stderr.write(f"\n[AgentContract SpecGuard] BLOCKED: {block_reason}: {exc}\n")
+        output = PreToolUseOutput(
+            permissionDecision=HookDecision.DENY,
+            permissionDecisionReason=block_reason,
+        )
+        return 0, output.to_hook_response_dict()
 
 
 def handle_post_tool_use(
@@ -594,10 +624,19 @@ def run_hook(
             return handle_stop(payload, store, client=client)
     except CorruptedSessionStateError as exc:
         sys.stderr.write(f"[AgentContract] Corrupted session state error: {exc}\n")
-        if "pre_tool" in event_str or event_str == "pretooluse":
+        if _is_pre_tool_event(event_str) or _is_pre_tool_event(event_name):
             output = PreToolUseOutput(
                 permissionDecision=HookDecision.DENY,
                 permissionDecisionReason=f"BLOCK: Corrupted session state: {exc}",
+            )
+            return 0, output.to_hook_response_dict()
+        return 0, {}
+    except Exception as exc:
+        sys.stderr.write(f"[AgentContract] Unexpected error during hook execution ({type(exc).__name__}): {exc}\n")
+        if _is_pre_tool_event(event_str) or _is_pre_tool_event(event_name):
+            output = PreToolUseOutput(
+                permissionDecision=HookDecision.DENY,
+                permissionDecisionReason=f"BLOCK: Unexpected error during PreToolUse execution ({type(exc).__name__}): {exc}",
             )
             return 0, output.to_hook_response_dict()
         return 0, {}
@@ -607,12 +646,23 @@ def run_hook(
 
 def main() -> None:
     """CLI entry point for running hooks as separate subprocesses."""
-    # Optional event name from first argument (e.g. `python -m agentcontract.integrations.codex.hooks pre-tool-use`)
+    # Optional event name from first argument (e.g. `python -m agentcontract.integrations.codex.hooks PreToolUse`)
     arg_event = sys.argv[1] if len(sys.argv) > 1 else None
-    exit_code, response = run_hook(event_name=arg_event)
-    if response:
-        print(json.dumps(response))
-    sys.exit(exit_code)
+    try:
+        exit_code, response = run_hook(event_name=arg_event)
+        if response:
+            print(json.dumps(response))
+        sys.exit(exit_code)
+    except Exception as exc:
+        sys.stderr.write(f"[AgentContract] Fatal hook entrypoint exception ({type(exc).__name__}): {exc}\n")
+        if _is_pre_tool_event(arg_event):
+            output = PreToolUseOutput(
+                permissionDecision=HookDecision.DENY,
+                permissionDecisionReason=f"BLOCK: Fatal error in PreToolUse hook entrypoint: {exc}",
+            )
+            print(json.dumps(output.to_hook_response_dict()))
+            sys.exit(0)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
