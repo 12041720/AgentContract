@@ -4,7 +4,7 @@
 **Milestone:** M5 — Real Agent Harness Integration  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-010-codex-hooks`  
-**Main-agent review:** changes requested
+**Main-agent review:** changes requested (round 4)
 
 ## Objective
 
@@ -385,65 +385,37 @@ Do not commit credentials.
 
 > Main agent only.
 
-**Verdict:** CHANGES_REQUESTED — round 3
+**Verdict:** CHANGES_REQUESTED — round 4 (2 remaining boundary checks)
 
-**Implementation reviewed:** `aee5b53fb5917cb42c5add72d0f719b2524a1872`  
-**Branch head reviewed:** `1caecc4937c010ca999829c3131a6d1fc700d3ad`
+**Implementation reviewed:** `ed68dffa7176d390ac10a87b34a278e0b0c6b173`  
+**Branch/report head reviewed:** `f45bab73a65a4e4dabf84b2995d983c1f90c7b71`
 
-**Progress accepted for this round:** Unknown/dynamic shell commands now default to opaque/deny under HARD filesystem constraints; explicit patch operations are parsed per path; corrupt JSON ledger raises a typed error and blocks PreToolUse; spawned-process concurrency tests have been added; the executor reports 333 green pytest tests and a real Codex run with provider extraction, protected-file DENY, hash unchanged, TESTS_PASSED VERIFIED, and unsupported claim UNVERIFIED. These runtime/test results are executor-reported, not independently replayed by main agent.
+**Progress accepted:** Previous 4 blockers materially addressed in reviewed source: patches evaluated as individual `(path, action_kind)` pairs; missing existing-session ledger/trace fails closed; malformed/empty PreToolUse input returns structured deny; plugin manifest has nested `extensions.com.openai.hooks`. Executor reports 340 passing tests, real Codex provider extraction, protected write denied, SHA-256 unchanged, successful pytest claim VERIFIED and unsupported assertion UNVERIFIED. These test/runtime results were reported by the execution agent rather than independently replayed by main agent.
 
-### BLOCKER 1 — aggregate mixed-patch scope matching creates false BLOCK
+### BLOCKER 1 — unexpected pre-tool errors can cause fail-open
 
-Current `handle_pre_tool_use()` first evaluates the **aggregate** action with all paths and all `action_kinds`; `SpecGuard.match_scope()` independently matches `scope.paths` against any path and `scope.actions` against any action kind in the batch. This loses the path-to-operation relationship. Per-operation sub-evaluation only runs when the aggregate is *not* already blocked.
+`SessionLock.acquire()` raises `TimeoutError` when its 10s per-session lock deadline expires. `handle_pre_tool_use()` catches only `CorruptedSessionStateError`; `run_hook()` catches only that same exception around the dispatch. Lock timeout, OS I/O errors, unexpected validator/model errors or other pre-check faults can therefore terminate the hook with an exception/exit 1 and without a deny decision.
 
-Counterexample:
+Codex hook documentation explicitly warns that callback errors/timeouts/malformed output can fail the hook **without blocking the tool**. An enforcement-layer pre-tool error must not be handled as permission to proceed.
 
-- Constraint: `DENY FILE_DELETE on secrets/prod.key`, while FILE_WRITE is allowed.
-- Patch: `*** Update File: secrets/prod.key` plus `*** Delete File: tmp.txt`.
-- Aggregate contains both `FILE_WRITE` and `FILE_DELETE` and both paths, causing a false BLOCK, even though the only deletion is `tmp.txt`.
+**Required fix:**
+- Ensure the outermost PreToolUse command entrypoint *always* emits supported fail-closed denial on lock timeout, state read/write I/O failure, and unexpected exceptions during normalization/evaluation, preferably a structured deny envelope or a documented exit-code-2 fallback.
+- Do not swallow failure as ALLOW or exit 0 with an empty response; log a bounded, non-secret error reason to stderr.
+- Include a regression that forces a lock timeout (plus unexpected handler exception) and verifies the full CLI subprocess/dispatch returns deny or exit code 2. Preserve existing successful-hook behavior.
+- Document the inherent limitation: Python hook process crashes/host timeouts before it can respond may still fail open at Codex hook boundary, so this is not an OS-level absolute protection guarantee.
 
-**Fix:** For patch actions with parsed operations, evaluate each `(path, action_kind)` pair individually and aggregate those *decisions*, not path and action sets separately. Preserve ordinary non-patch SpecGuard semantics. Add allowed mixed-operation regression tests and keep existing denied mixed-operation tests.
+### BLOCKER 2 — plugin is installed/enabled but hook execution through plugin itself is unverified
 
-Also, when a patch cannot be reliably parsed to any affected path and a HARD filesystem constraint exists, reject the uninspectable patch rather than ALLOWing it.
+`test_real_codex_plugin_marketplace_discovery_and_install_smoke()` now invokes actual `codex plugin marketplace add/list` and `codex plugin add/list`. That confirms *discovery and installation*, not that plugin-bundled `PreToolUse` hooks were loaded/trusted/invoked. The reported real Codex acceptance scenario uses `fixtures/real_codex_acceptance/.codex/hooks.json` (project-local hook source), so it cannot establish that the **plugin** itself enforced the denial.
 
-### BLOCKER 2 — missing ledger on existing session is still fail-open
+Codex documentation notes that installed/enabled plugin hooks are **skipped until separately trusted**.
 
-`get_or_create_session()` blocks unreadable/corrupted `ledger.json`, but if `meta.json` exists and `ledger.json` is **missing**, it creates an empty `ConstraintLedger` and the next pre-tool check can ALLOW protected operations.
+**Required fix:**
+- Run one real Codex session in a clean temporary workspace **without project-local `.codex/hooks.json`**, using the installed enabled AgentContract plugin after explicit trust (or documented test-only trust bypass).
+- Demonstrate actual SessionStart / PreToolUse hook invocation from the plugin and an attempted forbidden write producing deny plus unchanged protected file. Include trace/session path and bounded log evidence. Clean up only the test-created plugin/marketplace configuration.
+- If this environment cannot run plugin hooks, record an explicit `UNVERIFIED` limitation; do not claim plugin hook integration is tested just because `codex plugin list` says enabled.
 
-**Fix:** On an already initialized session, missing `ledger.json` (or other authoritative state required to check rules) must raise `CorruptedSessionStateError` / `CorruptedLedgerError` and result in a PreToolUse deny without rewriting evidence. Add regression test deleting `ledger.json` from a session with a known HARD prohibition.
+**Re-check:** Full Python 3.12.9 pytest; forced pre-tool exception / lock-timeout fail-closed tests; plugin-only real Codex run with active hook trust and protected file hash; keep regular real Codex provider/evidence validation green; exact implementation SHA in Executor Report. Commit + push on `task/TASK-010-codex-hooks`, no main merge.
 
-### BLOCKER 3 — malformed PreToolUse hook input still returns success with no deny
-
-`run_hook()` returns `(0,{})` on empty/malformed stdin JSON even when the caller explicitly passes `event_name="PreToolUse"`. It also leaves Pydantic payload validation errors unhandled. Without a valid deny envelope, this cannot be treated as fail-closed.
-
-**Fix:** If the incoming event is known to be `PreToolUse`, an empty/malformed/unvalidatable request must produce a supported blocking response (e.g. exit code 2 with reason on stderr or valid structured deny envelope). Keep benign behavior for genuinely non-pre-tool events. Add CLI-level and unit regressions proving no fail-open on missing tool_name, invalid tool_input, bad JSON, or empty stdin.
-
-### BLOCKER 4 — plugin manifest/real discovery test still incorrect
-
-The current root `integrations/codex-plugin/plugin.json` contains:
-
-```json
-"extensions": {"com.openai.hooks": "./hooks/hooks.json"}
-```
-
-Official portable Codex Plugin format requires:
-
-```json
-"extensions": {"com.openai": {"hooks": "./hooks/hooks.json"}}
-```
-
-(and a compatible root schema). Alternatively, use the documented legacy `.codex-plugin/plugin.json` hook declaration, with no misleading portable claim. Current `test_plugin_discovery_and_resolution` is a homemade simulated discovery algorithm and does **not** prove a real Codex plugin was discovered/trusted/loaded.
-
-**Fix:** align manifest schema with official documentation; add a test validating the right nested fields and a *real Codex plugin installation/discovery/hook* smoke test with reproducible log/evidence. Do not substitute project-local `.codex/hooks.json` for a plugin acceptance test. Official reference: https://developers.openai.com/plugins/build/plugins .
-
-### Re-check
-
-- Python 3.12.9 full pytest.
-- Two mixed patch cases (must BLOCK when matched pair violates; must ALLOW when actions/path only match across different pairs).
-- Missing ledger, malformed PreToolUse JSON/schema, unparseable patch fail-closed.
-- Real plugin discovery/trust smoke evidence.
-- Real Codex session with configured provider; normal actions execute; protected write denied; hash unchanged; true pytest success VERIFIED and unsupported claim not VERIFIED.
-- Update Executor Report with the *exact final branch implementation SHA*. Commit + push on task branch. Do not merge main.
-
-No other scope increase is requested.
+No other scope increase requested.
 
