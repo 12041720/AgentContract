@@ -667,3 +667,21 @@ Additional acceptance requirements include:
 **Next:** fix on `task/TASK-010-codex-hooks`, rerun full tests and a real Codex session, and report exact final branch SHA.
 
 ---
+
+## 2026-10-08 — TASK-010 second review
+
+**Review head:** `1b3a86140078e42f604f05dbe391ba06ea92e549`  
+**Implementation:** `af244867eb83f0e6adab49eeab13bd3693157ece`  
+**Verdict:** CHANGES_REQUESTED
+
+Previous five blockers have received material fixes: configured provider extraction, Codex PreToolUse supported deny JSON, opaque shell heuristics, per-session cross-process file lock, and plugin compatibility layout. Executor reports 321 passing tests and a live Codex session with DENY/VERIFIED/UNVERIFIED outcomes.
+
+New blocking correctness issues:
+1. Unknown/dynamic shell command syntax defaults to non-opaque and can allow protected writes through variable-derived paths.
+2. Mixed apply_patch is classified with one action kind; an unrelated Delete File header suppresses FILE_WRITE constraints on other paths.
+3. Corrupted persisted ledger is silently reset to empty, eliminating HARD protections.
+4. Test and packaging gaps: only thread concurrency test for a cross-process contract, and plugin manifest/discovery not fully compliant/verified.
+
+See Main Agent Review in `.agent/tasks/TASK-010.md` for exact fixes. No main merge.
+
+---
