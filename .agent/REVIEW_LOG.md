@@ -685,3 +685,21 @@ New blocking correctness issues:
 See Main Agent Review in `.agent/tasks/TASK-010.md` for exact fixes. No main merge.
 
 ---
+
+## 2026-10-08 — TASK-010 third review
+
+**Reviewed implementation:** `aee5b53fb5917cb42c5add72d0f719b2524a1872`  
+**Reviewed branch head:** `1caecc4937c010ca999829c3131a6d1fc700d3ad`  
+**Verdict:** CHANGES_REQUESTED
+
+**Progress:** Previous reported shell fail-open, mixed patch write evasion, corrupt ledger JSON, and spawned-process test deficiencies have materially improved; executor reports 333 tests passing and live Codex DENY/VERIFIED/UNVERIFIED.
+
+**Remaining blockers:**
+1. Aggregate action-kinds and paths in a mixed patch are matched independently, causing false BLOCKs even if no forbidden `(path, action_kind)` pair exists.
+2. Missing ledger file on an existing session still replaces policy with empty ledger, a fail-open.
+3. Empty/malformed PreToolUse input still succeeds without explicit deny; validation errors unhandled.
+4. Plugin root manifest incorrectly uses `extensions.com.openai.hooks` as a flattened key instead of nesting under `extensions.com.openai`; the plugin discovery test is a self-authored simulation rather than actual Codex plugin load.
+
+Full repair acceptance instructions persisted in `.agent/tasks/TASK-010.md`; no merge to main.
+
+---
