@@ -360,7 +360,7 @@ Do not commit credentials.
 - Opaque shell scripts with dynamic variables rely on fail-closed heuristics when HARD filesystem constraints are active.
 
 **Commit SHA:**
-- Pending final commit SHA.
+- `af244867eb83f0e6adab49eeab13bd3693157ece` (implementation commit `af24486`)
 
 ## Main Agent Review
 
