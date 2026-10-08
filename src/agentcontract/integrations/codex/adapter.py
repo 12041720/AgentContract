@@ -118,6 +118,128 @@ def parse_patch_paths(patch_text: str) -> tuple[str, ...]:
     return tuple(discovered)
 
 
+def parse_patch_operations(patch_text: str) -> list[tuple[str, ActionKind]]:
+    """Deterministically extract all (target_path, ActionKind) operations from a patch or diff.
+
+    Distinguishes FILE_WRITE (updates, adds) and FILE_DELETE (deletions, /dev/null destinations)
+    on a per-file basis so mixed patches never misclassify writes as deletes or vice versa.
+    """
+    if not patch_text or not isinstance(patch_text, str):
+        return []
+
+    operations: list[tuple[str, ActionKind]] = []
+
+    def _clean_path(raw: str) -> str | None:
+        p = raw.strip().strip("'\"")
+        p = re.sub(r"[/\\]+", "/", p)
+        p = re.split(r"\s+", p)[0]
+        if not p or p == "/dev/null":
+            return None
+        if p.startswith("a/") or p.startswith("b/"):
+            p = p[2:]
+        p = p.strip().strip("/")
+        return p or None
+
+    lines = patch_text.splitlines()
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i].strip()
+        # Codex headers: *** Delete File: path, *** Add File: path, *** Update File: path
+        if line.startswith("*** Delete File:"):
+            raw = line.split(":", 1)[1].strip()
+            p = _clean_path(raw)
+            if p:
+                operations.append((p, ActionKind.FILE_DELETE))
+            i += 1
+            continue
+        if line.startswith("*** Add File:") or line.startswith("*** Update File:"):
+            raw = line.split(":", 1)[1].strip()
+            p = _clean_path(raw)
+            if p:
+                operations.append((p, ActionKind.FILE_WRITE))
+            i += 1
+            continue
+
+        # Git diff block: diff --git a/path b/path
+        if line.startswith("diff --git "):
+            parts = line.split()
+            p_old = _clean_path(parts[2]) if len(parts) >= 3 else None
+            p_new = _clean_path(parts[3]) if len(parts) >= 4 else None
+            target = p_new or p_old
+            is_del = False
+            is_add = False
+            j = i + 1
+            while j < n and not lines[j].strip().startswith("diff --git ") and not lines[j].strip().startswith("*** "):
+                lj = lines[j].strip()
+                if lj.startswith("deleted file mode") or lj == "+++ /dev/null":
+                    is_del = True
+                    target = p_old or target
+                elif lj.startswith("new file mode") or lj == "--- /dev/null":
+                    is_add = True
+                    target = p_new or target
+                j += 1
+            if target:
+                kind = ActionKind.FILE_DELETE if is_del else ActionKind.FILE_WRITE
+                operations.append((target, kind))
+            i += 1
+            continue
+
+        # --- /dev/null and +++ b/path (unified diff addition)
+        if line.startswith("--- /dev/null"):
+            if i + 1 < n and lines[i + 1].strip().startswith("+++ "):
+                p = _clean_path(lines[i + 1].strip()[4:])
+                if p:
+                    operations.append((p, ActionKind.FILE_WRITE))
+                i += 2
+                continue
+        # --- a/path and +++ /dev/null (unified diff deletion)
+        if line.startswith("--- ") and not line.startswith("--- /dev/null"):
+            p_old = _clean_path(line[4:])
+            if i + 1 < n and lines[i + 1].strip() == "+++ /dev/null":
+                if p_old:
+                    operations.append((p_old, ActionKind.FILE_DELETE))
+                i += 2
+                continue
+
+        # Regular +++ unified diff update
+        if line.startswith("+++ "):
+            p = _clean_path(line[4:])
+            if p and not any(op[0] == p for op in operations):
+                operations.append((p, ActionKind.FILE_WRITE))
+            i += 1
+            continue
+
+        # Index: path
+        if line.startswith("Index: "):
+            raw = line[7:].strip()
+            p = _clean_path(raw)
+            if p:
+                is_del = False
+                j = i + 1
+                while j < min(n, i + 5) and not lines[j].strip().startswith("Index: "):
+                    if lines[j].strip() == "+++ /dev/null":
+                        is_del = True
+                        break
+                    j += 1
+                kind = ActionKind.FILE_DELETE if is_del else ActionKind.FILE_WRITE
+                operations.append((p, kind))
+            i += 1
+            continue
+
+        i += 1
+
+    # Fallback / consistency check: ensure all paths in parse_patch_paths are accounted for
+    all_paths = parse_patch_paths(patch_text)
+    covered = {op[0] for op in operations}
+    for p in all_paths:
+        if p not in covered:
+            operations.append((p, ActionKind.FILE_WRITE))
+            operations.append((p, ActionKind.FILE_DELETE))
+
+    return operations
+
+
 def parse_command_paths(command: str) -> tuple[str, ...]:
     """Extract obvious filesystem paths targeted or affected by a shell command."""
     if not command or not isinstance(command, str):
@@ -154,9 +276,10 @@ def parse_command_paths(command: str) -> tuple[str, ...]:
 def is_opaque_destructive_command(command: str) -> tuple[bool, str]:
     """Deterministically determine if a shell command is opaque or destructive.
 
-    Returns:
-        Tuple of `(is_opaque: bool, reason: str)`.
-        If True, the command cannot be statically proven harmless to protected filesystem targets.
+    Under active HARD filesystem constraints, fail-closed policy applies:
+    Only demonstrably safe read/inspection or test commands without redirection or
+    dynamic variable expansions may pass. Unknown, dynamic, or mutating commands
+    are classified as opaque (is_opaque=True) so they are blocked fail-closed.
     """
     if not command or not isinstance(command, str):
         return False, "empty_command"
@@ -177,51 +300,87 @@ def is_opaque_destructive_command(command: str) -> tuple[bool, str]:
                 return True, f"Chained sub-command '{sub}' is opaque/destructive: {reason}"
         return False, "all_subcommands_safe"
 
-    # 1. Pipeline into shell interpreters (e.g. curl ... | sh, echo ... | bash)
-    if re.search(r"\|\s*(?:bash|sh|zsh|pwsh|powershell|cmd|python|python3|py|node|perl|ruby)\b", raw, re.IGNORECASE):
-        return True, "Pipeline execution into interpreter or shell"
+    # Pipeline stages check: split by '|'
+    if "|" in raw:
+        pipe_stages = [s.strip() for s in raw.split("|") if s.strip()]
+        for stage in pipe_stages:
+            if re.match(r"^(?:bash|sh|zsh|pwsh|powershell|cmd(?:\.exe)?|python3?|py|node|perl|ruby)\b", stage, re.IGNORECASE):
+                return True, f"Pipeline execution into interpreter or shell ({stage})"
+            is_op, reason = is_opaque_destructive_command(stage)
+            if is_op:
+                return True, f"Pipeline stage '{stage}' is opaque/destructive: {reason}"
+        return False, "all_pipeline_stages_safe"
 
-    # 2. Dynamic evaluation primitives
-    if re.search(r"\b(?:eval|exec|source)\s+", raw, re.IGNORECASE) or raw.startswith(". "):
-        return True, "Dynamic command evaluation (eval/exec/source)"
+    # 1. Dynamic variables / environment variable expansion
+    if re.search(r"\$env:[a-zA-Z0-9_]+", raw, re.IGNORECASE):
+        return True, "PowerShell environment variable reference ($env:...) prevents static path safety verification"
+    if re.search(r"\$[a-zA-Z_][a-zA-Z0-9_]*|\$\{[a-zA-Z_][a-zA-Z0-9_]*\}", raw):
+        return True, "Dynamic shell variable reference prevents static path safety verification"
+    if re.search(r"\$\(|\`", raw):
+        return True, "Command substitution ($(...) or backticks) prevents static path safety verification"
+    if re.search(r"%[a-zA-Z0-9_]+%", raw):
+        return True, "Windows cmd environment variable reference (%VAR%) prevents static path safety verification"
 
-    # 3. Wildcard destructive commands (rm *, del *, Remove-Item *, truncate *)
+    # 2. Dynamic evaluation primitives / invocation operator
+    if re.search(r"\b(?:eval|exec|source|invoke-expression|iex)\b", raw, re.IGNORECASE) or raw.startswith(". ") or raw.startswith("& "):
+        return True, "Dynamic command evaluation or invocation operator"
+
+    # 3. Output redirection (> or >>)
+    if re.search(r"(?:>|>>)", raw):
+        return True, "Output redirection to file may modify filesystem"
+
+    # 4. Destructive wildcards (rm *, del *, Remove-Item *, truncate *)
     if re.search(r"\b(?:rm|del|erase|truncate)\b.*[\*\?]", raw, re.IGNORECASE) or re.search(r"\bRemove-Item\b.*[\*\?]", raw, re.IGNORECASE):
         return True, "Wildcard filesystem deletion or truncation"
 
-    # 4. Check for safe test runners without redirection
-    has_redirection = bool(re.search(r"(?:>|>>)", raw))
+    # 5. Safe test runners
     test_runner_match = re.match(
-        r"^(?:pytest|python3?\s+-m\s+pytest|py\s+-m\s+pytest|python3?\s+-m\s+unittest|py\s+-m\s+unittest|npm\s+test|cargo\s+test|go\s+test)\b",
+        r"^(?:pytest|python3?\s+-m\s+pytest|py\s+-m\s+pytest|python3?\s+-m\s+unittest|py\s+-m\s+unittest|npm\s+test|npm\s+run\s+test|yarn\s+test|pnpm\s+test|cargo\s+test|go\s+test)\b",
         raw,
         re.IGNORECASE,
     )
     if test_runner_match:
-        if has_redirection:
-            return True, "Test runner output redirection to file may modify filesystem"
         return False, "safe_test_runner"
 
-    # 5. Check for safe read-only inspection commands without redirection
-    safe_read_tools = (
-        "cat", "head", "tail", "grep", "rg", "find", "ls", "dir", "tree", "stat",
-        "wc", "diff", "file", "pwd", "cd", "type",
-        "git status", "git diff", "git log", "git show", "git branch", "git tag", "git rev-parse",
-        "get-content", "get-childitem", "get-filehash", "select-string",
-    )
+    # 6. Safe read-only inspection commands
     lower_raw = raw.lower()
-    for srt in safe_read_tools:
-        if lower_raw == srt or lower_raw.startswith(srt + " "):
-            if has_redirection:
-                return True, f"Inspection command '{srt}' output redirection to file may modify filesystem"
+    first_token = lower_raw.split()[0] if lower_raw.split() else ""
+
+    if first_token == "find":
+        if any(flag in lower_raw for flag in ("-delete", "-exec", "-ok")):
+            return True, "find command with mutating option (-delete/-exec/-ok)"
+        return False, "safe_read_only"
+
+    safe_read_cmd_prefixes = (
+        "cat", "head", "tail", "more", "less",
+        "grep", "egrep", "fgrep", "rg", "findstr",
+        "ls", "dir", "tree", "stat", "file", "wc", "diff", "cmp",
+        "pwd", "cd", "type", "where", "which",
+        "get-content", "get-childitem", "get-item", "get-itemproperty", "get-filehash",
+        "select-string", "select-object", "sort-object", "where-object",
+        "format-table", "format-list", "convertfrom-json", "convertto-json",
+        "measure-object", "get-location", "test-path",
+    )
+    for prefix in safe_read_cmd_prefixes:
+        if lower_raw == prefix or lower_raw.startswith(prefix + " "):
             return False, "safe_read_only"
 
-    # Safe echo / printf without redirection
-    if lower_raw.startswith("echo ") or lower_raw.startswith("printf "):
-        if not has_redirection and "|" not in raw:
-            return False, "safe_echo"
+    # Git commands: allow only safe inspection subcommands
+    if lower_raw == "git" or lower_raw.startswith("git "):
+        git_safe_subcommands = (
+            "status", "diff", "log", "show", "branch", "tag", "rev-parse",
+            "ls-files", "describe", "remote", "show-ref", "config --get", "config --list",
+        )
+        for gsc in git_safe_subcommands:
+            if lower_raw == f"git {gsc}" or lower_raw.startswith(f"git {gsc} "):
+                return False, "safe_git_read"
+        return True, f"Git subcommand in '{raw}' is not in the safe git read allowlist"
 
-    # 6. Arbitrary interpreter or script execution:
-    # python <script.py>, python -c "...", bash <script.sh>, sh ..., pwsh ..., powershell ...
+    # Safe echo / print
+    if any(lower_raw.startswith(p + " ") or lower_raw == p for p in ("echo", "printf", "write-output", "write-host")):
+        return False, "safe_echo"
+
+    # 7. Arbitrary interpreter execution (python script.py, bash run.sh, etc.)
     interpreter_match = re.match(
         r"^(?:python3?|py|node|perl|ruby|bash|sh|zsh|pwsh|powershell|cmd(?:\.exe)?)\b",
         raw,
@@ -230,15 +389,19 @@ def is_opaque_destructive_command(command: str) -> tuple[bool, str]:
     if interpreter_match:
         return True, f"Arbitrary interpreter execution ({interpreter_match.group(0)}) cannot statically guarantee filesystem safety"
 
-    # 7. Redirection with variables or wildcards
-    if re.search(r"(?:>|>>)\s*[\$\*]", raw):
-        return True, "Dynamic or wildcard file redirection"
+    # 8. Known mutating commands (PowerShell cmdlets & POSIX tools)
+    mutating_commands = (
+        "set-content", "add-content", "out-file", "new-item", "remove-item",
+        "clear-content", "copy-item", "move-item", "rename-item",
+        "rm", "del", "erase", "truncate", "touch", "cp", "mv", "dd",
+        "sed", "awk", "tee",
+    )
+    for mc in mutating_commands:
+        if first_token == mc or lower_raw.startswith(mc + " "):
+            return True, f"Mutating filesystem command '{first_token}' cannot statically guarantee safety under active HARD constraints"
 
-    # 8. By default, if command contains wildcards:
-    if "*" in raw or "?" in raw:
-        return True, "Unrecognized command with wildcards cannot statically guarantee filesystem safety"
-
-    return False, "known_command"
+    # 9. Fail-closed: any unknown or unverified command
+    return True, f"Command '{first_token}' is not in the audited safe allowlist (fail-closed under active HARD constraints)"
 
 
 class CodexHookAdapter:
@@ -269,6 +432,7 @@ class CodexHookAdapter:
                         patch_content = v
                         break
 
+            patch_ops = parse_patch_operations(str(patch_content))
             extracted_paths = list(parse_patch_paths(str(patch_content)))
 
             # If explicit path or file_path is given in tool_input, include it
@@ -276,13 +440,26 @@ class CodexHookAdapter:
                 val = tool_input.get(pkey)
                 if isinstance(val, str) and val.strip() and val.strip() not in extracted_paths:
                     extracted_paths.append(val.strip())
+                    patch_ops.append((val.strip(), ActionKind.FILE_WRITE))
 
             all_paths = tuple(extracted_paths)
             primary_path = all_paths[0] if all_paths else None
 
-            action_kind = ActionKind.FILE_WRITE
-            if "delete" in str(patch_content).lower() or "/dev/null" in str(patch_content):
+            # Determine dominant action_kind:
+            # If all operations are FILE_DELETE, action_kind is FILE_DELETE.
+            # If any operation is FILE_WRITE, action_kind is FILE_WRITE (never let a delete suppress write).
+            has_writes = any(op[1] == ActionKind.FILE_WRITE for op in patch_ops)
+            has_deletes = any(op[1] == ActionKind.FILE_DELETE for op in patch_ops)
+            if has_writes:
+                action_kind = ActionKind.FILE_WRITE
+            elif has_deletes:
                 action_kind = ActionKind.FILE_DELETE
+            else:
+                action_kind = ActionKind.FILE_WRITE
+
+            action_kinds_set = {op[1].value for op in patch_ops}
+            if not action_kinds_set:
+                action_kinds_set = {action_kind.value}
 
             return Action(
                 action_kind=action_kind,
@@ -297,6 +474,8 @@ class CodexHookAdapter:
                     "patch_paths_count": len(all_paths),
                     "all_paths": all_paths,
                     "session_id": payload.session_id,
+                    "patch_operations": [(op[0], op[1].value) for op in patch_ops],
+                    "action_kinds": tuple(sorted(action_kinds_set)),
                 },
             )
 

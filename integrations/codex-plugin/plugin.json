@@ -3,5 +3,8 @@
   "version": "0.1.0",
   "description": "Deterministic safety control plane, runtime constraint tracking, and evidence-grounded verification for Codex agents.",
   "author": "AgentContract contributors",
-  "hooks": "hooks/hooks.json"
+  "extensions": {
+    "com.openai.hooks": "./hooks/hooks.json"
+  },
+  "hooks": "./hooks/hooks.json"
 }

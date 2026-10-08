@@ -72,7 +72,7 @@ Verified Completion & OpenTelemetry Export
 
 ### 7. Codex Harness Integration (`agentcontract.integrations.codex`)
 - **Native Lifecycle Hooks**: Real-time integration with OpenAI Codex via `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, and `Stop`.
-- **PreToolUse SpecGuard Interception**: Blocks prohibited file modifications (e.g. `secrets/prod.key`) before execution with exit code 2 and deny envelope.
+- **PreToolUse SpecGuard Interception**: Blocks prohibited file modifications (e.g. `secrets/prod.key`) before execution via structured PreToolUse deny payload.
 - **Stop Evidence Verification**: Verifies completion claims (e.g. `TESTS_PASSED`) against recorded trace evidence via EvidenceGate.
 - **Detailed Documentation**: See [Codex Integration Guide](docs/integrations/codex.md).
 

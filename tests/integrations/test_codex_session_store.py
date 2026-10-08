@@ -108,8 +108,15 @@ def test_session_store_delete(tmp_path: Path) -> None:
     assert not store.session_exists("to_delete")
 
 
-def _concurrent_worker(args: tuple[str, str, int]) -> int:
-    base_dir_str, session_id, worker_id = args
+from agentcontract.integrations.codex.state import (
+    CodexSessionStore,
+    CorruptedLedgerError,
+    CorruptedSessionStateError,
+)
+import pytest
+
+
+def _concurrent_process_worker(base_dir_str: str, session_id: str, worker_id: int) -> None:
     store = CodexSessionStore(base_dir=base_dir_str)
     with store.session_transaction(session_id) as tx:
         c = Constraint(
@@ -134,32 +141,40 @@ def _concurrent_worker(args: tuple[str, str, int]) -> int:
             payload=tc,
         )
         tx.trace_store.append(ev)
-    return worker_id
 
 
 def test_session_store_concurrency_no_data_loss(tmp_path: Path) -> None:
-    from concurrent.futures import ThreadPoolExecutor
+    import multiprocessing as mp
 
+    ctx = mp.get_context("spawn")
     base_dir = tmp_path / "sessions"
     store = CodexSessionStore(base_dir=base_dir)
-    session_id = "concurrent_session_test"
+    session_id = "concurrent_spawned_session_test"
 
     # Pre-initialize session
     store.get_or_create_session(session_id)
 
-    num_workers = 10
-    worker_args = [(str(base_dir), session_id, i) for i in range(num_workers)]
+    num_workers = 8
+    processes = []
+    for i in range(num_workers):
+        p = ctx.Process(
+            target=_concurrent_process_worker,
+            args=(str(base_dir), session_id, i),
+        )
+        processes.append(p)
 
-    with ThreadPoolExecutor(max_workers=5) as pool:
-        results = list(pool.map(_concurrent_worker, worker_args))
+    for p in processes:
+        p.start()
 
-    assert len(results) == num_workers
+    for p in processes:
+        p.join(timeout=15.0)
+        assert p.exitcode == 0
 
     # Reload fresh session from disk
     verify_store = CodexSessionStore(base_dir=base_dir)
     _, ledger, trace_store, meta = verify_store.get_or_create_session(session_id)
 
-    # Assert exactly 10 constraints and 10 trace events persisted without ANY data loss
+    # Assert exactly num_workers constraints and trace events persisted without ANY data loss
     assert len(ledger) == num_workers
     for i in range(num_workers):
         assert f"c_{i}" in ledger
@@ -167,3 +182,49 @@ def test_session_store_concurrency_no_data_loss(tmp_path: Path) -> None:
     assert len(trace_store) == num_workers
     for i in range(num_workers):
         assert trace_store.get_tool_call(meta["trace_id"], f"call_{i}").arguments == {"id": i}
+
+
+def test_session_store_corrupted_ledger_raises_error_and_does_not_overwrite(tmp_path: Path) -> None:
+    base_dir = tmp_path / "sessions"
+    store = CodexSessionStore(base_dir=base_dir)
+    session_id = "corrupted_ledger_test"
+
+    # Create valid session with a constraint
+    _, ledger, trace_store, meta = store.get_or_create_session(session_id)
+    c = Constraint(
+        id="c_important",
+        name="protect_important",
+        description="Important constraint",
+        strength=ConstraintStrength.HARD,
+        rule_effect=RuleEffect.DENY,
+        provenance=ConstraintProvenance(source=ConstraintSource.USER, author="User"),
+        scope=ConstraintScope(paths=("secrets/prod.key",)),
+    )
+    ledger.add(c)
+    store.save_session(session_id, ledger, trace_store, meta)
+
+    # Corrupt the ledger.json file on disk with malformed JSON
+    ledger_path = store.get_session_dir(session_id) / "ledger.json"
+    corrupt_content = "{ invalid json content: true, incomplete"
+    ledger_path.write_text(corrupt_content, encoding="utf-8")
+
+    # Attempting to load or run transaction must raise CorruptedLedgerError
+    with pytest.raises(CorruptedLedgerError) as exc_info:
+        store.get_or_create_session(session_id)
+    assert "Corrupted or invalid constraint ledger file" in str(exc_info.value)
+
+    # Verify that the corrupted file was NOT silently overwritten or deleted
+    assert ledger_path.read_text(encoding="utf-8") == corrupt_content
+
+
+def test_session_store_corrupted_trace_raises_error(tmp_path: Path) -> None:
+    base_dir = tmp_path / "sessions"
+    store = CodexSessionStore(base_dir=base_dir)
+    session_id = "corrupted_trace_test"
+
+    store.get_or_create_session(session_id)
+    trace_path = store.get_session_dir(session_id) / "trace.json"
+    trace_path.write_text("{ not json", encoding="utf-8")
+
+    with pytest.raises(CorruptedSessionStateError):
+        store.get_or_create_session(session_id)

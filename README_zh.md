@@ -72,7 +72,7 @@ EvidenceGate（确定性核验：VERIFIED / CONTRADICTED / UNVERIFIED）
 
 ### 7. Codex Harness 真实集成 (`agentcontract.integrations.codex`)
 - **原生生命周期钩子接入**：通过 `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PostToolUse` 和 `Stop` 深度接入 OpenAI Codex。
-- **PreToolUse SpecGuard 拦截**：在工具实际执行前拦截违规操作（如修改 `secrets/prod.key`），退出码 2 并返回 deny 决策阻止执行。
+- **PreToolUse SpecGuard 拦截**：在工具实际执行前拦截违规操作（如修改 `secrets/prod.key`），返回结构化 PreToolUse deny 决策阻止执行。
 - **Stop 证据核验**：通过 EvidenceGate 核验完成声明（如 `TESTS_PASSED`），严格基于轨迹证据给出 VERIFIED / CONTRADICTED / UNVERIFIED 判定。
 - **详细集成指南**：参见 [Codex 集成文档](docs/integrations/codex.md)。
 

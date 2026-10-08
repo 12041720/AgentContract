@@ -15,6 +15,14 @@ from agentcontract.constraints.ledger import ConstraintLedger
 from agentcontract.trace.store import TraceStore
 
 
+class CorruptedSessionStateError(RuntimeError):
+    """Raised when persisted session state files cannot be read or parsed."""
+
+
+class CorruptedLedgerError(CorruptedSessionStateError):
+    """Raised when persisted constraint ledger cannot be read or parsed."""
+
+
 class SessionLock:
     """Cross-process per-session file lock supporting both Windows and POSIX."""
 
@@ -177,10 +185,13 @@ class CodexSessionStore:
         now_iso = datetime.now(timezone.utc).isoformat()
 
         if meta_file.is_file():
+            raw_meta = meta_file.read_text(encoding="utf-8")
             try:
-                meta = json.loads(meta_file.read_text(encoding="utf-8"))
-            except Exception:
-                meta = {}
+                meta = json.loads(raw_meta)
+            except Exception as exc:
+                raise CorruptedSessionStateError(
+                    f"Corrupted or unreadable session meta file at '{meta_file}': {exc}"
+                ) from exc
             trace_id = meta.get("trace_id") or f"trace_{_sanitize_session_id(session_id)}"
             meta["updated_at"] = now_iso
         else:
@@ -195,19 +206,25 @@ class CodexSessionStore:
 
         # Load Ledger
         if ledger_file.is_file():
+            raw_ledger = ledger_file.read_text(encoding="utf-8")
             try:
-                ledger = ConstraintLedger.from_json(ledger_file.read_text(encoding="utf-8"))
-            except Exception:
-                ledger = ConstraintLedger()
+                ledger = ConstraintLedger.from_json(raw_ledger)
+            except Exception as exc:
+                raise CorruptedLedgerError(
+                    f"Corrupted or invalid constraint ledger file at '{ledger_file}': {exc}"
+                ) from exc
         else:
             ledger = ConstraintLedger()
 
         # Load TraceStore
         if trace_file.is_file():
+            raw_trace = trace_file.read_text(encoding="utf-8")
             try:
-                trace_store = TraceStore.from_json(trace_file.read_text(encoding="utf-8"))
-            except Exception:
-                trace_store = TraceStore()
+                trace_store = TraceStore.from_json(raw_trace)
+            except Exception as exc:
+                raise CorruptedSessionStateError(
+                    f"Corrupted or invalid trace store file at '{trace_file}': {exc}"
+                ) from exc
         else:
             trace_store = TraceStore()
 

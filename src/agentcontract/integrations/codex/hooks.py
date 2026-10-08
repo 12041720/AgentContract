@@ -21,6 +21,7 @@ from agentcontract.constraints.models import ConstraintStrength
 from agentcontract.evidence.gate import EvidenceGate
 from agentcontract.extraction.client import StructuredExtractionClient
 from agentcontract.guard.engine import SpecGuard
+from agentcontract.guard.models import Action, ActionKind
 from agentcontract.integrations.codex.adapter import CodexHookAdapter
 from agentcontract.integrations.codex.models import (
     CodexHookEnvelope,
@@ -33,7 +34,11 @@ from agentcontract.integrations.codex.models import (
     StopPayload,
     UserPromptSubmitPayload,
 )
-from agentcontract.integrations.codex.state import CodexSessionStore
+from agentcontract.integrations.codex.state import (
+    CodexSessionStore,
+    CorruptedLedgerError,
+    CorruptedSessionStateError,
+)
 from agentcontract.trace.models import (
     ActorKind,
     EventKind,
@@ -128,30 +133,90 @@ def handle_pre_tool_use(
     store: CodexSessionStore,
 ) -> tuple[int, dict[str, Any]]:
     """Handle PreToolUse hook event: enforce constraints via SpecGuard and opaque Bash policy."""
-    with store.session_transaction(payload.session_id) as tx:
-        # 1. Normalize payload to Action
-        action = CodexHookAdapter.to_action(payload)
+    try:
+        with store.session_transaction(payload.session_id) as tx:
+            # 1. Normalize payload to Action
+            action = CodexHookAdapter.to_action(payload)
 
-        # 2. Check for active HARD filesystem constraints
-        active_hard_fs = [
-            c for c in tx.ledger.list_active()
-            if c.strength == ConstraintStrength.HARD and (
-                (c.scope and c.scope.target_type in ("filesystem", "file", "dir", "folder"))
-                or (c.scope and c.scope.paths)
-            )
-        ]
+            # 2. Check for active HARD filesystem constraints
+            active_hard_fs = [
+                c for c in tx.ledger.list_active()
+                if c.strength == ConstraintStrength.HARD and (
+                    (c.scope and c.scope.target_type in ("filesystem", "file", "dir", "folder"))
+                    or (c.scope and c.scope.paths)
+                )
+            ]
 
-        # 3. Check opaque/destructive command fail-closed policy
-        is_opaque = bool(action.context.get("is_opaque"))
-        if is_opaque and active_hard_fs:
-            opaque_reason = action.context.get("opaque_reason") or "opaque shell command"
-            block_reason = (
-                f"BLOCK: Opaque/destructive shell command rejected under active HARD filesystem constraints "
-                f"(fail-closed policy: cannot statically guarantee protected paths are not modified). "
-                f"Reason: {opaque_reason}. Command: {action.operation!r}"
-            )
+            # 3. Check opaque/destructive command fail-closed policy
+            is_opaque = bool(action.context.get("is_opaque"))
+            if is_opaque and active_hard_fs:
+                opaque_reason = action.context.get("opaque_reason") or "opaque shell command"
+                block_reason = (
+                    f"BLOCK: Opaque/destructive shell command rejected under active HARD filesystem constraints "
+                    f"(fail-closed policy: cannot statically guarantee protected paths are not modified). "
+                    f"Reason: {opaque_reason}. Command: {action.operation!r}"
+                )
+                events = tx.trace_store.list_events(tx.trace_id)
+                seq = events[-1].sequence + 1 if events else 0
+                guard_event = TraceEvent(
+                    event_id=f"evt_guard_{seq}_{abs(hash(str(payload.tool_input))) % 1000000:06d}",
+                    trace_id=tx.trace_id,
+                    session_id=payload.session_id,
+                    sequence=seq,
+                    timestamp=datetime.now(timezone.utc),
+                    actor=ActorKind.GUARD,
+                    event_kind=EventKind.GUARD_DECISION,
+                    payload={
+                        "decision": "BLOCK",
+                        "reason": block_reason,
+                        "action": action.model_dump(mode="json"),
+                    },
+                    metadata=FrozenDict({
+                        "tool_name": payload.tool_name,
+                        "verdict": "BLOCK",
+                        "policy": "opaque_bash_fail_closed",
+                    }),
+                )
+                tx.trace_store.append(guard_event)
+
+                output = PreToolUseOutput(
+                    permissionDecision=HookDecision.DENY,
+                    permissionDecisionReason=block_reason,
+                )
+                sys.stderr.write(f"\n[AgentContract SpecGuard] BLOCKED: {block_reason}\n")
+                return 0, output.to_hook_response_dict()
+
+            # 4. Standard SpecGuard evaluation
+            guard = SpecGuard(ledger=tx.ledger)
+            decision = guard.evaluate(action)
+
+            # If action has fine-grained patch operations, evaluate each (path, kind) independently
+            patch_ops = action.context.get("patch_operations")
+            if patch_ops and not decision.is_blocked:
+                for p_path, p_kind in patch_ops:
+                    sub_action = Action(
+                        action_kind=ActionKind(p_kind),
+                        tool_name=payload.tool_name,
+                        target_path=p_path,
+                        paths=(p_path,),
+                        target_type="filesystem",
+                        operation="apply_patch",
+                        payload=payload.tool_input,
+                        context=FrozenDict({
+                            "call_id": payload.tool_use_id or "sub_call",
+                            "session_id": payload.session_id,
+                            "sub_path": p_path,
+                        }),
+                    )
+                    sub_dec = guard.evaluate(sub_action)
+                    if sub_dec.is_blocked:
+                        decision = sub_dec
+                        break
+
+            # 5. Record guard decision in trace
             events = tx.trace_store.list_events(tx.trace_id)
             seq = events[-1].sequence + 1 if events else 0
+
             guard_event = TraceEvent(
                 event_id=f"evt_guard_{seq}_{abs(hash(str(payload.tool_input))) % 1000000:06d}",
                 trace_id=tx.trace_id,
@@ -160,61 +225,37 @@ def handle_pre_tool_use(
                 timestamp=datetime.now(timezone.utc),
                 actor=ActorKind.GUARD,
                 event_kind=EventKind.GUARD_DECISION,
-                payload={
-                    "decision": "BLOCK",
-                    "reason": block_reason,
-                    "action": action.model_dump(mode="json"),
-                },
+                payload=decision.model_dump(mode="json"),
                 metadata=FrozenDict({
                     "tool_name": payload.tool_name,
-                    "verdict": "BLOCK",
-                    "policy": "opaque_bash_fail_closed",
+                    "verdict": decision.decision.value,
                 }),
             )
             tx.trace_store.append(guard_event)
 
-            output = PreToolUseOutput(
-                permissionDecision=HookDecision.DENY,
-                permissionDecisionReason=block_reason,
-            )
-            sys.stderr.write(f"\n[AgentContract SpecGuard] BLOCKED: {block_reason}\n")
+            # 6. Enforce Decision
+            if decision.is_blocked:
+                reason = f"BLOCK: Action violates constraint. {decision.reason}"
+                output = PreToolUseOutput(
+                    permissionDecision=HookDecision.DENY,
+                    permissionDecisionReason=reason,
+                )
+                sys.stderr.write(f"\n[AgentContract SpecGuard] BLOCKED: {decision.reason}\n")
+                return 0, output.to_hook_response_dict()
+
+            output = PreToolUseOutput(permissionDecision=HookDecision.ALLOW)
             return 0, output.to_hook_response_dict()
 
-        # 4. Standard SpecGuard evaluation
-        guard = SpecGuard(ledger=tx.ledger)
-        decision = guard.evaluate(action)
-
-        # 5. Record guard decision in trace
-        events = tx.trace_store.list_events(tx.trace_id)
-        seq = events[-1].sequence + 1 if events else 0
-
-        guard_event = TraceEvent(
-            event_id=f"evt_guard_{seq}_{abs(hash(str(payload.tool_input))) % 1000000:06d}",
-            trace_id=tx.trace_id,
-            session_id=payload.session_id,
-            sequence=seq,
-            timestamp=datetime.now(timezone.utc),
-            actor=ActorKind.GUARD,
-            event_kind=EventKind.GUARD_DECISION,
-            payload=decision.model_dump(mode="json"),
-            metadata=FrozenDict({
-                "tool_name": payload.tool_name,
-                "verdict": decision.decision.value,
-            }),
+    except CorruptedSessionStateError as exc:
+        block_reason = (
+            f"BLOCK: Persisted constraint state is corrupted or unreadable: fail-closed safety block. "
+            f"Error: {exc}"
         )
-        tx.trace_store.append(guard_event)
-
-        # 6. Enforce Decision
-        if decision.is_blocked:
-            reason = f"BLOCK: Action violates constraint. {decision.reason}"
-            output = PreToolUseOutput(
-                permissionDecision=HookDecision.DENY,
-                permissionDecisionReason=reason,
-            )
-            sys.stderr.write(f"\n[AgentContract SpecGuard] BLOCKED: {decision.reason}\n")
-            return 0, output.to_hook_response_dict()
-
-        output = PreToolUseOutput(permissionDecision=HookDecision.ALLOW)
+        sys.stderr.write(f"\n[AgentContract SpecGuard] BLOCKED: {block_reason}\n")
+        output = PreToolUseOutput(
+            permissionDecision=HookDecision.DENY,
+            permissionDecisionReason=block_reason,
+        )
         return 0, output.to_hook_response_dict()
 
 
@@ -440,25 +481,35 @@ def run_hook(
     # Normalize event name
     event_str = str(effective_event).replace("-", "_").lower()
 
-    if "session_start" in event_str or event_str == "sessionstart":
-        payload = SessionStartPayload.model_validate(raw_data)
-        return handle_session_start(payload, store)
+    try:
+        if "session_start" in event_str or event_str == "sessionstart":
+            payload = SessionStartPayload.model_validate(raw_data)
+            return handle_session_start(payload, store)
 
-    if "user_prompt" in event_str or event_str == "userpromptsubmit":
-        payload = UserPromptSubmitPayload.model_validate(raw_data)
-        return handle_user_prompt_submit(payload, store, client=client)
+        if "user_prompt" in event_str or event_str == "userpromptsubmit":
+            payload = UserPromptSubmitPayload.model_validate(raw_data)
+            return handle_user_prompt_submit(payload, store, client=client)
 
-    if "pre_tool" in event_str or event_str == "pretooluse":
-        payload = PreToolUsePayload.model_validate(raw_data)
-        return handle_pre_tool_use(payload, store)
+        if "pre_tool" in event_str or event_str == "pretooluse":
+            payload = PreToolUsePayload.model_validate(raw_data)
+            return handle_pre_tool_use(payload, store)
 
-    if "post_tool" in event_str or event_str == "posttooluse":
-        payload = PostToolUsePayload.model_validate(raw_data)
-        return handle_post_tool_use(payload, store)
+        if "post_tool" in event_str or event_str == "posttooluse":
+            payload = PostToolUsePayload.model_validate(raw_data)
+            return handle_post_tool_use(payload, store)
 
-    if "stop" in event_str:
-        payload = StopPayload.model_validate(raw_data)
-        return handle_stop(payload, store, client=client)
+        if "stop" in event_str:
+            payload = StopPayload.model_validate(raw_data)
+            return handle_stop(payload, store, client=client)
+    except CorruptedSessionStateError as exc:
+        sys.stderr.write(f"[AgentContract] Corrupted session state error: {exc}\n")
+        if "pre_tool" in event_str or event_str == "pretooluse":
+            output = PreToolUseOutput(
+                permissionDecision=HookDecision.DENY,
+                permissionDecisionReason=f"BLOCK: Corrupted session state: {exc}",
+            )
+            return 0, output.to_hook_response_dict()
+        return 0, {}
 
     return 0, {}
 

@@ -22,11 +22,11 @@ Codex Model Proposes Action
        │
        ▼
 [PreToolUse] ───────────► Normalize (Bash / apply_patch / MCP) ──► SpecGuard evaluation
-                          ├── Violates Hard Constraint ──► Exit Code 2 + DENY (execution BLOCKED)
-                          └── Compliant ──────────────────► Exit Code 0 + ALLOW
+                          ├── Violates Hard Constraint ──► Structured DENY (execution BLOCKED)
+                          └── Compliant ──────────────────► Structured ALLOW (execution proceeds)
                                                                      │
                                                                      ▼
-                                                             Tool Executes
+                                                              Tool Executes
                                                                      │
                                                                      ▼
 [PostToolUse] ──────────► Record ToolCall + ToolResult in session TraceStore
@@ -45,7 +45,7 @@ Codex Completes Task
 | :--- | :--- | :--- |
 | `SessionStart` | Initializes isolated state storage | Creates `.agentcontract/sessions/<session_id>/` with `ledger.json`, `trace.json`, and `meta.json`. |
 | `UserPromptSubmit` | Contract Registration | Extracts formal constraints (e.g. `DENY secrets/prod.key`) from user prompt instructions and populates the session constraint ledger. |
-| `PreToolUse` | Guard Gatekeeper | Normalizes proposed commands (including PowerShell/Bash commands, multi-file patches, and MCP invocations). If `SpecGuard` blocks the action, the hook emits exit code `2` with `{"decision": "block", "permissionDecision": "deny"}`, causing Codex to abort tool execution. |
+| `PreToolUse` | Guard Gatekeeper | Normalizes proposed commands (including PowerShell/Bash commands, multi-file patches, and MCP invocations). If `SpecGuard` blocks the action, the hook emits exit code `0` with structured `{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "..."}}`, causing Codex to abort tool execution without falling open. |
 | `PostToolUse` | Trace Evidence Collection | Captures the executed tool name, inputs, standard output, and exit status into an immutable `TraceEvent` record. |
 | `Stop` | Final Verification Gate | Parses completion assertions from the assistant's response and verifies each claim against the collected trace evidence via `EvidenceGate`. Results are persisted to `evidence.json`. |
 
@@ -198,8 +198,8 @@ $null | codex exec -m gpt-5.6-sol `
 3. **Violating Tool Call Blocked**:
    - When Codex attempts to execute commands modifying or removing protected paths:
      ```text
-     Rejected: blocked by policy (exit code 2)
-     hook: PreToolUse Failed
+     error=Command blocked by PreToolUse hook: BLOCK: Action violates constraint. BLOCK: Action violates HARD constraint...
+     hook: PreToolUse Blocked
      ```
    - `secrets/prod.key` is never touched, and SHA-256 hash check confirms it is intact (`UNCHANGED=True`).
 4. **Deterministic Evidence Verification**:
@@ -226,6 +226,7 @@ $null | codex exec -m gpt-5.6-sol `
 
 ## 5. Security Boundary & Limitations
 
-- **Child Process Execution**: Codex executes hook commands as child processes. Hooks execute in the local user's security context.
-- **Synchronous Execution**: Codex lifecycle hooks run synchronously. SpecGuard evaluations must be fast and deterministic to keep tool invocation latency minimal (< 50ms).
-- **Tool Parsing Boundaries**: Shell commands are parsed using regex heuristics and AST extractors. For mission-critical environments, configure strict `read-only` or `workspace-write` sandboxing in Codex alongside AgentContract hooks.
+- **Hook Interception Boundary**: Codex lifecycle hooks intercept tool executions traversing standard local tool paths (Bash, `apply_patch`, local MCP tools). Operations outside covered tool boundaries or unintercepted external processes are not guarded by lifecycle hooks. Pair with system-level sandboxing for untrusted multi-tenant execution.
+- **Fail-Closed Heuristic**: Under active HARD filesystem constraints, unknown, mutating, or dynamic shell commands that cannot be statically verified safe are blocked fail-closed.
+- **Synchronous Execution**: Codex lifecycle hooks run synchronously. SpecGuard evaluations are deterministic and sub-millisecond to keep tool invocation latency minimal.
+- **State Integrity**: Session ledgers and traces are protected by cross-process file locks (`SessionLock`). Corrupted session files fail closed to prevent accidental authorization.

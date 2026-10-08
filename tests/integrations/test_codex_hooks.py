@@ -79,7 +79,7 @@ def test_lifecycle_workflow_end_to_end(tmp_path: Path) -> None:
     code, _ = handle_post_tool_use(post_read, store)
     assert code == 0
 
-    # 6. PreToolUse: FORBIDDEN apply_patch modifying secrets/prod.key -> MUST BLOCK (exit code 2)
+    # 6. PreToolUse: FORBIDDEN apply_patch modifying secrets/prod.key -> MUST BLOCK (structured DENY)
     bad_patch = """
 --- a/src/app.py
 +++ b/src/app.py
@@ -283,3 +283,213 @@ def test_opaque_bash_allowed_when_no_hard_filesystem_constraints(tmp_path: Path)
     code, resp = handle_pre_tool_use(py_payload, store)
     assert code == 0
     assert resp["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+
+def test_mixed_patch_with_file_write_only_constraint_is_denied(tmp_path: Path) -> None:
+    # Regression for Blocker 2:
+    # secrets/prod.key is protected ONLY against FILE_WRITE.
+    # The patch deletes tmp.txt and modifies secrets/prod.key.
+    # Previously, presence of "delete" caused entire action to be FILE_DELETE, evading FILE_WRITE constraint!
+    store = CodexSessionStore(base_dir=tmp_path / "sessions")
+    session_id = "sess_mixed_patch_block"
+
+    with store.session_transaction(session_id) as tx:
+        from agentcontract.constraints.models import (
+            Constraint,
+            ConstraintProvenance,
+            ConstraintScope,
+            ConstraintSource,
+            ConstraintStrength,
+            RuleEffect,
+        )
+        tx.ledger.add(
+            Constraint(
+                id="c_write_only",
+                name="no_write_secrets",
+                description="Never write secrets/prod.key",
+                strength=ConstraintStrength.HARD,
+                rule_effect=RuleEffect.DENY,
+                provenance=ConstraintProvenance(source=ConstraintSource.USER, author="User"),
+                scope=ConstraintScope(
+                    target_type="filesystem",
+                    paths=("secrets/prod.key",),
+                    actions=("FILE_WRITE",),  # ONLY FILE_WRITE
+                ),
+            )
+        )
+
+    mixed_patch = """
+*** Delete File: tmp.txt
+*** Update File: secrets/prod.key
+@@ -1 +1 @@
+-old
++tampered
+"""
+    payload = PreToolUsePayload(
+        session_id=session_id,
+        hook_event_name="PreToolUse",
+        tool_name="apply_patch",
+        tool_input={"patch": mixed_patch},
+        tool_use_id="call_mixed_01",
+    )
+    code, resp = handle_pre_tool_use(payload, store)
+    assert code == 0
+    assert resp["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "BLOCK:" in resp["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_mixed_patch_with_file_delete_only_constraint_is_denied(tmp_path: Path) -> None:
+    # Symmetrical check: secrets/prod.key is protected ONLY against FILE_DELETE.
+    # The patch updates tmp.txt and deletes secrets/prod.key.
+    store = CodexSessionStore(base_dir=tmp_path / "sessions")
+    session_id = "sess_mixed_delete_block"
+
+    with store.session_transaction(session_id) as tx:
+        from agentcontract.constraints.models import (
+            Constraint,
+            ConstraintProvenance,
+            ConstraintScope,
+            ConstraintSource,
+            ConstraintStrength,
+            RuleEffect,
+        )
+        tx.ledger.add(
+            Constraint(
+                id="c_delete_only",
+                name="no_delete_secrets",
+                description="Never delete secrets/prod.key",
+                strength=ConstraintStrength.HARD,
+                rule_effect=RuleEffect.DENY,
+                provenance=ConstraintProvenance(source=ConstraintSource.USER, author="User"),
+                scope=ConstraintScope(
+                    target_type="filesystem",
+                    paths=("secrets/prod.key",),
+                    actions=("FILE_DELETE",),  # ONLY FILE_DELETE
+                ),
+            )
+        )
+
+    mixed_patch = """
+*** Update File: tmp.txt
+@@ -1 +1 @@
+-old
++new
+*** Delete File: secrets/prod.key
+"""
+    payload = PreToolUsePayload(
+        session_id=session_id,
+        hook_event_name="PreToolUse",
+        tool_name="apply_patch",
+        tool_input={"patch": mixed_patch},
+        tool_use_id="call_mixed_02",
+    )
+    code, resp = handle_pre_tool_use(payload, store)
+    assert code == 0
+    assert resp["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "BLOCK:" in resp["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_dynamic_variable_bash_denied_under_hard_constraints(tmp_path: Path) -> None:
+    # Regression for Blocker 1:
+    # Set-Content -LiteralPath $env:TARGET -Value hacked
+    store = CodexSessionStore(base_dir=tmp_path / "sessions")
+    session_id = "sess_dynamic_var_test"
+
+    with store.session_transaction(session_id) as tx:
+        from agentcontract.constraints.models import (
+            Constraint,
+            ConstraintProvenance,
+            ConstraintScope,
+            ConstraintSource,
+            ConstraintStrength,
+            RuleEffect,
+        )
+        tx.ledger.add(
+            Constraint(
+                id="c_hard_secret",
+                name="protect_secrets",
+                description="Do not touch secrets/prod.key",
+                strength=ConstraintStrength.HARD,
+                rule_effect=RuleEffect.DENY,
+                provenance=ConstraintProvenance(source=ConstraintSource.USER, author="User"),
+                scope=ConstraintScope(target_type="filesystem", paths=("secrets/prod.key",)),
+            )
+        )
+
+    payload = PreToolUsePayload(
+        session_id=session_id,
+        hook_event_name="PreToolUse",
+        tool_name="Bash",
+        tool_input={"command": "Set-Content -LiteralPath $env:TARGET -Value hacked"},
+        tool_use_id="call_dynamic_var",
+    )
+    code, resp = handle_pre_tool_use(payload, store)
+    assert code == 0
+    assert resp["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "fail-closed policy" in resp["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_unknown_command_denied_under_hard_constraints(tmp_path: Path) -> None:
+    # Regression for Blocker 1: unknown commands must fail-closed under HARD file constraints
+    store = CodexSessionStore(base_dir=tmp_path / "sessions")
+    session_id = "sess_unknown_cmd_test"
+
+    with store.session_transaction(session_id) as tx:
+        from agentcontract.constraints.models import (
+            Constraint,
+            ConstraintProvenance,
+            ConstraintScope,
+            ConstraintSource,
+            ConstraintStrength,
+            RuleEffect,
+        )
+        tx.ledger.add(
+            Constraint(
+                id="c_hard_secret",
+                name="protect_secrets",
+                description="Do not touch secrets/prod.key",
+                strength=ConstraintStrength.HARD,
+                rule_effect=RuleEffect.DENY,
+                provenance=ConstraintProvenance(source=ConstraintSource.USER, author="User"),
+                scope=ConstraintScope(target_type="filesystem", paths=("secrets/prod.key",)),
+            )
+        )
+
+    payload = PreToolUsePayload(
+        session_id=session_id,
+        hook_event_name="PreToolUse",
+        tool_name="Bash",
+        tool_input={"command": "unknown_file_mutator --target secrets/prod.key"},
+        tool_use_id="call_unknown_cmd",
+    )
+    code, resp = handle_pre_tool_use(payload, store)
+    assert code == 0
+    assert resp["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "fail-closed" in resp["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_corrupted_ledger_fails_closed_in_pre_tool_use(tmp_path: Path) -> None:
+    # Regression for Blocker 3: corrupted ledger must DENY and never overwrite
+    store = CodexSessionStore(base_dir=tmp_path / "sessions")
+    session_id = "sess_corrupt_ledger_block"
+
+    # Create session
+    store.get_or_create_session(session_id)
+    ledger_path = store.get_session_dir(session_id) / "ledger.json"
+    corrupt_content = "NOT_VALID_JSON{:::broken"
+    ledger_path.write_text(corrupt_content, encoding="utf-8")
+
+    payload = PreToolUsePayload(
+        session_id=session_id,
+        hook_event_name="PreToolUse",
+        tool_name="Bash",
+        tool_input={"command": "cat src/app.py"},
+        tool_use_id="call_corrupt_check",
+    )
+    code, resp = handle_pre_tool_use(payload, store)
+    assert code == 0
+    assert resp["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "corrupted or unreadable: fail-closed safety block" in resp["hookSpecificOutput"]["permissionDecisionReason"]
+
+    # File on disk remains intact and was not overwritten
+    assert ledger_path.read_text(encoding="utf-8") == corrupt_content

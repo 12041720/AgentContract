@@ -53,11 +53,14 @@ Codex lifecycle hooks run as external commands with host system privileges. By d
    trusted_directories = ["/path/to/your/project"]
    ```
 
-## Hook Interception Boundary
+## Hook Interception Boundary & Security Limitations
 
 AgentContract hooks intercept:
-- `SessionStart`: Initializes session state and trace log.
+- `SessionStart`: Initializes session state, trace log, and lock.
 - `UserPromptSubmit`: Extracts user constraints into the session `ConstraintLedger`.
-- `PreToolUse`: Normalizes tool arguments (file writes, `apply_patch`, shell commands) through `SpecGuard`. Returns exit code 2 and structured `deny` response to abort prohibited actions, and enforces fail-closed policy on opaque shell scripts when HARD filesystem constraints are active.
+- `PreToolUse`: Normalizes tool arguments (file writes, `apply_patch`, shell commands) through `SpecGuard`. Returns exit code 0 with structured `{"hookSpecificOutput": {"permissionDecision": "deny", "permissionDecisionReason": "..."}}` to halt prohibited actions, and enforces fail-closed policy on unknown, mutating, or dynamic shell commands when HARD filesystem constraints are active.
 - `PostToolUse`: Records deterministic tool execution results into `TraceStore`.
 - `Stop`: Gathers agent completion prose and validates claims via `EvidenceGate`.
+
+> **Security Boundary Note**:
+> AgentContract lifecycle hooks provide deterministic runtime guardrails directly at the intercepted tool boundary (Bash commands, `apply_patch`, and local MCP tools). They do not act as a universal kernel-level OS sandbox. For multi-tenant or untrusted environments, pair AgentContract with Codex containerization or OS sandboxing.
