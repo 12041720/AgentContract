@@ -366,122 +366,51 @@ Do not commit credentials.
 
 > Main agent only.
 
-**Verdict:** CHANGES_REQUESTED
+**Verdict:** CHANGES_REQUESTED — final guard correctness hardening (round 2)
 
-**Actual branch head reviewed:** `1d1600b29f54b9272b169e68a5f3e5fc5e9de49c`
+**Implementation reviewed:** `af244867eb83f0e6adab49eeab13bd3693157ece`  
+**Branch head/report reviewed:** `1b3a86140078e42f604f05dbe391ba06ea92e549`
 
-### BLOCKER 1 — configured StructuredExtractionClient is never actually used
+**Previous blockers materially addressed:** Provider API now flows through `RequirementExtractor` and `ClaimExtractor`; PreToolUse outputs supported `permissionDecision` JSON; a cross-process lock implementation exists; opaque command classification was added; a compatibility plugin manifest was added. Executor reports 321 passing tests and a real Codex run with observed DENY, matching file hash, TESTS_PASSED VERIFIED, and an unsupported claim UNVERIFIED. This evidence is executor-reported rather than independently replayed by main agent.
 
-`CodexHookAdapter.extract_prompt_constraints()` calls:
+### BLOCKER 1 — unknown shell commands still default ALLOW under HARD file constraints
 
-```python
-client.extract_requirements(...)
+`is_opaque_destructive_command()` ends with `return False, "known_command"` for **any unrecognized command**. This is not a safe fail-closed classification.
+
+Reproducible source-level bypass class:
+
+```powershell
+Set-Content -LiteralPath $env:TARGET -Value hacked
 ```
 
-and completion extraction calls:
+where `TARGET=secrets/prod.key` was set outside this invocation. `parse_command_paths` sees only `$env:TARGET`, not the protected resolved path, and opaque detection returns false. SpecGuard therefore has no path intersection and can ALLOW the write. The same issue applies to other indirect writes (environment/variable-derived paths, unknown file-mutating commands).
 
-```python
-client.extract_claims(...)
-```
+**Required:** With active HARD filesystem constraints, only a narrow, audited allowlist of demonstrably safe commands should bypass the opaque gate. Unknown, dynamic, potentially side-effectful or unsupported shell syntax must DENY (or use a genuinely supported explicit approval flow). Preserve normal safe reads/tests with grounded tests. Add regression tests for PowerShell variable-based paths, `Set-Content`, interpreter indirection, and unknown file-changing commands.
 
-but the configured `OpenAICompatibleExtractionClient` only implements the provider-neutral `extract(task=..., text=..., schema=...)` protocol. Those convenience methods do not exist.
+### BLOCKER 2 — mixed Codex apply_patch can misclassify protected writes as FILE_DELETE
 
-The resulting `AttributeError` is swallowed by `except Exception: pass`, so the real Codex run silently falls back to regex extraction. The reported live run therefore does **not** prove real configured LLM requirement/claim extraction.
+`CodexHookAdapter.to_action()` currently chooses **one action_kind for the entire patch**, and sets it to `FILE_DELETE` if `"delete"` appears anywhere in the patch text (even for unrelated file operations). If the patch also updates a protected path that has a `FILE_WRITE`-only DENY constraint, `match_scope()` checks only `FILE_DELETE` and does not match that constraint.
 
-**Required fix:**
-- use the existing `RequirementExtractor(client=...)` and `ClaimExtractor(client=...)` APIs;
-- preserve caller-owned USER provenance;
-- do not silently swallow provider/extraction failures when a provider is configured; fail safely with a visible diagnostic or an explicitly documented fallback policy;
-- add tests proving the configured client is invoked;
-- repeat the real Codex session with configured OpenAI-compatible extraction and record evidence that provider-backed extraction actually ran.
+**Required:** Classify each patch operation and its path independently, or conservatively evaluate all affected paths as both relevant modification/deletion effects when mixed/uncertain. Never let one patch header or comment suppress FILE_WRITE matching for another file. Add a test for a patch deleting `tmp.txt` and updating a `secrets/prod.key` path protected **only against FILE_WRITE**, and ensure DENY.
 
-### BLOCKER 2 — PreToolUse output contains unsupported Codex fields
+### BLOCKER 3 — corrupted ledger silently disables protection
 
-Current `PreToolUseOutput.to_hook_response_dict()` adds fields such as:
+`CodexSessionStore.get_or_create_session()` catches ledger JSON parsing/deserialization failures and replaces the ledger with an empty `ConstraintLedger`. Then PreToolUse can ALLOW actions because the prior HARD constraints disappeared.
 
-```json
-{"decision":"approve","continue":true}
-```
+**Required:** Treat unreadable/corrupt persisted constraint state as a fail-closed pre-tool error; do not overwrite corrupted persisted ledger with empty state or silently proceed. Add a corruption regression test for a protected write; ensure no execution is authorized.
 
-for ALLOW and:
+### BLOCKER 4 — acceptance evidence gaps
 
-```json
-{"decision":"block","continue":false}
-```
+- The new `test_session_store_concurrency_no_data_loss` uses `ThreadPoolExecutor` rather than **separate processes**; add a Windows-compatible spawned-process test verifying the intended cross-process transaction lock.
+- `integrations/codex-plugin/plugin.json` uses a legacy-shaped root `hooks` field rather than the portable `extensions.com.openai.hooks` field, while the compatibility manifest declares `"hooks": "hooks/hooks.json"` instead of `"./hooks/hooks.json"`. Bring the manifest/paths into compliance with the chosen supported format. Prove actual plugin discovery/trust/hook loading rather than project-local hooks alone.
+- Update claims in plugin docs to reflect the actual exit-0 structured-deny behavior (some text still claims exit code 2), and avoid absolute security guarantees outside intercepted tool paths.
 
-for DENY.
+**Re-check:**
+1. Full Python 3.12.9 suite.
+2. Explicit bypass tests for the shell, mixed-patch, and corrupted-ledger cases.
+3. Spawned cross-process lock test and plugin discovery smoke test.
+4. Real Codex session with model-backed constraint/claim extraction; normal commands ALLOW; protected write is rejected via supported PreToolUse DENY; SHA-256 unchanged; true test claim VERIFIED, unsupported claim not VERIFIED.
+5. Exact final implementation SHA and test output recorded in Executor Report. Commit + push on task branch; do not merge main.
 
-Current Codex hook semantics do **not** support `continue` on `PreToolUse`, and legacy `decision:"approve"` is not supported. Unsupported fields cause Codex to mark the hook run failed and continue the tool call. A supported deny is:
-
-```json
-{
-  "hookSpecificOutput": {
-    "hookEventName": "PreToolUse",
-    "permissionDecision": "deny",
-    "permissionDecisionReason": "..."
-  }
-}
-```
-
-or exit code 2 with the block reason on stderr.
-
-**Required fix:**
-- ALLOW: emit only supported PreToolUse fields;
-- DENY: use the supported deny envelope and/or a clean exit-code-2 path, without unsupported fields;
-- add regression tests against the current Codex wire contract;
-- real run must no longer depend on a generic “hook failed” condition to establish blocking.
-
-### BLOCKER 3 — opaque/destructive Bash policy is missing
-
-TASK-010 explicitly required fail-closed or approval behavior when a HARD filesystem constraint cannot be safely evaluated from an opaque/destructive shell command.
-
-Current implementation regex-extracts obvious path-like tokens and otherwise allows the command. This can miss commands such as scripts/interpreters that modify a protected path indirectly.
-
-**Required fix:**
-- implement an explicit conservative policy for opaque/destructive Bash when active HARD filesystem constraints exist;
-- do not claim arbitrary shell semantic understanding;
-- prefer fail-closed for unsafe opaque commands unless a supported Codex approval mechanism is explicitly implemented;
-- add bypass-oriented tests (interpreter/script/indirection cases) plus safe-command controls.
-
-### BLOCKER 4 — session persistence is atomic per file, not concurrency-safe
-
-`_atomic_write_text()` prevents torn individual files, but the hook lifecycle does read-modify-write across `meta.json`, `ledger.json`, and `trace.json` with no per-session cross-process lock.
-
-Concurrent hook invocations can load the same old state and overwrite one another, losing constraints or trace events.
-
-**Required fix:**
-- add a per-session cross-process lock covering the full read-modify-write transaction;
-- support Windows/Python 3.12.9;
-- add a real concurrency regression test proving simultaneous updates do not lose events/constraints.
-
-### BLOCKER 5 — plugin packaging shape must match current Codex plugin contract
-
-The repository currently ships `integrations/codex-plugin/plugin.json` with a top-level `hooks` field, while current Codex documentation distinguishes the current plugin manifest from the legacy `.codex-plugin/plugin.json` form.
-
-**Required fix:**
-- package the plugin using a currently documented Codex-compatible manifest shape, or deliberately use the documented legacy `.codex-plugin/plugin.json` location;
-- ensure hook paths resolve correctly from plugin root;
-- document hook trust requirements;
-- verify the plugin package is discoverable/usable, not just project-local `.codex/hooks.json`.
-
-### Additional corrections
-
-- Executor Report references implementation commit `7fc271c...`, but actual reviewed branch head is `1d1600b29f54b9272b169e68a5f3e5fc5e9de49c`; report the exact final pushed SHA.
-- Add the missing TASK-010-required concurrency and opaque-Bash tests.
-- Keep all existing tests green.
-
-### Re-check
-
-After fixes:
-
-1. run full pytest;
-2. run the real Codex session;
-3. prove actual configured provider extraction ran;
-4. prove supported PreToolUse DENY blocks the underlying tool;
-5. prove protected file hash unchanged;
-6. prove pytest claim VERIFIED from real PostToolUse evidence;
-7. prove unsupported/false claim remains UNVERIFIED or CONTRADICTED;
-8. update Executor Report with exact final branch SHA.
-
-Do not merge `main`.
+**No new task activated.**
 
