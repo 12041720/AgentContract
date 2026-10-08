@@ -17,7 +17,7 @@
 - Work branch: `task/TASK-010-codex-hooks`
 - Status: **CHANGES_REQUESTED**
 - Owner: Execution agent
-- Main-agent review: TASK-010 round-3 changes requested; guard correctness and plugin installation smoke outstanding
+- Main-agent review: TASK-010 round 4 changes requested; pre-tool unexpected-error deny and plugin-hook runtime proof outstanding
 
 ## Main-agent checkpoint
 
