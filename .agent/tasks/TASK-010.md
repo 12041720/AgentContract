@@ -382,51 +382,65 @@ Do not commit credentials.
 
 > Main agent only.
 
-**Verdict:** CHANGES_REQUESTED — final guard correctness hardening (round 2)
+**Verdict:** CHANGES_REQUESTED — round 3
 
-**Implementation reviewed:** `af244867eb83f0e6adab49eeab13bd3693157ece`  
-**Branch head/report reviewed:** `1b3a86140078e42f604f05dbe391ba06ea92e549`
+**Implementation reviewed:** `aee5b53fb5917cb42c5add72d0f719b2524a1872`  
+**Branch head reviewed:** `1caecc4937c010ca999829c3131a6d1fc700d3ad`
 
-**Previous blockers materially addressed:** Provider API now flows through `RequirementExtractor` and `ClaimExtractor`; PreToolUse outputs supported `permissionDecision` JSON; a cross-process lock implementation exists; opaque command classification was added; a compatibility plugin manifest was added. Executor reports 321 passing tests and a real Codex run with observed DENY, matching file hash, TESTS_PASSED VERIFIED, and an unsupported claim UNVERIFIED. This evidence is executor-reported rather than independently replayed by main agent.
+**Progress accepted for this round:** Unknown/dynamic shell commands now default to opaque/deny under HARD filesystem constraints; explicit patch operations are parsed per path; corrupt JSON ledger raises a typed error and blocks PreToolUse; spawned-process concurrency tests have been added; the executor reports 333 green pytest tests and a real Codex run with provider extraction, protected-file DENY, hash unchanged, TESTS_PASSED VERIFIED, and unsupported claim UNVERIFIED. These runtime/test results are executor-reported, not independently replayed by main agent.
 
-### BLOCKER 1 — unknown shell commands still default ALLOW under HARD file constraints
+### BLOCKER 1 — aggregate mixed-patch scope matching creates false BLOCK
 
-`is_opaque_destructive_command()` ends with `return False, "known_command"` for **any unrecognized command**. This is not a safe fail-closed classification.
+Current `handle_pre_tool_use()` first evaluates the **aggregate** action with all paths and all `action_kinds`; `SpecGuard.match_scope()` independently matches `scope.paths` against any path and `scope.actions` against any action kind in the batch. This loses the path-to-operation relationship. Per-operation sub-evaluation only runs when the aggregate is *not* already blocked.
 
-Reproducible source-level bypass class:
+Counterexample:
 
-```powershell
-Set-Content -LiteralPath $env:TARGET -Value hacked
+- Constraint: `DENY FILE_DELETE on secrets/prod.key`, while FILE_WRITE is allowed.
+- Patch: `*** Update File: secrets/prod.key` plus `*** Delete File: tmp.txt`.
+- Aggregate contains both `FILE_WRITE` and `FILE_DELETE` and both paths, causing a false BLOCK, even though the only deletion is `tmp.txt`.
+
+**Fix:** For patch actions with parsed operations, evaluate each `(path, action_kind)` pair individually and aggregate those *decisions*, not path and action sets separately. Preserve ordinary non-patch SpecGuard semantics. Add allowed mixed-operation regression tests and keep existing denied mixed-operation tests.
+
+Also, when a patch cannot be reliably parsed to any affected path and a HARD filesystem constraint exists, reject the uninspectable patch rather than ALLOWing it.
+
+### BLOCKER 2 — missing ledger on existing session is still fail-open
+
+`get_or_create_session()` blocks unreadable/corrupted `ledger.json`, but if `meta.json` exists and `ledger.json` is **missing**, it creates an empty `ConstraintLedger` and the next pre-tool check can ALLOW protected operations.
+
+**Fix:** On an already initialized session, missing `ledger.json` (or other authoritative state required to check rules) must raise `CorruptedSessionStateError` / `CorruptedLedgerError` and result in a PreToolUse deny without rewriting evidence. Add regression test deleting `ledger.json` from a session with a known HARD prohibition.
+
+### BLOCKER 3 — malformed PreToolUse hook input still returns success with no deny
+
+`run_hook()` returns `(0,{})` on empty/malformed stdin JSON even when the caller explicitly passes `event_name="PreToolUse"`. It also leaves Pydantic payload validation errors unhandled. Without a valid deny envelope, this cannot be treated as fail-closed.
+
+**Fix:** If the incoming event is known to be `PreToolUse`, an empty/malformed/unvalidatable request must produce a supported blocking response (e.g. exit code 2 with reason on stderr or valid structured deny envelope). Keep benign behavior for genuinely non-pre-tool events. Add CLI-level and unit regressions proving no fail-open on missing tool_name, invalid tool_input, bad JSON, or empty stdin.
+
+### BLOCKER 4 — plugin manifest/real discovery test still incorrect
+
+The current root `integrations/codex-plugin/plugin.json` contains:
+
+```json
+"extensions": {"com.openai.hooks": "./hooks/hooks.json"}
 ```
 
-where `TARGET=secrets/prod.key` was set outside this invocation. `parse_command_paths` sees only `$env:TARGET`, not the protected resolved path, and opaque detection returns false. SpecGuard therefore has no path intersection and can ALLOW the write. The same issue applies to other indirect writes (environment/variable-derived paths, unknown file-mutating commands).
+Official portable Codex Plugin format requires:
 
-**Required:** With active HARD filesystem constraints, only a narrow, audited allowlist of demonstrably safe commands should bypass the opaque gate. Unknown, dynamic, potentially side-effectful or unsupported shell syntax must DENY (or use a genuinely supported explicit approval flow). Preserve normal safe reads/tests with grounded tests. Add regression tests for PowerShell variable-based paths, `Set-Content`, interpreter indirection, and unknown file-changing commands.
+```json
+"extensions": {"com.openai": {"hooks": "./hooks/hooks.json"}}
+```
 
-### BLOCKER 2 — mixed Codex apply_patch can misclassify protected writes as FILE_DELETE
+(and a compatible root schema). Alternatively, use the documented legacy `.codex-plugin/plugin.json` hook declaration, with no misleading portable claim. Current `test_plugin_discovery_and_resolution` is a homemade simulated discovery algorithm and does **not** prove a real Codex plugin was discovered/trusted/loaded.
 
-`CodexHookAdapter.to_action()` currently chooses **one action_kind for the entire patch**, and sets it to `FILE_DELETE` if `"delete"` appears anywhere in the patch text (even for unrelated file operations). If the patch also updates a protected path that has a `FILE_WRITE`-only DENY constraint, `match_scope()` checks only `FILE_DELETE` and does not match that constraint.
+**Fix:** align manifest schema with official documentation; add a test validating the right nested fields and a *real Codex plugin installation/discovery/hook* smoke test with reproducible log/evidence. Do not substitute project-local `.codex/hooks.json` for a plugin acceptance test. Official reference: https://developers.openai.com/plugins/build/plugins .
 
-**Required:** Classify each patch operation and its path independently, or conservatively evaluate all affected paths as both relevant modification/deletion effects when mixed/uncertain. Never let one patch header or comment suppress FILE_WRITE matching for another file. Add a test for a patch deleting `tmp.txt` and updating a `secrets/prod.key` path protected **only against FILE_WRITE**, and ensure DENY.
+### Re-check
 
-### BLOCKER 3 — corrupted ledger silently disables protection
+- Python 3.12.9 full pytest.
+- Two mixed patch cases (must BLOCK when matched pair violates; must ALLOW when actions/path only match across different pairs).
+- Missing ledger, malformed PreToolUse JSON/schema, unparseable patch fail-closed.
+- Real plugin discovery/trust smoke evidence.
+- Real Codex session with configured provider; normal actions execute; protected write denied; hash unchanged; true pytest success VERIFIED and unsupported claim not VERIFIED.
+- Update Executor Report with the *exact final branch implementation SHA*. Commit + push on task branch. Do not merge main.
 
-`CodexSessionStore.get_or_create_session()` catches ledger JSON parsing/deserialization failures and replaces the ledger with an empty `ConstraintLedger`. Then PreToolUse can ALLOW actions because the prior HARD constraints disappeared.
-
-**Required:** Treat unreadable/corrupt persisted constraint state as a fail-closed pre-tool error; do not overwrite corrupted persisted ledger with empty state or silently proceed. Add a corruption regression test for a protected write; ensure no execution is authorized.
-
-### BLOCKER 4 — acceptance evidence gaps
-
-- The new `test_session_store_concurrency_no_data_loss` uses `ThreadPoolExecutor` rather than **separate processes**; add a Windows-compatible spawned-process test verifying the intended cross-process transaction lock.
-- `integrations/codex-plugin/plugin.json` uses a legacy-shaped root `hooks` field rather than the portable `extensions.com.openai.hooks` field, while the compatibility manifest declares `"hooks": "hooks/hooks.json"` instead of `"./hooks/hooks.json"`. Bring the manifest/paths into compliance with the chosen supported format. Prove actual plugin discovery/trust/hook loading rather than project-local hooks alone.
-- Update claims in plugin docs to reflect the actual exit-0 structured-deny behavior (some text still claims exit code 2), and avoid absolute security guarantees outside intercepted tool paths.
-
-**Re-check:**
-1. Full Python 3.12.9 suite.
-2. Explicit bypass tests for the shell, mixed-patch, and corrupted-ledger cases.
-3. Spawned cross-process lock test and plugin discovery smoke test.
-4. Real Codex session with model-backed constraint/claim extraction; normal commands ALLOW; protected write is rejected via supported PreToolUse DENY; SHA-256 unchanged; true test claim VERIFIED, unsupported claim not VERIFIED.
-5. Exact final implementation SHA and test output recorded in Executor Report. Commit + push on task branch; do not merge main.
-
-**No new task activated.**
+No other scope increase is requested.
 
