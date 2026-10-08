@@ -17,7 +17,7 @@
 - Work branch: `task/TASK-010-codex-hooks`
 - Status: **CHANGES_REQUESTED**
 - Owner: Execution agent
-- Main-agent review: TASK-010 changes requested after first real Codex integration review
+- Main-agent review: TASK-010 round-2 changes requested; original integration blockers improved, remaining guard correctness and packaging issues.
 
 ## Main-agent checkpoint
 
