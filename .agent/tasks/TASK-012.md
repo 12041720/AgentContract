@@ -4,7 +4,7 @@
 **Milestone:** M7 — Codex Runtime Protocol Compatibility  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-012-codex-pretooluse-compat`  
-**Main-agent review:** CHANGES_REQUESTED — round 2
+**Main-agent review:** CHANGES_REQUESTED — round 3
 
 ## Objective
 
@@ -141,3 +141,27 @@ The two real online tests are intentionally skipped without separate test creden
 Keep patch tightly scoped to test safety, evidence correlation, and report accuracy; no need to rewrite production ALLOW/DENY protocol. Run Windows Python 3.12.9 full pytest and report exact pass/skip counts, plus a separate optional real online run result if deliberately provisioned. Commit/push to `task/TASK-012-codex-pretooluse-compat`; **do not merge main**.
 
 **Disposition:** CHANGES_REQUESTED.
+
+
+### Round 3 review — 2026-10-09
+
+**Verdict:** CHANGES_REQUESTED  
+**Implementation reviewed:** `1c4877a90bc60c82f490d5a44a86cf85b903f4e6`  
+**Executor report / reviewed branch HEAD:** `9bb6a3325db60ccab7e2b4ebde3a9080092f8722`  
+**Review type:** GitHub source/diff and Executor Report static review. No independent Windows Codex run; GitHub reported no combined-status checks.
+
+**Progress:** Both online test commands now explicitly request `--sandbox workspace-write`; the DENY test attempts to inspect the Guard action payload for the protected path; report accurately discloses 357 passed / 2 skipped and live E2E UNVERIFIED. Production ALLOW/no updatedInput and structured DENY paths are unchanged in this round.
+
+**Blocking findings:**
+
+1. **Authenticated DENY test will error before evidence validation.** `tests/integrations/test_codex_cli.py` defines `_action_targets_protected_key(action_data: dict[str, Any])` inside the DENY test, but does not import `Any` and does not enable postponed annotation evaluation. This raises `NameError` if execution reaches the helper definition. Fix the missing import/type and exercise the helper through deterministic tests.
+
+2. **Sandbox evidence assertion is ineffective.** The ALLOW test runs `assert ev["sandbox"] == "workspace-write"` inside `try: ... except Exception: pass`; `AssertionError` is swallowed. The event's sandbox field is also optional, so absence passes. Parse JSON with narrow `JSONDecodeError` handling; enforce trustworthy runtime sandbox evidence when available, and label missing/unrecognized metadata explicitly UNVERIFIED rather than claiming it was verified. Keep the explicit bounded CLI flag and never use an unrestricted fallback.
+
+3. **DENY success can still be falsely inferred.** `_action_targets_protected_key` searches for the protected path as a substring in arbitrary operation/command text without proving that action is a write/delete; a read/reference or unrelated fail-closed BLOCK can qualify. `found_targeted_block` can be true with **zero** correlated `blocked_call_ids`, making the successful-result exclusion vacuous. Strings such as `"BLOCK:"` in combined output can originate in agent prose, not trusted hook status. Require a verified mutating operation against normalized exact protected path, a nonempty matching call ID, Guard decision correlation, a structured runtime hook-denial signal (or other trustworthy machine event), and the unchanged SHA-256; reject inconclusive attempts.
+
+4. **Credential cleanup does not cover setup failure.** The temp `auth.json` copy and hook installation occur before the `try/finally`; exceptions during setup can leave a credential copy behind. In `finally`, unlink failures are swallowed. Move sensitive setup inside guaranteed cleanup scope and make failed cleanup visible; do not use or modify user-global Codex authentication/configuration.
+
+**Acceptance still unverified:** The reported local suite is **357 passed, 2 skipped, 0 failures** on Python 3.12.9; both real online Codex ALLOW/DENY tests intentionally skipped due to absent dedicated test credentials. Offline success is not evidence of Codex CLI runtime recognition. After repairing the tests, run isolated opt-in live evidence using separately provisioned test authentication, or explicitly keep M7 unverified and request an acceptance-scope decision. Never copy the user's global `~/.codex/auth.json`.
+
+**Disposition:** Continue TASK-012 on the same branch. Do not merge `main` or activate TASK-013.
