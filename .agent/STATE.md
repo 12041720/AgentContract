@@ -17,7 +17,7 @@
 - Work branch: `task/TASK-012-codex-pretooluse-compat`
 - Status: **CHANGES_REQUESTED**
 - Owner: Execution agent
-- Main-agent review: Round 1 CHANGES_REQUESTED (unsafe global auth copy, sandbox bypass, weak runtime proof, subprocess state leakage)
+- Main-agent review: Round 2 CHANGES_REQUESTED (missing explicit sandbox, uncorrelated real DENY evidence; 2 real online tests skipped)
 - Previous accepted milestone: TASK-011 / M6
 
 ## Main-agent checkpoint
