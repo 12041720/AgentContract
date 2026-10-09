@@ -15,9 +15,9 @@
 - Task: **TASK-011 — Codex Configuration Isolation & Zero External Side Effects**
 - Task file: `.agent/tasks/TASK-011.md`
 - Work branch: `task/TASK-011-codex-isolation`
-- Status: **READY_FOR_EXECUTOR**
+- Status: **CHANGES_REQUESTED**
 - Owner: Execution agent
-- Main-agent review: pending; enforce zero cross-workspace Codex side effects
+- Main-agent review: Round 1 CHANGES_REQUESTED; mixed hook group deletion, malformed structure overwrite, audit false clean, root-path guard
 
 ## Main-agent checkpoint
 
