@@ -75,3 +75,11 @@ M5 status: **COMPLETE**. TASK-010 accepted on 2026-10-09; no next task activated
 Goal: AgentContract tests and project hooks must never change or activate in unrelated Codex desktop/CLI workspaces or mutate the normal user's global Codex home.
 
 M6 status: **COMPLETE** — TASK-011 accepted on 2026-10-09, selectively integrated into `main` as `a8343521416cbe97a257a4c06f19730c3265ee60`. No next task activated. Codex Desktop smoke checklist remains MANUAL/UNVERIFIED.
+
+## M7 — Codex PreToolUse Runtime Compatibility
+
+| Task | Title | Status | Depends on |
+|---|---|---|---|
+| TASK-012 | Codex CLI PreToolUse Output Protocol Compatibility | CHANGES_REQUESTED | TASK-011 |
+
+Goal: correct ALLOW wire format while demonstrating real runtime ALLOW/Completed and DENY/Blocked under truly isolated, sandboxed Codex tests. Round-one review blockers in `.agent/tasks/TASK-012.md`. No merge yet.
