@@ -78,47 +78,53 @@ Official references:
 
 > Execution agent fills this section.
 
-**Implementation summary (Round 1 Review Blocker Fixes):**
-- **Blocker 1 (Mixed Hook Group Handler Preservation on Uninstall):**
-  - Refactored `uninstall_hooks` in `src/agentcontract/integrations/codex/cli.py` to filter individual hook handlers using `_is_agentcontract_handler` rather than dropping the whole matcher group entry.
-  - When an entry contains a list of `"hooks"`, only handlers containing `AGENTCONTRACT_HOOK_MARKER` are removed. The matcher group, `"matcher"`, and all foreign/third-party handlers (such as `node scripts/third_party_guard.js`) are preserved intact. A group is only dropped if its handlers list becomes empty and has no foreign metadata.
-  - Added regression test `test_mixed_matcher_group_uninstall_preserves_third_party_handlers` in `tests/integrations/test_codex_isolation.py`.
-- **Blocker 2 (Strict Structural Validation without Overwriting Malformed Configurations):**
-  - Added `_validate_hooks_json_structure` in `src/agentcontract/integrations/codex/cli.py` to enforce strict schema shape:
-    - `"hooks"` key (if present) must be a dictionary.
-    - Each event value must be a list of dictionaries.
-    - Each entry's `"hooks"` property (if present) must be a list of handler dictionaries.
-  - If any unexpected shape is detected (e.g. `{"hooks": []}`, `{"hooks": {"PreToolUse": {"hooks": []}}}`, nulls, or strings), `install_hooks` and `uninstall_hooks` exit with code 1, emit descriptive errors to stderr, and leave the original file bytes completely untouched.
-  - Added regression test `test_malformed_hook_structures_rejected` covering 6 structural failure shapes with byte-for-byte unchanged file verification.
-- **Blocker 3 (Audit Inspection of config.toml & In-Place Mutation Detection):**
-  - Implemented `_inspect_codex_config_toml` in `src/agentcontract/integrations/codex/cli.py` using Python 3.12's standard library `tomllib`. Safely inspects `[plugins]` and `[marketplaces]` sections in `config.toml` (under `CODEX_HOME` or user default) for AgentContract entries without exposing secrets.
-  - Categorizes isolation assessment into `CLEAN`, `RESIDUAL`, or `UNVERIFIED/INCOMPLETE`. Detects residual enabled plugin entries (e.g. `[plugins."agentcontract@test_market_..."] enabled = true`) even when `plugins/cache` is empty.
-  - Enhanced `tests/conftest.py` and `tests/integrations/test_codex_plugin.py` to record SHA-256 pre/post hashes of existing user configuration files (`config.toml`, `hooks.json`, `auth.json`) to detect in-place mutations.
-  - Added regression tests `test_audit_detects_residual_config_toml_without_cache` and `test_audit_clean_synthetic_home`.
-- **Blocker 4 (Typed Root-Path and Case-Normalized User Home Rejection):**
-  - Updated `_is_forbidden_target_dir` in `src/agentcontract/integrations/codex/cli.py` with typed check `resolved == Path(resolved.anchor) or resolved.parent == resolved`, and case-normalized home comparison `os.path.normcase(str(resolved)) == os.path.normcase(str(Path.home().resolve()))`.
-  - Added regression test `test_root_path_rejection` safely testing root-path rejection via mocked resolution without touching real filesystem roots.
+**Implementation summary (Round 2 Review Blocker Fixes):**
+- **Blocker 1 (Project-Local Symlink / Junction Boundary Escape Rejection):**
+  - Added `_validate_project_contained_path` and `_get_forbidden_codex_homes` in `src/agentcontract/integrations/codex/cli.py`.
+  - Prior to any read, write, modify, or unlink operation in `install_hooks`, `uninstall_hooks`, and `status_hooks`, both `.codex` and `hooks.json` are canonically resolved and checked:
+    - Path must strictly remain within canonical `project_root` (`target.is_relative_to(project_root)`).
+    - Cannot point to system roots, user home (`Path.home()`), or user's global `CODEX_HOME` / `~/.codex`.
+    - If a junction, symlink, or reparse point escapes the canonical project root boundary or resolves to a forbidden destination, operations immediately abort with exit code 1 without writing or unlinking external files.
+    - `audit_hooks` inspects project `.codex` containment and reports `[ESCAPE_DETECTED]` / `[SUSPICIOUS / ESCAPE DETECTED]` if boundary escape occurs.
+  - Added regression test `test_junction_symlink_boundary_escape_rejection` in `tests/integrations/test_codex_isolation.py` verifying that junction `.codex` pointing to an external directory is rejected on install, uninstall, and status with 0 changes to the external directory.
+- **Blocker 2 (Lossless Foreign JSON and Empty Foreign Arrays Preservation):**
+  - Refactored `uninstall_hooks` in `src/agentcontract/integrations/codex/cli.py` to perform an ownership-targeted, lossless edit of the existing JSON structure rather than rebuilding only nonempty events.
+  - Foreign event keys, unknown top-level keys, metadata (such as `schemaVersion`, `note`), group metadata, and empty foreign event arrays (e.g. `PostToolUse: []`) are strictly preserved.
+  - `.codex/hooks.json` is unlinked **only** if the file was entirely AgentContract-generated and has zero foreign/unrelated content (no top-level metadata, no foreign events, no remaining handlers).
+  - Added regression test `test_uninstall_lossless_wrapped_foreign_config_with_empty_arrays` verifying the exact reproduction case and multi-event configs.
+- **Blocker 3 (Audit Precision & Targeted Non-Destructive Cleanup Guidance):**
+  - Updated `audit_hooks` in `src/agentcontract/integrations/codex/cli.py`:
+    - Replaced blanket `[CLEAN] Zero External Side Effects Confirmed` with scoped `[PROJECT_SCOPED_ONLY]`.
+    - Explicitly reports inspection coverage and marks Desktop GUI state, system runtime memory, and uninspected external paths as `UNVERIFIED`.
+    - For stale config-only entries in `config.toml` without active cached plugins, recommends safe, backed-up exact-section removal (`Remove [plugins."<plugin>"]`) rather than broad `codex plugin remove agentcontract`.
+    - Updated `docs/integrations/codex.md` and synthetic audit tests to reflect the precise scoped output.
+- **Regression/Test Guard (Guaranteed Post-Test Environment Integrity Verification):**
+  - Enhanced `tests/conftest.py` with `try ... finally` around `yield` in both function-level `guard_user_codex_home_per_test` and session-level `guard_user_codex_home_isolation` fixtures.
+  - Even if a test raises an `AssertionError` or unhandled exception, teardown verification of real user `~/.codex` hashes and directory contents is guaranteed to run.
+  - Moved read-only real user Codex verification in `tests/integrations/test_codex_plugin.py` into the `finally:` block of `test_real_codex_plugin_isolated_workflow`.
+  - Added regression test `test_environment_integrity_guard_resilience` in `tests/integrations/test_codex_isolation.py`.
 
 **Files changed:**
 - `src/agentcontract/integrations/codex/cli.py`
 - `tests/conftest.py`
-- `tests/integrations/test_codex_plugin.py`
 - `tests/integrations/test_codex_isolation.py`
+- `tests/integrations/test_codex_plugin.py`
+- `docs/integrations/codex.md`
 - `.agent/tasks/TASK-011.md`
 
 **Tests/checks run and results:**
-- Full pytest suite on Python 3.12.9: **352 passed, 0 failed in 7.74s** (`python -m pytest`).
-- `test_codex_isolation.py`: 9 passed in 0.60s.
-- `test_codex_cli.py`: 2 passed in 0.43s.
-- `test_codex_plugin.py`: 3 passed in 1.33s (under isolated `CODEX_HOME` with in-place hash integrity checks).
-- Direct CLI invocation `python -m agentcontract.cli codex audit` verified against real environment: correctly identified residual plugin cache entry without false `CLEAN` claim.
+- Full pytest suite on Python 3.12.9: **355 passed, 0 failed in 11.38s** (`python -m pytest`).
+- `test_codex_isolation.py`: 12 passed in 1.06s.
+- `test_codex_cli.py`: 2 passed in 0.51s.
+- `test_codex_plugin.py`: 3 passed in 1.35s (under isolated `CODEX_HOME` with in-place hash integrity checks and `finally:` teardown).
+- Real CLI `agentcontract codex audit` run verified against actual user home: correctly detected residual cache registration and emitted targeted guidance without false `CLEAN` or broad plugin deletion claims.
 - In-place SHA-256 file hashing confirmed real user `~/.codex` files untouched.
 
 **Known limitations:**
 - Headless automated tests cover CLI hooks and configuration isolation. Visual GUI dialogs in Codex Desktop cannot be headlessly automated and are tracked as `MANUAL/UNVERIFIED` in accordance with the task specification.
 
 **Commit SHA:**
-- Implementation: `a33562d570e69bf8b300204ccfa49fbfaa7369b7`
+- Implementation: `994ea60b9dc076263ae78d4beea6c3bf045ca35e`
 
 ## Main Agent Review
 
