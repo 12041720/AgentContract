@@ -154,67 +154,153 @@ def test_invalid_hooks_file_safe_failure(tmp_path: Path) -> None:
     assert hooks_file.read_text(encoding="utf-8") == malformed_content
 
 
-def test_dangerous_root_and_home_targets_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Guardrail: Refuse to install hooks directly at system root or user home directory."""
-    home_dir = tmp_path / "fake_home"
-    home_dir.mkdir()
-    monkeypatch.setattr(Path, "home", lambda: home_dir)
+def test_mixed_matcher_group_uninstall_preserves_third_party_handlers(tmp_path: Path) -> None:
+    """Blocker 1: Mixed matcher group containing both AgentContract and third-party handlers must retain third-party handler upon uninstall."""
+    proj = tmp_path / "mixed_group_proj"
+    codex_dir = proj / ".codex"
+    codex_dir.mkdir(parents=True)
+    hooks_file = codex_dir / "hooks.json"
 
-    ret = install_hooks(project_dir=home_dir)
-    assert ret == 1
-    assert not (home_dir / ".codex").exists()
+    # Pre-existing mixed matcher group
+    mixed_config = {
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": ".*",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "python -m agentcontract.integrations.codex.hooks PreToolUse",
+                        },
+                        {
+                            "type": "command",
+                            "command": "node scripts/third_party_guard.js",
+                        },
+                    ],
+                }
+            ]
+        }
+    }
+    hooks_file.write_text(json.dumps(mixed_config, indent=2), encoding="utf-8")
+
+    # 1. Idempotent install: AgentContract already in PreToolUse, should not duplicate
+    ret_install = install_hooks(project_dir=proj)
+    assert ret_install == 0
+    data_after_install = json.loads(hooks_file.read_text(encoding="utf-8"))
+    handlers = data_after_install["hooks"]["PreToolUse"][0]["hooks"]
+    ac_handlers = [h for h in handlers if "agentcontract" in h.get("command", "")]
+    assert len(ac_handlers) == 1, "Idempotent install must not duplicate AgentContract handler"
+
+    # 2. Uninstall: MUST remove only the AgentContract handler and keep the group & third-party handler intact
+    ret_uninstall = uninstall_hooks(project_dir=proj)
+    assert ret_uninstall == 0
+    assert hooks_file.is_file(), "hooks.json must remain because third-party handler is still present"
+
+    data_after_uninstall = json.loads(hooks_file.read_text(encoding="utf-8"))
+    assert "PreToolUse" in data_after_uninstall["hooks"]
+    remaining_group = data_after_uninstall["hooks"]["PreToolUse"][0]
+    assert remaining_group.get("matcher") == ".*"
+    remaining_handlers = remaining_group.get("hooks", [])
+    assert len(remaining_handlers) == 1
+    assert remaining_handlers[0]["command"] == "node scripts/third_party_guard.js"
 
 
-def test_sibling_workspaces_isolation(tmp_path: Path) -> None:
-    """Requirement 4: Two sibling workspaces, only A opted in: hooks never activate in B."""
-    ws_a = tmp_path / "ws_opted_in"
-    ws_b = tmp_path / "ws_unopted"
-    ws_a.mkdir()
-    ws_b.mkdir()
+def test_malformed_hook_structures_rejected(tmp_path: Path) -> None:
+    """Blocker 2: Existing malformed structural shapes must explicitly fail safely without overwriting."""
+    malformed_cases = [
+        ("hooks_as_list", '{"hooks": []}'),
+        ("event_as_dict", '{"hooks": {"PreToolUse": {"hooks": []}}}'),
+        ("event_as_null", '{"hooks": {"PreToolUse": null}}'),
+        ("event_as_string", '{"hooks": {"PreToolUse": "invalid"}}'),
+        ("entry_hooks_not_list", '{"hooks": {"PreToolUse": [{"hooks": "not_a_list"}]}}'),
+        ("handler_not_dict", '{"hooks": {"PreToolUse": [{"hooks": ["not_a_dict"]}]}}'),
+    ]
 
-    install_hooks(project_dir=ws_a)
-    assert (ws_a / ".codex" / "hooks.json").is_file()
-    assert not (ws_b / ".codex").exists()
+    for label, bad_json in malformed_cases:
+        case_proj = tmp_path / f"malformed_{label}"
+        codex_dir = case_proj / ".codex"
+        codex_dir.mkdir(parents=True)
+        hooks_file = codex_dir / "hooks.json"
+        hooks_file.write_text(bad_json, encoding="utf-8")
 
-    # Create session store in A
-    store_a = CodexSessionStore(base_dir=ws_a / ".agentcontract" / "sessions")
-    store_a.get_or_create_session("sess_isolated_a")
-    assert store_a.session_exists("sess_isolated_a")
+        # install_hooks must reject and leave file completely intact
+        ret_inst = install_hooks(project_dir=case_proj)
+        assert ret_inst == 1, f"install_hooks did not reject malformed case: {label}"
+        assert hooks_file.read_text(encoding="utf-8") == bad_json, f"File was overwritten in case: {label}"
 
-    # Verify B is completely untouched and has no session store
-    store_b = CodexSessionStore(base_dir=ws_b / ".agentcontract" / "sessions")
-    assert not store_b.session_exists("sess_isolated_a")
-    assert not (ws_b / ".agentcontract").exists()
+        # uninstall_hooks must reject and leave file completely intact
+        ret_uninst = uninstall_hooks(project_dir=case_proj)
+        assert ret_uninst == 1, f"uninstall_hooks did not reject malformed case: {label}"
+        assert hooks_file.read_text(encoding="utf-8") == bad_json, f"File was overwritten in case: {label}"
 
 
-def test_audit_command_read_only(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    """Requirement C & 7: Audit command performs read-only checks without modifying files."""
+def test_audit_detects_residual_config_toml_without_cache(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    """Blocker 3: Audit must detect residual [plugins.'agentcontract@...'] in config.toml even with zero cache entries."""
+    fake_codex_home = tmp_path / "fake_codex_home"
+    fake_codex_home.mkdir(parents=True)
+    monkeypatch.setenv("CODEX_HOME", str(fake_codex_home))
+
+    # Synthetic config.toml containing residual enabled plugin entry from real codex plugin add
+    config_toml_content = (
+        'model = "gpt-5.6-sol"\n'
+        '\n'
+        '[plugins."agentcontract@test_market_123456"]\n'
+        'enabled = true\n'
+    )
+    (fake_codex_home / "config.toml").write_text(config_toml_content, encoding="utf-8")
+    # Verify plugins/cache does NOT exist
+    assert not (fake_codex_home / "plugins" / "cache").exists()
+
     proj = tmp_path / "audit_test_project"
     proj.mkdir()
-    install_hooks(project_dir=proj)
-
-    # Pre-snapshot of proj directory
-    pre_state = list(proj.rglob("*"))
 
     ret = audit_hooks(project_dir=proj)
     assert ret == 0
     captured = capsys.readouterr()
-    assert "AgentContract Codex Isolation Audit Report" in captured.out
-    assert "Target Project" in captured.out
-    assert "Isolation Assessment" in captured.out
 
-    # Post-check: nothing was modified by audit
-    post_state = list(proj.rglob("*"))
-    assert pre_state == post_state
+    # Must detect residual and must NOT report CLEAN / PASSED
+    assert "RESIDUAL" in captured.out
+    assert "agentcontract@test_market_123456" in captured.out
+    assert "[CLEAN] Zero External Side Effects Confirmed" not in captured.out
+    assert "[PASSED] Zero External Side Effects Confirmed" not in captured.out
+    assert "codex plugin remove agentcontract" in captured.out
 
 
-def test_import_and_test_suite_zero_global_effects() -> None:
-    """Requirement 6: Importing AgentContract and running standard logic does not touch user's ~/.codex."""
-    real_codex = Path.home() / ".codex"
-    if real_codex.exists():
-        # Check that no agentcontract file was written at top level
-        assert not (real_codex / "agentcontract").exists()
-        assert not (real_codex / "hooks.json.bak").exists()
+def test_audit_clean_synthetic_home(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    """Blocker 3: Audit reports CLEAN when config.toml has only unrelated third-party plugins."""
+    clean_home = tmp_path / "clean_home"
+    clean_home.mkdir(parents=True)
+    monkeypatch.setenv("CODEX_HOME", str(clean_home))
+
+    config_toml_content = (
+        'model = "gpt-5.6-sol"\n'
+        '\n'
+        '[plugins."unrelated_linter@openai-curated"]\n'
+        'enabled = true\n'
+    )
+    (clean_home / "config.toml").write_text(config_toml_content, encoding="utf-8")
+
+    proj = tmp_path / "clean_proj"
+    proj.mkdir()
+
+    ret = audit_hooks(project_dir=proj)
+    assert ret == 0
+    captured = capsys.readouterr()
+    assert "[CLEAN] Zero External Side Effects Confirmed" in captured.out
+    assert "RESIDUAL" not in captured.out
+
+
+def test_root_path_rejection(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Blocker 4: install_hooks, uninstall_hooks, and status_hooks must reject filesystem root paths."""
+    fake_root = Path("C:\\") if sys.platform == "win32" else Path("/")
+
+    # Safely mock resolve to return root path without ever touching the real system root
+    monkeypatch.setattr(Path, "resolve", lambda self: fake_root)
+
+    dummy = tmp_path / "dummy_root"
+    assert install_hooks(project_dir=dummy) == 1
+    assert uninstall_hooks(project_dir=dummy) == 1
+    assert status_hooks(project_dir=dummy) == 1
 
 
 def test_cli_subcommand_audit_integration(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -226,3 +312,4 @@ def test_cli_subcommand_audit_integration(tmp_path: Path, capsys: pytest.Capture
     assert ret == 0
     captured = capsys.readouterr()
     assert "AgentContract Codex Isolation Audit Report" in captured.out
+

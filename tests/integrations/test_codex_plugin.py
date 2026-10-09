@@ -79,9 +79,18 @@ def test_real_codex_plugin_marketplace_discovery_and_install_smoke(tmp_path: Pat
     iso_env = dict(os.environ, CODEX_HOME=str(isolated_codex_home))
 
     # Pre-snapshot of real user's ~/.codex
+    import hashlib
+    def _hash_f(p: Path) -> str | None:
+        try:
+            return hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None
+        except OSError:
+            return None
+
     real_codex_home = Path.home() / ".codex"
     real_codex_pre_exists = real_codex_home.exists()
     real_codex_pre_entries = set(real_codex_home.iterdir()) if real_codex_pre_exists else set()
+    tracked_files = ["config.toml", "hooks.json", "auth.json"]
+    pre_hashes = {f: _hash_f(real_codex_home / f) for f in tracked_files} if real_codex_pre_exists else {}
 
     # Verify that CODEX_HOME isolation is honored by the Codex binary
     probe = subprocess.run(
@@ -186,6 +195,11 @@ def test_real_codex_plugin_marketplace_discovery_and_install_smoke(tmp_path: Pat
 
     # 6. Verify real user ~/.codex was NOT modified or polluted
     if real_codex_pre_exists:
+        # Verify in-place mutations did not occur on tracked files
+        for f, pre_h in pre_hashes.items():
+            if pre_h is not None:
+                assert _hash_f(real_codex_home / f) == pre_h, f"real user {f} mutated in-place by plugin smoke test!"
+
         real_codex_post_entries = set(real_codex_home.iterdir())
         new_entries = real_codex_post_entries - real_codex_pre_entries
         # Ensure no test marketplace or plugin directories were written to real user home
