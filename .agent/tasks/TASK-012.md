@@ -92,6 +92,7 @@ Conversely, when SpecGuard denies a tool call, the structured denial JSON (`perm
 - `python -m pytest tests/integrations/test_codex_adapter.py` (16 passed)
 - `python -m pytest tests/integrations/test_codex_cli.py` (2 passed, 2 skipped due to absent test auth env vars)
 - Full test suite: `python -m pytest` on local Python 3.12.9: **357 passed, 2 skipped in 12.92s, 0 failures**.
+- Real Codex CLI E2E tests: both `test_real_codex_cli_pretooluse_allow_completed` and `test_real_codex_cli_pretooluse_deny_blocked` were accurately SKIPPED as intended, because neither `AGENTCONTRACT_TEST_CODEX_AUTH_JSON` nor `CODEX_TEST_AUTH_JSON` was provided in the test environment.
 - Verified zero repository root pollution: `Path(".agentcontract").exists() == False`.
 - Verified user original `~/.codex/auth.json` intact: exists and unchanged.
 
@@ -99,7 +100,7 @@ Conversely, when SpecGuard denies a tool call, the structured denial JSON (`perm
 - None.
 
 **Commit SHA:**
-- PENDING_COMMIT
+- `0599b50a0c5947a49acbac70400c7775f8f0b0eb`
 
 **Questions/blockers for main-agent review:**
 - None. All 5 Round 1 review blockers resolved and fully verified.
