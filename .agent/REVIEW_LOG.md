@@ -719,3 +719,18 @@ Full repair acceptance instructions persisted in `.agent/tasks/TASK-010.md`; no 
 See precise acceptance checks in `.agent/tasks/TASK-010.md`. Keep task on branch; no main merge.
 
 ---
+
+## 2026-10-09 — TASK-010 final review / M5 accepted
+
+**Final implementation:** `c4128dc5caee4a509c372569804f0f621ab08da9`  
+**Reviewed task branch:** `3d664720ceb330148fbaa03a096475c11ef68f13`  
+**Selective main integration:** `8b3d4ee1f7ad11991a04f72f83ba303387965623`  
+**Verdict:** ACCEPTED
+
+Round-4 closing checks reviewed: explicit structured DENY for Python-level PreToolUse I/O, lock timeout, state corruption and unexpected exceptions; dispatcher/CLI backup deny; additional regression tests. Executor reports a real installed-and-enabled Codex plugin-only run without project-local hooks. The session observed an actual blocked protected write, unchanged SHA-256, and grounded pytest VERIFIED / unsupported-claim UNVERIFIED.
+
+Executor reports 343 passing pytest tests (Python 3.12.9). Main agent reviewed source and the reported evidence, but did not independently execute the user's Windows Codex session.
+
+TASK-010 complete; M5 Codex integration milestone accepted. No next task active.
+
+---
