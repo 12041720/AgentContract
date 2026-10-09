@@ -82,4 +82,4 @@ M6 status: **COMPLETE** — TASK-011 accepted on 2026-10-09, selectively integra
 |---|---|---|---|
 | TASK-012 | Codex CLI PreToolUse Output Protocol Compatibility | CHANGES_REQUESTED | TASK-011 |
 
-Goal: correct ALLOW wire format while demonstrating real runtime ALLOW/Completed and DENY/Blocked under truly isolated, sandboxed Codex tests. Round-three CHANGES_REQUESTED: authenticated DENY test NameError, ineffective sandbox assertion, incomplete mutating-call denial correlation and credential cleanup; both live E2E tests skipped. Details in `.agent/tasks/TASK-012.md`. No merge yet.
+Goal: correct ALLOW wire format while demonstrating real runtime ALLOW/Completed and DENY/Blocked under truly isolated, sandboxed Codex tests. Round-four CHANGES_REQUESTED: protected write target matcher has path-substring false positives and runtime hook denial is not call-correlated; two live Codex E2E tests remain skipped/unverified. Details in `.agent/tasks/TASK-012.md`. No merge yet.
