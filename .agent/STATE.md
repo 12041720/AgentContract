@@ -6,18 +6,18 @@
 
 - Name: AgentContract
 - Mission: Runtime constraint tracking and evidence-grounded completion verification for long-horizon tool-using agents.
-- Stage: M5 Codex integration complete
+- Stage: M6 Codex integration isolation hardening
 - Architecture version: 0.1
 - Default branch: `main`
 
 ## Current active task
 
-- Task: **None — TASK-010 accepted**
-- Last completed task: `.agent/tasks/TASK-010.md`
-- Work branch: none
-- Status: **ACCEPTED / COMPLETE**
+- Task: **TASK-011 — Codex Configuration Isolation & Zero External Side Effects**
+- Task file: `.agent/tasks/TASK-011.md`
+- Work branch: `task/TASK-011-codex-isolation`
+- Status: **READY_FOR_EXECUTOR**
 - Owner: Execution agent
-- Main-agent review: TASK-010 accepted and selectively integrated to main
+- Main-agent review: pending; enforce zero cross-workspace Codex side effects
 
 ## Main-agent checkpoint
 
@@ -75,3 +75,9 @@ On a new session:
 - Product code includes real Codex lifecycle hooks, persisted session ledger/trace, SpecGuard tool interception and EvidenceGate stop verification.
 - Executor-reported acceptance: 343 tests passed and real plugin-only Codex hook run with protected write DENY, unchanged file checksum and VERIFIED/UNVERIFIED claims.
 - No active development task unless explicitly selected.
+
+## M6 isolation hardening checkpoint (2026-10-09)
+
+- TASK-011 activated after discovering that real Codex plugin marketplace tests use inherited user Codex configuration and uninstall by broad plugin name.
+- Acceptance requirement: AgentContract project and tests must not modify user-global Codex plugin, hook, trust, approval, configuration, or unrelated workspaces (CLI or desktop).
+- Run global-mutating integration tests only with isolated CODEX_HOME; scoped install/uninstall must preserve existing project hooks.
