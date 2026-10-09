@@ -17,7 +17,7 @@
 - Work branch: `task/TASK-012-codex-pretooluse-compat`
 - Status: **CHANGES_REQUESTED**
 - Owner: Execution agent
-- Main-agent review: Round 3 CHANGES_REQUESTED (test NameError; ineffective sandbox assertion; incomplete DENY correlation and auth cleanup; 2 live E2E tests skipped)
+- Main-agent review: Round 4 CHANGES_REQUESTED (protected destination false positives; DENY runtime evidence not call-correlated; 2 live E2E tests skipped)
 - Previous accepted milestone: TASK-011 / M6
 
 ## Main-agent checkpoint
@@ -104,3 +104,10 @@ On a new session:
 - Reviewed executor implementation `1c4877a9` and report branch `9bb6a332`: explicit bounded sandbox requested; live online tests still skipped.
 - Round 3 CHANGES_REQUESTED for authenticated test NameError, ineffective sandbox evidence assertion, insufficient mutating-call/structured-denial correlation, and pre-try test-auth cleanup gap.
 - Source and diff reviewed through GitHub; no independent Windows runtime testing or CI checks. No TASK-012 acceptance, main product merge, or new task.
+
+## M7 round 4 checkpoint (2026-10-09)
+
+- Reviewed executor implementation `0ce55af4` at task branch head `0493fb54`. Previous typing/sandbox-exception/empty-call-ID/pre-try-auth-cleanup blockers improved.
+- Round 4 CHANGES_REQUESTED: shell destination matcher can mistake protected path appearing as content or a filename prefix for target write; Codex runtime denial is not demonstrably bound to Guard-blocked tool call.
+- Executor reports 360 passed / 2 skipped on Python 3.12.9, live Codex E2E ALLOW/DENY both skipped due to absent dedicated test auth. Static GitHub review only; no CI checks or independent live test.
+- M7 UNVERIFIED; do not merge product code or activate another task.
