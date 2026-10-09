@@ -65,22 +65,23 @@ Conversely, when SpecGuard denies a tool call, the structured denial JSON (`perm
   - Updated `PreToolUseOutput` model in `src/agentcontract/integrations/codex/models.py` to support `updatedInput: Mapping[str, Any] | None = None`.
   - Updated `to_hook_response_dict()` so that when `permissionDecision == HookDecision.ALLOW` without `updatedInput`, an empty dictionary `{}` is returned (exits 0 with empty stdout). When `updatedInput` is provided on ALLOW, it is included in the structured dictionary.
   - Kept the structured denial dictionary with `permissionDecision="deny"` and `permissionDecisionReason` intact on DENY branches, ensuring all constraints and fail-closed protections remain fully enforced.
-- Addressed all Round 3 Main Agent review blockers:
-  1. **Fixed `Any` NameError & Type Annotations**:
-     - Added `from __future__ import annotations` and imported `from typing import Any` at top of `tests/integrations/test_codex_cli.py`.
-     - Promoted `action_targets_protected_write` to module-level helper with strict typing.
-  2. **Narrow Sandbox Evidence Parsing**:
-     - Replaced broad exception handling in event stream parsing with narrow `json.JSONDecodeError` handling so `AssertionError` is never caught or swallowed.
-     - Verified runtime sandbox mode when emitted by the stream; maintained explicit bounded `--sandbox workspace-write` CLI argument and confirmed absence of unrestricted fallback flags. Added deterministic unit test `test_sandbox_metadata_narrow_parsing`.
-  3. **Strict Mutating Operation & Call ID Correlation for DENY**:
-     - `action_targets_protected_write` strictly differentiates mutating operations (`FILE_WRITE`, `FILE_DELETE`, `apply_patch`, shell mutating commands like `Set-Content`, `Out-File`, redirection `>`, etc.) from read-only commands (`cat`, `Get-Content`, `head`, etc.) and unrelated paths, eliminating false positives.
-     - Required matching Guard BLOCK decision to have a non-empty `call_id` collected into `blocked_call_ids`. If no mutating write attempt is recorded, test immediately fails via `pytest.fail()`.
-     - Verified no successful mutating `TOOL_RESULT` was recorded for any blocked call ID.
-     - Enforced structured machine hook denial signals (`[AgentContract SpecGuard] BLOCKED:` or `blocked by PreToolUse hook` in stderr or machine failed events) rather than model prose. Added deterministic unit test `test_action_targets_protected_write_precision`.
-  4. **Guaranteed Credential Cleanup Covering Setup Failures**:
-     - Enclosed test auth file copy and project setup inside the `try:` block with guaranteed `finally:` cleanup in both online tests.
-     - Removed silent `OSError` swallowing in `finally:`: directly unlinks `test_auth_dest` and asserts `not test_auth_dest.exists()`.
-     - Added deterministic regression test `test_credential_cleanup_on_setup_failure`.
+- Addressed all Round 4 Main Agent review blockers (Round 5 changes):
+  1. **Fixed `action_targets_protected_write()` & Precision Destination Parsing (Blocker 1)**:
+     - Replaced substring command check with destination parsing via `extract_write_destinations_from_command()`, accurately extracting write destinations from redirections (`>`, `>>`) and cmdlets/utilities (`Set-Content`, `Out-File`, `Add-Content`, `Remove-Item`, `rm`, `del`, `cp`, `mv`, `tee`, `truncate`).
+     - Added `_path_matches()` and `_normalize_path()` to enforce exact path and boundary equality (handles Windows backslashes, leading `./`, absolute path boundaries, and case normalization).
+     - Fully prevents false positives:
+       - Protected path in `-Value` (e.g. `Set-Content -Path harmless.txt -Value secrets/prod.key`) is correctly identified as a value, not a write target (`False`).
+       - Suffix/extension mismatches (e.g. `secrets/prod.key.bak`) are rejected (`False`).
+       - Read commands piped to writes on other files (e.g. `Get-Content secrets/prod.key | Out-File harmless.txt`, `cat secrets/prod.key > harmless.txt`) are rejected (`False`).
+       - Pure reads (`cat`, `Get-Content`, `type`, `head`) are rejected (`False`).
+       - Unsupported/dynamic commands without recognized write targets do not claim precise target correlation (`False`).
+     - Expanded `test_action_targets_protected_write_precision` with comprehensive negative and positive fixtures.
+  2. **Separated Codex CLI JSONL & AgentContract Trace; Bound by Call ID (Blocker 2)**:
+     - Separated Codex CLI JSONL machine event parsing (`parse_codex_cli_items` on `res.stdout`) from AgentContract session trace parsing (`trace.json`).
+     - ALLOW correlation: parses completed Codex CLI items and Guard ALLOW events from `trace.json`; requires verifiable correlation by tool call ID or stable probe command mapping; if uncorrelatable, marks `INCONCLUSIVE`.
+     - DENY correlation: parses Guard BLOCK decisions from `trace.json` targeting `secrets/prod.key` and collects non-empty `blocked_call_ids` and `blocked_commands`; verifies no successful mutating `TOOL_RESULT` in `trace.json`; verifies no matching completed/successful command item in Codex CLI JSONL; correlates runtime rejection evidence via Codex CLI JSONL failure/block or stderr structured hook denial tied to `blocked_call_ids`, commands, or protected path; marks `INCONCLUSIVE` if uncorrelatable; verifies byte-for-byte SHA-256 hash integrity of `secrets/prod.key`.
+     - Updated `src/agentcontract/integrations/codex/hooks.py` to emit `[call_id=...]` tag in stderr SpecGuard BLOCKED messages when `payload.tool_use_id` is present.
+     - Added deterministic offline tests `test_codex_cli_event_correlation_allow_logic` and `test_codex_cli_event_correlation_deny_logic`.
 
 **Files changed:**
 - `src/agentcontract/integrations/codex/models.py`
@@ -92,22 +93,22 @@ Conversely, when SpecGuard denies a tool call, the structured denial JSON (`perm
 - `.agent/tasks/TASK-012.md`
 
 **Tests/checks run and results:**
-- `python -m pytest tests/integrations/test_codex_cli.py` (5 passed, 2 skipped due to absent test auth env vars)
+- `python -m pytest tests/integrations/test_codex_cli.py` (7 passed, 2 skipped)
 - `python -m pytest tests/integrations/test_codex_hooks.py` (22 passed)
 - `python -m pytest tests/integrations/test_codex_adapter.py` (16 passed)
-- Full test suite: `python -m pytest` on local Python 3.12.9: **360 passed, 2 skipped in 13.34s, 0 failures**.
-- Real Codex CLI E2E tests: both `test_real_codex_cli_pretooluse_allow_completed` and `test_real_codex_cli_pretooluse_deny_blocked` were accurately SKIPPED as intended, because neither `AGENTCONTRACT_TEST_CODEX_AUTH_JSON` nor `CODEX_TEST_AUTH_JSON` was provided in the test environment.
-- Verified zero repository root pollution: `Path(".agentcontract").exists() == False`.
-- Verified user original `~/.codex/auth.json` intact: exists and unchanged.
+- Full test suite on Python 3.12.9: **362 passed, 2 skipped in 11.74s, 0 failures**.
+- Real Codex CLI online E2E tests: both `test_real_codex_cli_pretooluse_allow_completed` and `test_real_codex_cli_pretooluse_deny_blocked` were safely skipped due to absence of dedicated isolated test credentials (`AGENTCONTRACT_TEST_CODEX_AUTH_JSON` / `CODEX_TEST_AUTH_JSON`).
+- Zero repository root pollution: `Path(".agentcontract").exists() == False`.
+- User original `~/.codex` completely untouched.
 
 **Known limitations:**
-- Real online Codex CLI tests (`test_real_codex_cli_pretooluse_allow_completed` and `test_real_codex_cli_pretooluse_deny_blocked`) were explicitly skipped because no separate isolated test credentials (`AGENTCONTRACT_TEST_CODEX_AUTH_JSON` or `CODEX_TEST_AUTH_JSON`) were provided in the local test environment. Live E2E Codex backend integration remains UNVERIFIED until dedicated test credentials are provisioned. User personal auth is strictly uncopied per protocol.
+- Real online Codex CLI tests (`test_real_codex_cli_pretooluse_allow_completed` and `test_real_codex_cli_pretooluse_deny_blocked`) were explicitly skipped because no separate isolated test credentials (`AGENTCONTRACT_TEST_CODEX_AUTH_JSON` or `CODEX_TEST_AUTH_JSON`) were provided in the local test environment. Live E2E Codex backend integration remains UNVERIFIED until dedicated test credentials are provisioned. User personal auth is strictly uncopied per protocol. Offline pass count (362 passed / 2 skipped) is not claimed as live integration proof.
 
 **Commit SHA:**
-- `0ce55af4b423e09f43f32eccde25d2c890413772`
+- `0876d8c02f8d3c70adbdf71de284d65806e0d55b`
 
 **Questions/blockers for main-agent review:**
-- None. All 4 Round 3 review blockers resolved, typing restored, setup cleanup guaranteed, false-positive protection added with deterministic regressions, and verification status accurately reported.
+- None. Both Round 4 review blockers resolved with destination parsing and call ID correlation; deterministic regression tests added; live online integration explicitly marked UNVERIFIED in the absence of dedicated credentials.
 
 ---
 

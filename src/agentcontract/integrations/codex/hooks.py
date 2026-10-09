@@ -183,7 +183,8 @@ def handle_pre_tool_use(
                     permissionDecision=HookDecision.DENY,
                     permissionDecisionReason=block_reason,
                 )
-                sys.stderr.write(f"\n[AgentContract SpecGuard] BLOCKED: {block_reason}\n")
+                call_tag = f" [call_id={payload.tool_use_id}]" if payload.tool_use_id else ""
+                sys.stderr.write(f"\n[AgentContract SpecGuard] BLOCKED{call_tag}: {block_reason}\n")
                 return 0, output.to_hook_response_dict()
 
             # 4. Patch inspection & fine-grained evaluation
@@ -226,7 +227,8 @@ def handle_pre_tool_use(
                     permissionDecision=HookDecision.DENY,
                     permissionDecisionReason=block_reason,
                 )
-                sys.stderr.write(f"\n[AgentContract SpecGuard] BLOCKED: {block_reason}\n")
+                call_tag = f" [call_id={payload.tool_use_id}]" if payload.tool_use_id else ""
+                sys.stderr.write(f"\n[AgentContract SpecGuard] BLOCKED{call_tag}: {block_reason}\n")
                 return 0, output.to_hook_response_dict()
 
             # 5. SpecGuard evaluation: evaluate each (path, action_kind) sub-action independently for patches
@@ -281,7 +283,8 @@ def handle_pre_tool_use(
                     permissionDecision=HookDecision.DENY,
                     permissionDecisionReason=reason,
                 )
-                sys.stderr.write(f"\n[AgentContract SpecGuard] BLOCKED: {decision.reason}\n")
+                call_tag = f" [call_id={payload.tool_use_id}]" if payload.tool_use_id else ""
+                sys.stderr.write(f"\n[AgentContract SpecGuard] BLOCKED{call_tag}: {decision.reason}\n")
                 return 0, output.to_hook_response_dict()
 
             output = PreToolUseOutput(permissionDecision=HookDecision.ALLOW)
