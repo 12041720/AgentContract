@@ -734,3 +734,11 @@ Executor reports 343 passing pytest tests (Python 3.12.9). Main agent reviewed s
 TASK-010 complete; M5 Codex integration milestone accepted. No next task active.
 
 ---
+
+## 2026-10-09 — TASK-011 activated: Codex global configuration isolation
+
+**State:** READY_FOR_EXECUTOR
+
+The project's Codex plugin integration test invokes marketplace/plugin mutation commands against the inherited user configuration; this can affect ordinary Codex desktop/CLI use, even though cleanup is attempted. `install_hooks()` also replaces pre-existing project hook configuration. The user requires AgentContract to have no cross-workspace or global impact. Opened `.agent/tasks/TASK-011.md` with explicit isolated CODEX_HOME tests, lossless project-only hook merge/uninstall, opt-in plugin trust, and before/after global state checks.
+
+---
