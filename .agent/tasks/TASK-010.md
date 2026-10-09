@@ -1,10 +1,10 @@
 # TASK-010 — Real Codex Harness Integration via Lifecycle Hooks
 
-**Status:** CHANGES_REQUESTED  
+**Status:** ACCEPTED  
 **Milestone:** M5 — Real Agent Harness Integration  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-010-codex-hooks`  
-**Main-agent review:** changes requested (round 4)
+**Main-agent review:** ACCEPTED and integrated into main
 
 ## Objective
 
@@ -385,37 +385,21 @@ Do not commit credentials.
 
 > Main agent only.
 
-**Verdict:** CHANGES_REQUESTED — round 4 (2 remaining boundary checks)
+**Verdict:** ACCEPTED — TASK-010 complete
 
-**Implementation reviewed:** `ed68dffa7176d390ac10a87b34a278e0b0c6b173`  
-**Branch/report head reviewed:** `f45bab73a65a4e4dabf84b2995d983c1f90c7b71`
+**Final implementation reviewed:** `c4128dc5caee4a509c372569804f0f621ab08da9`  
+**Final task branch reviewed:** `3d664720ceb330148fbaa03a096475c11ef68f13`  
+**Selective product integration into main:** `8b3d4ee1f7ad11991a04f72f83ba303387965623`
 
-**Progress accepted:** Previous 4 blockers materially addressed in reviewed source: patches evaluated as individual `(path, action_kind)` pairs; missing existing-session ledger/trace fails closed; malformed/empty PreToolUse input returns structured deny; plugin manifest has nested `extensions.com.openai.hooks`. Executor reports 340 passing tests, real Codex provider extraction, protected write denied, SHA-256 unchanged, successful pytest claim VERIFIED and unsupported assertion UNVERIFIED. These test/runtime results were reported by the execution agent rather than independently replayed by main agent.
+**Accepted functionality:**
+- Real Codex lifecycle hooks connected to RequirementExtractor / SpecGuard / trace evidence / EvidenceGate.
+- Supported PreToolUse structured allow/deny envelope; unexpected Python-level normalization/guard exceptions, I/O errors, state corruption, missing ledger, malformed payloads, and lock timeouts are explicitly denied instead of silently allowed.
+- Opaque/dynamic/destructive shell handling rejects uncertain effects when HARD filesystem constraints are active.
+- Patch operations are evaluated per affected file and action kind; matched violations deny and unrelated combinations can allow.
+- Concurrent hook state is protected by cross-process locks; spawned-process regression coverage exists.
+- Codex plugin manifest and marketplace installation are covered. Executor additionally reports a real **plugin-only** Codex run in a workspace without project-local hooks, with SessionStart/UserPromptSubmit/PreToolUse/PostToolUse/Stop, a protected-write deny, unchanged SHA-256, and EvidenceGate VERIFIED/UNVERIFIED outcomes.
+- Executor reports **343 tests passed, 0 failures** on local Python 3.12.9; real CLI/plugin observations are executor-reported, not independently replayed in main-agent environment.
 
-### BLOCKER 1 — unexpected pre-tool errors can cause fail-open
+**Boundary:** Hook protection applies to covered tool paths and is not a kernel-level sandbox. Host/process failure before returning a denial can lie outside this interception model.
 
-`SessionLock.acquire()` raises `TimeoutError` when its 10s per-session lock deadline expires. `handle_pre_tool_use()` catches only `CorruptedSessionStateError`; `run_hook()` catches only that same exception around the dispatch. Lock timeout, OS I/O errors, unexpected validator/model errors or other pre-check faults can therefore terminate the hook with an exception/exit 1 and without a deny decision.
-
-Codex hook documentation explicitly warns that callback errors/timeouts/malformed output can fail the hook **without blocking the tool**. An enforcement-layer pre-tool error must not be handled as permission to proceed.
-
-**Required fix:**
-- Ensure the outermost PreToolUse command entrypoint *always* emits supported fail-closed denial on lock timeout, state read/write I/O failure, and unexpected exceptions during normalization/evaluation, preferably a structured deny envelope or a documented exit-code-2 fallback.
-- Do not swallow failure as ALLOW or exit 0 with an empty response; log a bounded, non-secret error reason to stderr.
-- Include a regression that forces a lock timeout (plus unexpected handler exception) and verifies the full CLI subprocess/dispatch returns deny or exit code 2. Preserve existing successful-hook behavior.
-- Document the inherent limitation: Python hook process crashes/host timeouts before it can respond may still fail open at Codex hook boundary, so this is not an OS-level absolute protection guarantee.
-
-### BLOCKER 2 — plugin is installed/enabled but hook execution through plugin itself is unverified
-
-`test_real_codex_plugin_marketplace_discovery_and_install_smoke()` now invokes actual `codex plugin marketplace add/list` and `codex plugin add/list`. That confirms *discovery and installation*, not that plugin-bundled `PreToolUse` hooks were loaded/trusted/invoked. The reported real Codex acceptance scenario uses `fixtures/real_codex_acceptance/.codex/hooks.json` (project-local hook source), so it cannot establish that the **plugin** itself enforced the denial.
-
-Codex documentation notes that installed/enabled plugin hooks are **skipped until separately trusted**.
-
-**Required fix:**
-- Run one real Codex session in a clean temporary workspace **without project-local `.codex/hooks.json`**, using the installed enabled AgentContract plugin after explicit trust (or documented test-only trust bypass).
-- Demonstrate actual SessionStart / PreToolUse hook invocation from the plugin and an attempted forbidden write producing deny plus unchanged protected file. Include trace/session path and bounded log evidence. Clean up only the test-created plugin/marketplace configuration.
-- If this environment cannot run plugin hooks, record an explicit `UNVERIFIED` limitation; do not claim plugin hook integration is tested just because `codex plugin list` says enabled.
-
-**Re-check:** Full Python 3.12.9 pytest; forced pre-tool exception / lock-timeout fail-closed tests; plugin-only real Codex run with active hook trust and protected file hash; keep regular real Codex provider/evidence validation green; exact implementation SHA in Executor Report. Commit + push on `task/TASK-010-codex-hooks`, no main merge.
-
-No other scope increase requested.
-
+**Milestone:** M5 real-Codex integration accepted. No further task activated automatically.
