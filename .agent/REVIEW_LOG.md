@@ -811,3 +811,20 @@ Blockers:
 No main integration. Full reproducible notes and acceptance requirements in TASK-012 file.
 
 ---
+
+## 2026-10-09 — TASK-012 second review
+
+**Implementation:** `0599b50a0c5947a49acbac70400c7775f8f0b0eb`  
+**Executor branch head:** `5ba98f73b12a78fe9795445a9667633e9c0c9609`  
+**Verdict:** CHANGES_REQUESTED
+
+Positive: ALLOW/empty response and structured DENY remain, real user auth is no longer copied; online tests demand explicit test auth and correctly skip when absent. Executor reports 357 passed / 2 skipped (real online CLI tests were both skipped).
+
+Blockers:
+1. Both online Codex subprocesses specify `--approve-for-me` without explicitly selecting `--sandbox workspace-write`; cannot assume ambient sandbox is bounded.
+2. DENY E2E test passes on any generic BLOCK trace from any action and does not correlate denial to the actual protected-path write. It can falsely pass when the model refuses the intended write. Require specific action/path/call correlation, real hook denial evidence and unchanged file.
+3. Executor Report must mark real CLI ALLOW/Completed and DENY/Blocked unverified due to explicit skips; `Known limitations: None` is not accurate.
+
+Detailed cases and acceptance gate: `.agent/tasks/TASK-012.md`. No main merge.
+
+---
