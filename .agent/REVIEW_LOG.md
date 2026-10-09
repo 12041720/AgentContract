@@ -760,3 +760,19 @@ The project's Codex plugin integration test invokes marketplace/plugin mutation 
 Full reproducible cases and acceptance requirements in `.agent/tasks/TASK-011.md`. No main merge.
 
 ---
+
+## 2026-10-09 — TASK-011 second review
+
+**Implementation:** `a33562d570e69bf8b300204ccfa49fbfaa7369b7`  
+**Branch head:** `5171c446d836576d820f3346fe309ffe05ab87eb`  
+**Verdict:** CHANGES_REQUESTED
+
+Round-1 defects substantially repaired; executor reports 352 passing tests. Remaining issues:
+1. Installer/uninstaller accept project-local `.codex` junction/symlink pointing outside project, potentially modifying global user Codex home.
+2. Uninstall can delete unrelated top-level JSON metadata and empty foreign event arrays.
+3. Audit overclaims "Zero External Side Effects Confirmed" from incomplete inspection and suggests broad plugin removal for stale config-only records.
+4. Plugin smoke test's home snapshot post-check is skipped on assertion failures; integrate into mandatory teardown.
+
+Full reproducible examples and acceptance criteria: `.agent/tasks/TASK-011.md`. **No merge to main.**
+
+---
