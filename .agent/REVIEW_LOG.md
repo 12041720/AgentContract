@@ -794,16 +794,20 @@ M6 COMPLETE; no new active task.
 
 ---
 
-## 2026-10-09 — TASK-012 activated: Codex CLI PreToolUse protocol compatibility
+## 2026-10-09 — TASK-012 first review
 
-**Status:** READY_FOR_EXECUTOR
+**Implementation:** `98c5eaea7ae56db6e9e88175b90d099cf863ddd0`  
+**Executor branch report head:** `86832ff28f0ad02daa8d4d2c668c49a3f4ce5b2e`  
+**Verdict:** CHANGES_REQUESTED
 
-PreToolUse hook returned `permissionDecision="allow"` without `updatedInput`, causing Codex CLI v0.162.0 to treat PreToolUse as `Failed`.
-Requirements:
-1. ALLOW without input rewriting must return empty response (`{}` / empty stdout) with exit code 0.
-2. DENY must preserve structured rejection JSON without weakening constraints.
-3. Add tests verifying real Codex CLI execution completes tools on ALLOW and blocks tools on DENY in isolated `CODEX_HOME`.
-4. Run full pytest suite on Python 3.12.9, fill Executor Report, commit + push on `task/TASK-012-codex-pretooluse-compat`. No main merge.
+Production patch is narrow and aligned with Codex PreToolUse: ALLOW/no rewritten args -> empty stdout; DENY -> structured hookSpecificOutput. Executor reports 358 passing tests, not independently reproduced.
+
+Blockers:
+1. Real tests copy real `~/.codex/auth.json` into temp CODEX_HOME, violating explicit test-auth isolation and creating credential copies.
+2. Both real tests use `--dangerously-bypass-approvals-and-sandbox`, allowing arbitrary local effects if Hook fails.
+3. DENY test accepts model prose containing 'constraint' without proving a tool was submitted and actually blocked; ALLOW test does not prove Hook itself ran/completed. Require actual guard trace events and correlated tool evidence.
+4. CLI subprocess ALLOW test inherits checkout cwd and creates `.agentcontract/sessions` outside test's tmp_path.
+
+No main integration. Full reproducible notes and acceptance requirements in TASK-012 file.
 
 ---
-
