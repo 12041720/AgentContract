@@ -4,7 +4,7 @@
 **Milestone:** M7 — Codex Runtime Protocol Compatibility  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-012-codex-pretooluse-compat`  
-**Main-agent review:** CHANGES_REQUESTED — round 3
+**Main-agent review:** CHANGES_REQUESTED — round 4
 
 ## Objective
 
@@ -165,3 +165,21 @@ Keep patch tightly scoped to test safety, evidence correlation, and report accur
 **Acceptance still unverified:** The reported local suite is **357 passed, 2 skipped, 0 failures** on Python 3.12.9; both real online Codex ALLOW/DENY tests intentionally skipped due to absent dedicated test credentials. Offline success is not evidence of Codex CLI runtime recognition. After repairing the tests, run isolated opt-in live evidence using separately provisioned test authentication, or explicitly keep M7 unverified and request an acceptance-scope decision. Never copy the user's global `~/.codex/auth.json`.
 
 **Disposition:** Continue TASK-012 on the same branch. Do not merge `main` or activate TASK-013.
+
+
+### Round 4 review — 2026-10-09
+
+**Verdict:** CHANGES_REQUESTED  
+**Implementation reviewed:** `0ce55af4b423e09f43f32eccde25d2c890413772`  
+**Reviewed branch head:** `0493fb543f18c0709388cf1ef8fc8ed70e294140`  
+**Evidence scope:** GitHub source/diff and Executor Report static review; no independent Codex CLI/Windows execution; GitHub combined status has no checks.
+
+**Confirmed progress:** The missing `Any` import is fixed, JSON parsing no longer catches `AssertionError`, a non-empty blocked call ID is now required, and temporary test auth setup is inside `try/finally` with explicit unlink. Explicit `--sandbox workspace-write` remains. Executor reports Python 3.12.9 **360 passed / 2 skipped / 0 failures**, including three new offline tests; both actual Codex CLI online ALLOW/DENY tests skipped for absent opt-in credentials. These are executor-reported results, not independently rerun.
+
+**BLOCKER 1 — false-positive mutating target identification:** `action_targets_protected_write()` still checks `norm_target in cmd_normalized` then a write indicator anywhere in the command. `Set-Content -Path harmless.txt -Value secrets/prod.key` would be classified as a protected write although the protected path is a value, not the write destination; `Set-Content -Path secrets/prod.key.bak -Value X` also matches the protected path as substring. A read of the protected path piped into a write to another file can be misclassified. Parse the destination(s) of each mutating command/redirect and compare normalized exact paths (including Windows forms and boundaries). For unsupported/dynamic commands do not claim precise target correlation. Add negative fixtures for these cases alongside positive cases.
+
+**BLOCKER 2 — runtime denial evidence is not matched to the blocked call:** `all_events` comes from AgentContract `trace.json` and contains `event_kind`/payload trace events; checking those for a Codex CLI `item.type == command_execution` machine event does not validate an actual Codex status. The remaining stderr string alternatives do not tie a Codex runtime rejection to `blocked_call_ids`; they may refer to a separate hook/call. Parse Codex CLI JSONL from `res.stdout` separately, correlate the attempted call and matching Guard BLOCK/structured hook denial using IDs or a demonstrably equivalent stable mapping. If the runtime does not expose enough to establish that relation, mark the result INCONCLUSIVE rather than passing. Assert no matching successful ToolResult and protected-file bytes remain unchanged. Also make the ALLOW completed action correspond to its Guard ALLOW, not just any trace ALLOW.
+
+**Evidence gate still open:** Ordinary offline pytest may skip the two online E2E tests without accessing real user auth, but M7's explicit real Codex acceptance criterion remains UNVERIFIED. Do not count `360 passed / 2 skipped` as online success or merge. Run the corrected two E2E tests only with dedicated opt-in test authentication and isolated CODEX_HOME, bounded workspace-write sandbox and trusted runtime evidence. If credentials are unavailable, report BLOCKED/UNVERIFIED for E2E and do not repeat a generic success claim. Sandbox metadata is checked only when emitted; absence is not positive proof of effective sandbox.
+
+**Disposition:** Continue TASK-012 in same task branch; fix both blockers and obtain real E2E proof, or surface a precise credential blocker for an acceptance-scope decision. Do not merge product code to `main` or activate TASK-013.
