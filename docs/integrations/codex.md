@@ -140,7 +140,43 @@ AgentContract Codex Harness Status:
     - Session: 01a0f091-ab19-7291-83a6-61e5230a8789 (Trace: trace_01a0f091-ab19-7291-83a6-61e5230a8789)
 ```
 
+### Audit Configuration Isolation
+
+AgentContract provides a non-destructive, read-only diagnostic command to verify that hooks and configurations are strictly isolated to the intended project and have no unexpected presence in user-global Codex configuration:
+
+```bash
+agentcontract codex audit --project /path/to/my-project
+```
+
+Example output:
+```text
+AgentContract Codex Isolation Audit Report:
+============================================================
+Target Project: C:\Users\...\my-project
+  Project Hooks File: C:\Users\...\my-project\.codex\hooks.json (Present, AgentContract: Yes)
+
+User Codex Home: C:\Users\...\.codex
+  Global config.toml: Present (Clean, no AgentContract entries)
+  Global hooks.json: Not Present (Clean)
+  Global Plugins Cache: Clean (No AgentContract plugin)
+
+Inspection Coverage:
+  Inspected Sources: Project (C:\Users\...\my-project), config.toml, plugins/cache
+  Coverage Note: Desktop GUI state, system runtime memory, and uninspected external paths remain UNVERIFIED.
+
+Isolation Assessment:
+  [PROJECT_SCOPED_ONLY] No known AgentContract entries found in inspected global sources.
+  Notice: Static inspection is limited to file-based CLI configuration; Desktop GUI state remains UNVERIFIED.
+============================================================
+```
+
 ### Uninstall Hooks
+
+Uninstallation is strictly scoped, lossless, and non-destructive:
+- It removes **only** AgentContract hook handlers from `.codex/hooks.json`.
+- Foreign/third-party hook handlers, group metadata, and empty foreign event arrays are preserved.
+- Unrelated top-level metadata (such as `schemaVersion` or custom annotations) is preserved.
+- `.codex/hooks.json` is unlinked **only** if the file was entirely AgentContract-generated and has no unrelated foreign content.
 
 ```bash
 agentcontract codex uninstall --project /path/to/my-project
@@ -148,9 +184,9 @@ agentcontract codex uninstall --project /path/to/my-project
 
 ---
 
-## 3. Codex Plugin Distribution
+## 3. Codex Plugin Distribution & Operational Isolation
 
-AgentContract also ships as a standalone Codex Plugin under `integrations/codex-plugin`:
+AgentContract also ships as an opt-in standalone Codex Plugin under `integrations/codex-plugin`:
 
 ```text
 integrations/codex-plugin/
@@ -162,7 +198,33 @@ integrations/codex-plugin/
 └── README.md
 ```
 
-This structure allows distributing AgentContract through Codex plugin marketplaces or installing it globally into `~/.codex/plugins`.
+### Scope Boundary and Known Verification Limits
+
+The project-level integration is designed to avoid writes to unrelated Codex workspaces and the user-global Codex home. This is an implementation boundary, **not proof that all Codex Desktop behavior or existing global plugins are unaffected**.
+
+1. **Project-Scoped Installation by Default**:
+   `agentcontract codex install --project <dir>` edits only that project's `.codex/hooks.json`. The installer rejects destinations whose resolved `.codex` / `hooks.json` path escapes the project (including Windows junctions and symlinks). Other user-level plugins or trust settings are not changed by this command.
+
+2. **Test Isolation via Isolated `CODEX_HOME`**:
+   Plugin/marketplace mutation tests pass a temporary test-only `CODEX_HOME`; no real user config or authentication database is copied into that home. Test fixtures also check for changes to selected real-home files. Desktop GUI/plugin trust state remains **MANUAL/UNVERIFIED**.
+
+3. **Inspection-Before-Cleanup for Historical Global Registrations**:
+   Read-only inspection:
+   ```bash
+   agentcontract codex audit
+   codex plugin list
+   codex plugin marketplace list
+   ```
+   If `audit` reports stale `[plugins."agentcontract@..."]` sections but `codex plugin list` does not show an installed AgentContract plugin, back up `~/.codex/config.toml` and remove only those **exact** stale sections after inspecting their contents. Do not run `codex plugin remove agentcontract` merely to clean up stale config entries: this could remove a different, intentionally installed plugin. Likewise, remove a marketplace only after identifying its exact name and confirming it belongs to an obsolete AgentContract test. No cleanup is automatic.
+
+### Manual Codex Desktop Verification Checklist
+
+These are **unverified manual steps**, not completed test results:
+- [ ] **Project Scoping (MANUAL/UNVERIFIED)**: Open Project A with an explicitly installed `.codex/hooks.json` in Codex Desktop; check that AgentContract Hooks execute when appropriate.
+- [ ] **External Workspace Isolation (MANUAL/UNVERIFIED)**: Open unrelated Project B with no AgentContract integration; check that its tool calls do not load AgentContract project Hooks.
+- [ ] **Plugin Trust Dialogs (MANUAL/UNVERIFIED)**: Open an unrelated project; check whether AgentContract-specific prompts appear. Existing user-global plugin state can affect this result.
+
+The automated suite does not exercise Codex Desktop GUI trust or runtime behavior, so these checks must not be marked passed until someone runs them.
 
 ---
 
