@@ -6,17 +6,19 @@
 
 - Name: AgentContract
 - Mission: Runtime constraint tracking and evidence-grounded completion verification for long-horizon tool-using agents.
-- Stage: M6 Codex integration isolation hardening COMPLETE
+- Stage: M7 Codex PreToolUse protocol compatibility review
 - Architecture version: 0.1
 - Default branch: `main`
 
 ## Current active task
 
-- Task: **None — TASK-011 ACCEPTED**
-- Status: **IDLE / awaiting next task**
-- Last completed task: `.agent/tasks/TASK-011.md`
-- Integration commit: `a8343521416cbe97a257a4c06f19730c3265ee60`
-- Next task: not yet activated; main agent will create it upon direction
+- Task: **TASK-012 — Codex CLI PreToolUse Output Protocol Compatibility**
+- Task file: `.agent/tasks/TASK-012.md`
+- Work branch: `task/TASK-012-codex-pretooluse-compat`
+- Status: **CHANGES_REQUESTED**
+- Owner: Execution agent
+- Main-agent review: Round 1 CHANGES_REQUESTED (unsafe global auth copy, sandbox bypass, weak runtime proof, subprocess state leakage)
+- Previous accepted milestone: TASK-011 / M6
 
 ## Main-agent checkpoint
 
@@ -88,3 +90,11 @@ On a new session:
 - Selective product/test/docs integration to main: `a8343521416cbe97a257a4c06f19730c3265ee60`.
 - Executor-reported Windows Python 3.12.9 regression: 355 passed, 0 failed. Main agent independently reviewed code/tests, but could not rerun tests (no GitHub DNS access in its container).
 - Codex Desktop GUI isolation remains MANUAL/UNVERIFIED. No automatic global Codex cleanup or next task activated.
+
+## M7 compatibility review checkpoint (2026-10-09)
+
+- TASK-012 work branch created and evaluated by main agent. Production ALLOW-without-updatedInput now returns empty Hook output, DENY shape retained; unit-level behavior appears correct.
+- Executor reports 358 passing pytest tests (Python 3.12.9); these were not independently rerun by main agent.
+- Round 1 review CHANGES_REQUESTED because real CLI tests copy the user's global Codex auth.json, run unrestricted with --dangerously-bypass-approvals-and-sandbox, and do not robustly prove DENY was caused by a recorded SpecGuard block.
+- Added subprocess fixture cwd isolation requirement to prevent repository-local .agentcontract state writes.
+- Full findings in `.agent/tasks/TASK-012.md`. No production code merged and M7 not accepted.
