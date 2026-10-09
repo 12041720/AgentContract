@@ -70,6 +70,12 @@ Verified Completion & OpenTelemetry Export
   - `EVIDENCEGATE`: Post-execution claim verification enabled.
   - `FULL_AGENTCONTRACT`: Both SpecGuard and EvidenceGate active.
 
+### 7. Codex Harness Integration (`agentcontract.integrations.codex`)
+- **Native Lifecycle Hooks**: Real-time integration with OpenAI Codex via `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, and `Stop`.
+- **PreToolUse SpecGuard Interception**: Blocks prohibited file modifications (e.g. `secrets/prod.key`) before execution via structured PreToolUse deny payload.
+- **Stop Evidence Verification**: Verifies completion claims (e.g. `TESTS_PASSED`) against recorded trace evidence via EvidenceGate.
+- **Detailed Documentation**: See [Codex Integration Guide](docs/integrations/codex.md).
+
 ---
 
 ## Installation
@@ -122,6 +128,19 @@ agentcontract benchmark --format markdown
 
 # Machine-readable JSON output
 agentcontract benchmark --format json
+```
+
+### 4. Codex Harness Management
+Manage AgentContract lifecycle hooks inside OpenAI Codex project environments:
+```bash
+# Install hooks to current or specified project (.codex/hooks.json)
+agentcontract codex install [--project /path/to/project]
+
+# Check hooks installation and session verification status
+agentcontract codex status [--project /path/to/project]
+
+# Uninstall hooks from target project
+agentcontract codex uninstall [--project /path/to/project]
 ```
 
 ---

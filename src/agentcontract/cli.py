@@ -157,6 +157,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output report format (default: text).",
     )
 
+    # codex subcommand
+    codex_parser = subparsers.add_parser(
+        "codex",
+        help="Manage Codex lifecycle hooks integration.",
+    )
+    codex_sub = codex_parser.add_subparsers(dest="codex_command", help="Codex hook operations")
+
+    install_p = codex_sub.add_parser("install", help="Install AgentContract hooks in target project.")
+    install_p.add_argument("--project", default=".", help="Target project root directory (default: .)")
+
+    status_p = codex_sub.add_parser("status", help="Check Codex hooks installation and active sessions.")
+    status_p.add_argument("--project", default=".", help="Target project root directory (default: .)")
+
+    uninstall_p = codex_sub.add_parser("uninstall", help="Uninstall AgentContract hooks from target project.")
+    uninstall_p.add_argument("--project", default=".", help="Target project root directory (default: .)")
+
     return parser
 
 
@@ -179,6 +195,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "benchmark":
         return run_benchmark_command(repetitions=args.repetitions, fmt=args.format)
+
+    if args.command == "codex":
+        from agentcontract.integrations.codex.cli import install_hooks, status_hooks, uninstall_hooks
+
+        if args.codex_command == "install":
+            return install_hooks(project_dir=args.project)
+        elif args.codex_command == "status":
+            return status_hooks(project_dir=args.project)
+        elif args.codex_command == "uninstall":
+            return uninstall_hooks(project_dir=args.project)
+        else:
+            parser.parse_args(["codex", "--help"])
+            return 0
 
     print(f"Unknown command: {args.command}", file=sys.stderr)
     return 2

@@ -2,6 +2,7 @@
 
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timezone
+import re
 from typing import Any
 
 from agentcontract.evidence.graph import EvidenceGraph
@@ -23,8 +24,8 @@ from agentcontract.trace.models import (
 from agentcontract.trace.store import TraceStore
 
 
-def _command_in_tool_call(tc: ToolCall, command: str) -> bool:
-    """Check if a tool call argument matches the specified command string exactly."""
+def _command_in_tool_call(tc: ToolCall, command: str, claim_type: ClaimType | None = None) -> bool:
+    """Check if a tool call argument matches the specified command string."""
     target_cmd = command.strip()
     args = tc.arguments
     for key in ("cmd", "command", "args", "script", "code"):
@@ -36,6 +37,11 @@ def _command_in_tool_call(tc: ToolCall, command: str) -> bool:
                 val = str(raw_val).strip()
             if val == target_cmd:
                 return True
+            # For TESTS_PASSED claims, target_cmd="pytest" matches test runner invocations
+            if claim_type == ClaimType.TESTS_PASSED and target_cmd.lower() == "pytest":
+                pattern = r"(?:^|[;&|\s])(?:python(?:\.exe)?\s+-m\s+)?pytest(?:\.exe)?(?:\s|$|[;&|])"
+                if re.search(pattern, val, re.IGNORECASE):
+                    return True
     return False
 
 
@@ -45,7 +51,7 @@ def _tool_call_matches_claim(tc: ToolCall, claim: Claim) -> bool:
         return False
     if claim.tool_name is not None and tc.tool_name.strip().lower() != claim.tool_name.strip().lower():
         return False
-    if claim.command is not None and not _command_in_tool_call(tc, claim.command):
+    if claim.command is not None and not _command_in_tool_call(tc, claim.command, claim_type=claim.claim_type):
         return False
     return True
 
@@ -137,7 +143,7 @@ def _resolve_single_tool_execution(
                 f"ToolCall '{claim.call_id}' tool_name '{tc.tool_name}' does not match "
                 f"claimed tool_name '{claim.tool_name}'."
             )
-        if claim.command is not None and not _command_in_tool_call(tc, claim.command):
+        if claim.command is not None and not _command_in_tool_call(tc, claim.command, claim_type=claim.claim_type):
             return None, (
                 f"ToolCall '{claim.call_id}' arguments do not match "
                 f"claimed command '{claim.command}'."

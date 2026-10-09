@@ -26,7 +26,9 @@ from agentcontract.trace.models import TracePointer
 
 def _normalize_path_str(p: str) -> str:
     """Normalize a path string for cross-platform matching."""
+    import re
     norm = p.strip().replace("\\", "/")
+    norm = re.sub(r"/+", "/", norm)
     if norm.startswith("./"):
         norm = norm[2:]
     return norm
@@ -141,12 +143,17 @@ def match_scope(scope: ConstraintScope, action: Action) -> bool:
                 action_candidates.update({"delete", "remove", "rm", "unlink"})
             elif action.action_kind == ActionKind.COMMAND_EXEC:
                 action_candidates.update({"execute", "exec", "run", "bash", "sh", "cmd"})
+                if action.target_type == "filesystem" or action.paths:
+                    op_lower = (action.operation or "").lower()
+                    if any(w in op_lower for w in (">", "set-content", "add-content", "out-file", "clear-content", "touch", "write", "truncate", "cp", "mv")):
+                        action_candidates.update({"file_write", "write", "modify", "update"})
+                    if any(w in op_lower for w in ("rm", "del", "remove", "erase", "unlink")):
+                        action_candidates.update({"file_delete", "delete", "remove"})
             elif action.action_kind == ActionKind.TOOL_CALL:
                 action_candidates.update({"call", "invoke", "execute"})
 
         if action.operation:
             action_candidates.add(action.operation.strip().lower())
-
         if not (action_candidates & normalized_scope_actions):
             return False
 
@@ -171,6 +178,11 @@ def match_scope(scope: ConstraintScope, action: Action) -> bool:
 
                 # Exact match
                 if norm_ap == norm_sp or norm_ap.rstrip("/") == norm_sp.rstrip("/"):
+                    matched_any_path = True
+                    break
+
+                # Suffix match (e.g. /workspace/secrets/prod.key matches secrets/prod.key)
+                if norm_ap.endswith("/" + norm_sp):
                     matched_any_path = True
                     break
 

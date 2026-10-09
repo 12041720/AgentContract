@@ -70,6 +70,12 @@ EvidenceGate（确定性核验：VERIFIED / CONTRADICTED / UNVERIFIED）
   - `EVIDENCEGATE`：启用后置事实声明核验。
   - `FULL_AGENTCONTRACT`：同时启用 SpecGuard 与 EvidenceGate 完整双向防护。
 
+### 7. Codex Harness 真实集成 (`agentcontract.integrations.codex`)
+- **原生生命周期钩子接入**：通过 `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PostToolUse` 和 `Stop` 深度接入 OpenAI Codex。
+- **PreToolUse SpecGuard 拦截**：在工具实际执行前拦截违规操作（如修改 `secrets/prod.key`），返回结构化 PreToolUse deny 决策阻止执行。
+- **Stop 证据核验**：通过 EvidenceGate 核验完成声明（如 `TESTS_PASSED`），严格基于轨迹证据给出 VERIFIED / CONTRADICTED / UNVERIFIED 判定。
+- **详细集成指南**：参见 [Codex 集成文档](docs/integrations/codex.md)。
+
 ---
 
 ## 安装说明
@@ -122,6 +128,19 @@ agentcontract benchmark --format markdown
 
 # 机器可读的 JSON 格式输出
 agentcontract benchmark --format json
+```
+
+### 4. Codex Harness 管理命令
+在 OpenAI Codex 项目中安装与管理 AgentContract 生命周期钩子：
+```bash
+# 在当前或指定项目中安装生命周期钩子（生成 .codex/hooks.json）
+agentcontract codex install [--project /path/to/project]
+
+# 查看项目中的钩子与持久化会话核验状态
+agentcontract codex status [--project /path/to/project]
+
+# 从目标项目中卸载 AgentContract 钩子
+agentcontract codex uninstall [--project /path/to/project]
 ```
 
 ---
