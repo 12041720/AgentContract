@@ -65,7 +65,7 @@ def test_plugin_hooks_definition_and_lifecycle_events() -> None:
 
 
 def test_real_codex_plugin_marketplace_discovery_and_install_smoke(tmp_path: Path) -> None:
-    """Smoke test: execute real Codex CLI to add a local marketplace, install the plugin, verify discovery, and clean up."""
+    """Smoke test: execute real Codex CLI with an ISOLATED CODEX_HOME to verify marketplace & plugin discovery without touching user ~/.codex."""
     codex_bin = shutil.which("codex") or shutil.which("codex.cmd")
     if not codex_bin:
         pytest.skip("Codex CLI executable not found on system PATH")
@@ -73,7 +73,28 @@ def test_real_codex_plugin_marketplace_discovery_and_install_smoke(tmp_path: Pat
     repo_root = Path(__file__).resolve().parents[2]
     src_plugin = repo_root / "integrations" / "codex-plugin"
 
-    # Set up temporary marketplace structure
+    # Set up isolated CODEX_HOME
+    isolated_codex_home = tmp_path / "isolated_codex_home"
+    isolated_codex_home.mkdir(parents=True, exist_ok=True)
+    iso_env = dict(os.environ, CODEX_HOME=str(isolated_codex_home))
+
+    # Pre-snapshot of real user's ~/.codex
+    real_codex_home = Path.home() / ".codex"
+    real_codex_pre_exists = real_codex_home.exists()
+    real_codex_pre_entries = set(real_codex_home.iterdir()) if real_codex_pre_exists else set()
+
+    # Verify that CODEX_HOME isolation is honored by the Codex binary
+    probe = subprocess.run(
+        ["codex", "plugin", "marketplace", "list"],
+        capture_output=True,
+        text=True,
+        shell=True,
+        env=iso_env,
+    )
+    if probe.returncode != 0:
+        pytest.skip(f"Codex CLI failed to start with isolated CODEX_HOME: {probe.stderr}")
+
+    # Set up temporary marketplace structure inside tmp_path
     market_name = f"test_market_{abs(hash(str(tmp_path))) % 1000000}"
     agents_dir = tmp_path / ".agents" / "plugins"
     agents_dir.mkdir(parents=True)
@@ -107,43 +128,47 @@ def test_real_codex_plugin_marketplace_discovery_and_install_smoke(tmp_path: Pat
     }
     (agents_dir / "marketplace.json").write_text(json.dumps(marketplace_meta, indent=2), encoding="utf-8")
 
-    # 1. Add marketplace via real Codex CLI
-    add_market_res = subprocess.run(
-        ["codex", "plugin", "marketplace", "add", str(tmp_path)],
-        capture_output=True,
-        text=True,
-        shell=True,
-    )
-    assert add_market_res.returncode == 0, f"codex plugin marketplace add failed: {add_market_res.stderr}"
-    assert f"Added marketplace `{market_name}`" in add_market_res.stdout
-
     try:
-        # 2. Verify marketplace is listed
+        # 1. Add marketplace via real Codex CLI into ISOLATED home
+        add_market_res = subprocess.run(
+            ["codex", "plugin", "marketplace", "add", str(tmp_path)],
+            capture_output=True,
+            text=True,
+            shell=True,
+            env=iso_env,
+        )
+        assert add_market_res.returncode == 0, f"codex plugin marketplace add failed: {add_market_res.stderr}"
+        assert f"Added marketplace `{market_name}`" in add_market_res.stdout
+
+        # 2. Verify marketplace is listed in ISOLATED home
         list_market_res = subprocess.run(
             ["codex", "plugin", "marketplace", "list"],
             capture_output=True,
             text=True,
             shell=True,
+            env=iso_env,
         )
         assert list_market_res.returncode == 0
         assert market_name in list_market_res.stdout
 
-        # 3. Install plugin from newly added marketplace
+        # 3. Install plugin from newly added marketplace into ISOLATED home
         install_res = subprocess.run(
             ["codex", "plugin", "add", f"agentcontract@{market_name}"],
             capture_output=True,
             text=True,
             shell=True,
+            env=iso_env,
         )
         assert install_res.returncode == 0, f"codex plugin add failed: {install_res.stderr}"
         assert "Added plugin `agentcontract`" in install_res.stdout
 
-        # 4. Verify plugin is recognized and installed in codex plugin list
+        # 4. Verify plugin is recognized and installed in ISOLATED codex plugin list
         plugin_list_res = subprocess.run(
             ["codex", "plugin", "list"],
             capture_output=True,
             text=True,
             shell=True,
+            env=iso_env,
         )
         assert plugin_list_res.returncode == 0
         matched_lines = [l for l in plugin_list_res.stdout.splitlines() if f"agentcontract@{market_name}" in l]
@@ -151,7 +176,18 @@ def test_real_codex_plugin_marketplace_discovery_and_install_smoke(tmp_path: Pat
         assert "installed" in matched_lines[0]
         assert "enabled" in matched_lines[0]
 
+        # Verify artifacts were created strictly inside isolated_codex_home
+        assert (isolated_codex_home / "plugins" / "cache" / market_name / "agentcontract").exists()
+
     finally:
-        # 5. Clean up plugin and marketplace from system Codex
-        subprocess.run(["codex", "plugin", "remove", "agentcontract"], capture_output=True, shell=True)
-        subprocess.run(["codex", "plugin", "marketplace", "remove", market_name], capture_output=True, shell=True)
+        # 5. Clean up plugin and marketplace from ISOLATED home only
+        subprocess.run(["codex", "plugin", "remove", "agentcontract"], capture_output=True, shell=True, env=iso_env)
+        subprocess.run(["codex", "plugin", "marketplace", "remove", market_name], capture_output=True, shell=True, env=iso_env)
+
+    # 6. Verify real user ~/.codex was NOT modified or polluted
+    if real_codex_pre_exists:
+        real_codex_post_entries = set(real_codex_home.iterdir())
+        new_entries = real_codex_post_entries - real_codex_pre_entries
+        # Ensure no test marketplace or plugin directories were written to real user home
+        assert not any(market_name in p.name for p in new_entries)
+        assert not (real_codex_home / "plugins" / "cache" / market_name).exists()

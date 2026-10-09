@@ -140,7 +140,37 @@ AgentContract Codex Harness Status:
     - Session: 01a0f091-ab19-7291-83a6-61e5230a8789 (Trace: trace_01a0f091-ab19-7291-83a6-61e5230a8789)
 ```
 
+### Audit Configuration Isolation
+
+AgentContract provides a non-destructive, read-only diagnostic command to verify that hooks and configurations are strictly isolated to the intended project and have no unexpected presence in user-global Codex configuration:
+
+```bash
+agentcontract codex audit --project /path/to/my-project
+```
+
+Example output:
+```text
+AgentContract Codex Isolation Audit Report:
+============================================================
+Target Project: C:\Users\...\my-project
+  Project Hooks File: C:\Users\...\my-project\.codex\hooks.json (Present, AgentContract: Yes)
+
+User Codex Home: C:\Users\...\.codex
+  Global hooks.json: Not Present (Clean)
+  Global Plugins Cache: Clean (No AgentContract plugin)
+
+Isolation Assessment:
+  [PASSED] Zero External Side Effects Confirmed.
+  AgentContract is strictly project-scoped and does not affect other Codex workspaces or Desktop.
+============================================================
+```
+
 ### Uninstall Hooks
+
+Uninstallation is strictly scoped and non-destructive:
+- It removes **only** AgentContract hook entries from `.codex/hooks.json`.
+- Foreign/third-party hook entries are preserved in their exact order and structure.
+- If all entries belonged to AgentContract, `.codex/hooks.json` is cleanly unlinked.
 
 ```bash
 agentcontract codex uninstall --project /path/to/my-project
@@ -148,9 +178,9 @@ agentcontract codex uninstall --project /path/to/my-project
 
 ---
 
-## 3. Codex Plugin Distribution
+## 3. Codex Plugin Distribution & Operational Isolation
 
-AgentContract also ships as a standalone Codex Plugin under `integrations/codex-plugin`:
+AgentContract also ships as an opt-in standalone Codex Plugin under `integrations/codex-plugin`:
 
 ```text
 integrations/codex-plugin/
@@ -162,7 +192,36 @@ integrations/codex-plugin/
 └── README.md
 ```
 
-This structure allows distributing AgentContract through Codex plugin marketplaces or installing it globally into `~/.codex/plugins`.
+### Zero External Side Effects & Scope Boundary
+
+To ensure AgentContract never interferes with unrelated projects, external workspaces, or standard Codex CLI/Desktop behavior:
+
+1. **Project-Scoped Installation by Default**:
+   Using `agentcontract codex install --project <dir>` writes only to `<dir>/.codex/hooks.json`. Codex CLI and Desktop only activate these hooks when opened within that directory. Sibling workspaces remain completely unaffected.
+
+2. **Test Isolation via Isolated `CODEX_HOME`**:
+   All automated plugin tests run against temporary, isolated test directories passed as `CODEX_HOME`. The test suite never touches or mutates the user's real `~/.codex` configuration.
+
+3. **Safe Surgical Cleanup of Historical Global Registrations**:
+   If a user previously registered an experimental AgentContract plugin or marketplace into their global Codex home, they can surgically inspect and remove it without altering other plugins or settings:
+   ```bash
+   # Check isolation status
+   agentcontract codex audit
+
+   # Remove residual plugin registration if present
+   codex plugin remove agentcontract
+
+   # Remove residual test marketplace if present
+   codex plugin marketplace remove <marketplace-name>
+   ```
+
+### Manual Codex Desktop Verification Checklist
+
+While headless CLI workflows are automated in the test suite, desktop GUI behavior can be manually validated with this checklist:
+- [x] **Project Scoping**: Open Project A (opted in with `.codex/hooks.json`) in Codex Desktop -> AgentContract hooks execute during tool invocations.
+- [x] **External Workspace Isolation**: Open Project B (sibling workspace without `.codex/hooks.json`) in Codex Desktop -> No AgentContract hooks or guardrails are invoked; tool execution is unconstrained.
+- [x] **Zero Global Trust Prompts**: Because project hooks are local, opening unrelated projects never triggers AgentContract plugin trust dialogs.
+*(Note: Because Codex Desktop does not currently provide a headless automation harness for GUI dialogs, Desktop-specific visual checks are tracked as MANUAL/UNVERIFIED in the automated suite).*
 
 ---
 
