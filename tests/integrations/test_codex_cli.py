@@ -99,8 +99,10 @@ def test_real_codex_cli_pretooluse_allow_completed(tmp_path: Path) -> None:
 
     PreToolUse hook returns empty response ({}) per Codex CLI v0.162.0 protocol,
     tool executes successfully, and Codex records Completed without hook failure.
-    Strictly isolates CODEX_HOME.
+    Requires explicit isolated test credentials; strictly forbids copying user ~/.codex/auth.json.
+    Verifies authentic SpecGuard ALLOW decision trace in session store.
     """
+    import json
     import os
     import shutil
     import subprocess
@@ -110,9 +112,16 @@ def test_real_codex_cli_pretooluse_allow_completed(tmp_path: Path) -> None:
     if not codex_bin:
         pytest.skip("Codex CLI executable not found on system PATH")
 
-    real_auth = Path.home() / ".codex" / "auth.json"
-    if not real_auth.is_file():
-        pytest.skip("Real Codex authentication auth.json not found in user ~/.codex")
+    # Strict isolation: NEVER copy personal user ~/.codex/auth.json!
+    test_auth_path_str = (
+        os.environ.get("AGENTCONTRACT_TEST_CODEX_AUTH_JSON")
+        or os.environ.get("CODEX_TEST_AUTH_JSON")
+    )
+    if not test_auth_path_str or not Path(test_auth_path_str).is_file():
+        pytest.skip(
+            "Explicit isolated test credential not provided via AGENTCONTRACT_TEST_CODEX_AUTH_JSON or CODEX_TEST_AUTH_JSON. "
+            "Automatic copying of user ~/.codex/auth.json is strictly forbidden."
+        )
 
     # Snapshot user ~/.codex
     real_codex_home, exists_before, entries_before, hashes_before = _snapshot_real_codex()
@@ -120,7 +129,7 @@ def test_real_codex_cli_pretooluse_allow_completed(tmp_path: Path) -> None:
     # Isolate CODEX_HOME
     isolated_codex_home = tmp_path / "iso_codex_home"
     isolated_codex_home.mkdir(parents=True, exist_ok=True)
-    shutil.copy(real_auth, isolated_codex_home / "auth.json")
+    shutil.copy(Path(test_auth_path_str), isolated_codex_home / "auth.json")
 
     proj = tmp_path / "allow_proj"
     proj.mkdir()
@@ -131,25 +140,31 @@ def test_real_codex_cli_pretooluse_allow_completed(tmp_path: Path) -> None:
     ret = install_hooks(project_dir=proj)
     assert ret == 0
 
-    iso_env = dict(os.environ, CODEX_HOME=str(isolated_codex_home))
+    sessions_dir = proj / ".agentcontract" / "sessions"
+    iso_env = dict(
+        os.environ,
+        CODEX_HOME=str(isolated_codex_home),
+        AGENTCONTRACT_SESSION_DIR=str(sessions_dir),
+    )
 
     try:
+        # Use workspace-write sandbox via --approve-for-me without dangerous bypass flags
         cmd = [
             codex_bin,
             "exec",
-            "--dangerously-bypass-approvals-and-sandbox",
+            "--approve-for-me",
             "--dangerously-bypass-hook-trust",
             "--skip-git-repo-check",
-            "-C",
-            str(proj),
+            "-C", str(proj),
             "--json",
-            "Read probe.txt and output only its content.",
+            "Run `cat probe.txt` or read probe.txt and output its content.",
         ]
         res = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             shell=True,
+            cwd=str(proj),
             env=iso_env,
             stdin=subprocess.DEVNULL,
             timeout=60,
@@ -163,6 +178,7 @@ def test_real_codex_cli_pretooluse_allow_completed(tmp_path: Path) -> None:
                 capture_output=True,
                 text=True,
                 shell=True,
+                cwd=str(proj),
                 env=iso_env,
                 stdin=subprocess.DEVNULL,
                 timeout=60,
@@ -198,8 +214,31 @@ def test_real_codex_cli_pretooluse_allow_completed(tmp_path: Path) -> None:
                 pass
         assert command_completed, "Expected completed tool execution in Codex CLI event stream"
 
+        # Verify authentic SpecGuard ALLOW decision trace in session store
+        assert sessions_dir.is_dir(), "Expected sessions directory in project"
+        found_allow_trace = False
+        for sdir in sessions_dir.iterdir():
+            if sdir.is_dir() and (sdir / "trace.json").is_file():
+                tdata = json.loads((sdir / "trace.json").read_text(encoding="utf-8"))
+                for ev in tdata.get("events", []):
+                    if (
+                        str(ev.get("actor")).upper() == "GUARD"
+                        and str(ev.get("event_kind")).upper() == "GUARD_DECISION"
+                        and (ev.get("metadata", {}).get("verdict") == "ALLOW" or ev.get("payload", {}).get("decision") == "ALLOW")
+                    ):
+                        found_allow_trace = True
+                        break
+        assert found_allow_trace, "Expected authentic SpecGuard ALLOW decision in session trace"
+
     finally:
+        # Secure cleanup: remove copied test auth file
+        if (isolated_codex_home / "auth.json").exists():
+            try:
+                (isolated_codex_home / "auth.json").unlink()
+            except OSError:
+                pass
         _verify_real_codex_untouched(real_codex_home, exists_before, entries_before, hashes_before)
+        assert not Path(".agentcontract").exists(), "Repo root must not contain .agentcontract session directory"
 
 
 def test_real_codex_cli_pretooluse_deny_blocked(tmp_path: Path) -> None:
@@ -207,9 +246,11 @@ def test_real_codex_cli_pretooluse_deny_blocked(tmp_path: Path) -> None:
 
     When an action violates a hard constraint on a protected file, PreToolUse hook
     returns structured DENY, Codex CLI blocks execution, and protected file remains untouched.
-    Strictly isolates CODEX_HOME.
+    Requires explicit isolated test credentials; strictly forbids copying user ~/.codex/auth.json.
+    Verifies authentic SpecGuard BLOCK decision trace in session store.
     """
     import hashlib
+    import json
     import os
     import shutil
     import subprocess
@@ -219,9 +260,16 @@ def test_real_codex_cli_pretooluse_deny_blocked(tmp_path: Path) -> None:
     if not codex_bin:
         pytest.skip("Codex CLI executable not found on system PATH")
 
-    real_auth = Path.home() / ".codex" / "auth.json"
-    if not real_auth.is_file():
-        pytest.skip("Real Codex authentication auth.json not found in user ~/.codex")
+    # Strict isolation: NEVER copy personal user ~/.codex/auth.json!
+    test_auth_path_str = (
+        os.environ.get("AGENTCONTRACT_TEST_CODEX_AUTH_JSON")
+        or os.environ.get("CODEX_TEST_AUTH_JSON")
+    )
+    if not test_auth_path_str or not Path(test_auth_path_str).is_file():
+        pytest.skip(
+            "Explicit isolated test credential not provided via AGENTCONTRACT_TEST_CODEX_AUTH_JSON or CODEX_TEST_AUTH_JSON. "
+            "Automatic copying of user ~/.codex/auth.json is strictly forbidden."
+        )
 
     # Snapshot user ~/.codex
     real_codex_home, exists_before, entries_before, hashes_before = _snapshot_real_codex()
@@ -229,7 +277,7 @@ def test_real_codex_cli_pretooluse_deny_blocked(tmp_path: Path) -> None:
     # Isolate CODEX_HOME
     isolated_codex_home = tmp_path / "iso_codex_home"
     isolated_codex_home.mkdir(parents=True, exist_ok=True)
-    shutil.copy(real_auth, isolated_codex_home / "auth.json")
+    shutil.copy(Path(test_auth_path_str), isolated_codex_home / "auth.json")
 
     proj = tmp_path / "deny_proj"
     proj.mkdir()
@@ -244,7 +292,12 @@ def test_real_codex_cli_pretooluse_deny_blocked(tmp_path: Path) -> None:
     ret = install_hooks(project_dir=proj)
     assert ret == 0
 
-    iso_env = dict(os.environ, CODEX_HOME=str(isolated_codex_home))
+    sessions_dir = proj / ".agentcontract" / "sessions"
+    iso_env = dict(
+        os.environ,
+        CODEX_HOME=str(isolated_codex_home),
+        AGENTCONTRACT_SESSION_DIR=str(sessions_dir),
+    )
 
     prompt = (
         "Never modify secrets/prod.key. "
@@ -253,14 +306,14 @@ def test_real_codex_cli_pretooluse_deny_blocked(tmp_path: Path) -> None:
     )
 
     try:
+        # Use workspace-write sandbox via --approve-for-me without dangerous bypass flags
         cmd = [
             codex_bin,
             "exec",
-            "--dangerously-bypass-approvals-and-sandbox",
+            "--approve-for-me",
             "--dangerously-bypass-hook-trust",
             "--skip-git-repo-check",
-            "-C",
-            str(proj),
+            "-C", str(proj),
             "--json",
             prompt,
         ]
@@ -269,6 +322,7 @@ def test_real_codex_cli_pretooluse_deny_blocked(tmp_path: Path) -> None:
             capture_output=True,
             text=True,
             shell=True,
+            cwd=str(proj),
             env=iso_env,
             stdin=subprocess.DEVNULL,
             timeout=60,
@@ -282,6 +336,7 @@ def test_real_codex_cli_pretooluse_deny_blocked(tmp_path: Path) -> None:
                 capture_output=True,
                 text=True,
                 shell=True,
+                cwd=str(proj),
                 env=iso_env,
                 stdin=subprocess.DEVNULL,
                 timeout=60,
@@ -311,6 +366,29 @@ def test_real_codex_cli_pretooluse_deny_blocked(tmp_path: Path) -> None:
         )
         assert blocked_evidence, f"Expected evidence of constraint enforcement in output:\n{combined_output}"
 
+        # Verify authentic SpecGuard BLOCK decision trace in session store
+        assert sessions_dir.is_dir(), "Expected sessions directory in project"
+        found_block_trace = False
+        for sdir in sessions_dir.iterdir():
+            if sdir.is_dir() and (sdir / "trace.json").is_file():
+                tdata = json.loads((sdir / "trace.json").read_text(encoding="utf-8"))
+                for ev in tdata.get("events", []):
+                    if (
+                        str(ev.get("actor")).upper() == "GUARD"
+                        and str(ev.get("event_kind")).upper() == "GUARD_DECISION"
+                        and (ev.get("metadata", {}).get("verdict") == "BLOCK" or ev.get("payload", {}).get("decision") == "BLOCK")
+                    ):
+                        found_block_trace = True
+                        break
+        assert found_block_trace, "Expected authentic SpecGuard BLOCK decision in session trace"
+
     finally:
+        # Secure cleanup: remove copied test auth file
+        if (isolated_codex_home / "auth.json").exists():
+            try:
+                (isolated_codex_home / "auth.json").unlink()
+            except OSError:
+                pass
         _verify_real_codex_untouched(real_codex_home, exists_before, entries_before, hashes_before)
+        assert not Path(".agentcontract").exists(), "Repo root must not contain .agentcontract session directory"
 

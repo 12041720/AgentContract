@@ -1,6 +1,7 @@
 """Integration tests for Codex lifecycle hook executions and SpecGuard/EvidenceGate gating."""
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 import pytest
@@ -737,10 +738,12 @@ def test_pre_tool_use_malformed_inputs_fail_closed(tmp_path: Path) -> None:
     assert "must be an object/dict" in resp["hookSpecificOutput"]["permissionDecisionReason"]
 
 
-def test_pre_tool_use_cli_subprocess_fail_closed() -> None:
+def test_pre_tool_use_cli_subprocess_fail_closed(tmp_path: Path) -> None:
     # Regression for Blocker 3: CLI execution of hooks PreToolUse must fail-closed
     import subprocess
     import sys
+
+    iso_env = dict(os.environ, AGENTCONTRACT_SESSION_DIR=str(tmp_path / "sessions"))
 
     # Run with empty stdin
     res = subprocess.run(
@@ -748,6 +751,8 @@ def test_pre_tool_use_cli_subprocess_fail_closed() -> None:
         input="",
         capture_output=True,
         text=True,
+        cwd=str(tmp_path),
+        env=iso_env,
     )
     assert res.returncode == 0
     data = json.loads(res.stdout)
@@ -759,6 +764,8 @@ def test_pre_tool_use_cli_subprocess_fail_closed() -> None:
         input="{ bad json",
         capture_output=True,
         text=True,
+        cwd=str(tmp_path),
+        env=iso_env,
     )
     assert res2.returncode == 0
     data2 = json.loads(res2.stdout)
@@ -813,6 +820,8 @@ def test_pre_tool_use_cli_subprocess_forced_lock_timeout(tmp_path: Path) -> None
     import subprocess
     import sys
 
+    iso_env = dict(os.environ, AGENTCONTRACT_SESSION_DIR=str(tmp_path / "sessions"))
+
     # Run CLI using a monkeypatched helper or script that triggers TimeoutError
     code_snippet = (
         "import sys, json; "
@@ -832,6 +841,8 @@ def test_pre_tool_use_cli_subprocess_forced_lock_timeout(tmp_path: Path) -> None
         input=payload_json,
         capture_output=True,
         text=True,
+        cwd=str(tmp_path),
+        env=iso_env,
     )
     assert res.returncode == 0
     data = json.loads(res.stdout)
@@ -839,10 +850,12 @@ def test_pre_tool_use_cli_subprocess_forced_lock_timeout(tmp_path: Path) -> None
     assert "timed out" in data["hookSpecificOutput"]["permissionDecisionReason"].lower()
 
 
-def test_pre_tool_use_cli_subprocess_allow_empty_stdout() -> None:
+def test_pre_tool_use_cli_subprocess_allow_empty_stdout(tmp_path: Path) -> None:
     """Verify that CLI execution of PreToolUse on ALLOW returns exit 0 with empty stdout per Codex CLI v0.162.0+ protocol."""
     import subprocess
     import sys
+
+    iso_env = dict(os.environ, AGENTCONTRACT_SESSION_DIR=str(tmp_path / "sessions"))
 
     payload_json = json.dumps({
         "session_id": "sess_cli_allow",
@@ -855,9 +868,105 @@ def test_pre_tool_use_cli_subprocess_allow_empty_stdout() -> None:
         input=payload_json,
         capture_output=True,
         text=True,
+        cwd=str(tmp_path),
+        env=iso_env,
     )
     assert res.returncode == 0
     assert res.stdout.strip() == ""
+
+    # Verify session was persisted in isolated session dir and contains Guard ALLOW trace
+    trace_file = tmp_path / "sessions" / "sess_cli_allow" / "trace.json"
+    assert trace_file.is_file()
+    trace_data = json.loads(trace_file.read_text(encoding="utf-8"))
+    events = trace_data.get("events", [])
+    allow_events = [
+        e for e in events
+        if str(e.get("actor")).upper() == "GUARD"
+        and str(e.get("event_kind")).upper() == "GUARD_DECISION"
+        and (e.get("metadata", {}).get("verdict") == "ALLOW" or e.get("payload", {}).get("decision") == "ALLOW")
+    ]
+    assert len(allow_events) >= 1, "Expected Guard ALLOW trace in persisted session"
+
+
+def test_pre_tool_use_guard_allow_and_block_traces(tmp_path: Path) -> None:
+    """Verify that handle_pre_tool_use writes authentic Guard ALLOW and Guard BLOCK TraceEvents."""
+    from agentcontract.constraints.models import (
+        Constraint,
+        ConstraintProvenance,
+        ConstraintScope,
+        ConstraintSource,
+        ConstraintStrength,
+        RuleEffect,
+    )
+    from agentcontract.trace.models import ActorKind, EventKind
+
+    store = CodexSessionStore(base_dir=tmp_path / "sessions")
+    session_id = "sess_trace_verification"
+
+    # Set up a hard constraint protecting secrets/prod.key
+    with store.session_transaction(session_id) as tx:
+        c = Constraint(
+            id="c_deny_write_key",
+            name="deny_write_key",
+            description="Deny file writes on secrets/prod.key",
+            strength=ConstraintStrength.HARD,
+            rule_effect=RuleEffect.DENY,
+            provenance=ConstraintProvenance(
+                source=ConstraintSource.USER,
+                source_text="Do not modify secrets/prod.key",
+                author="User",
+            ),
+            scope=ConstraintScope(
+                target_type="filesystem",
+                paths=("secrets/prod.key",),
+                actions=("FILE_WRITE", "apply_patch"),
+            ),
+        )
+        tx.ledger.add(c)
+
+    # 1. ALLOW action: read a file
+    allow_payload = PreToolUsePayload(
+        session_id=session_id,
+        hook_event_name="PreToolUse",
+        tool_name="read_file",
+        tool_input={"path": "src/app.py"},
+    )
+    code_allow, resp_allow = handle_pre_tool_use(allow_payload, store)
+    assert code_allow == 0
+    assert resp_allow == {}  # Empty dict on ALLOW
+
+    # Verify Guard ALLOW Trace exists in session store
+    with store.session_transaction(session_id) as tx:
+        events = tx.trace_store.list_events(tx.trace_id)
+        allow_events = [
+            e for e in events
+            if e.actor == ActorKind.GUARD
+            and e.event_kind == EventKind.GUARD_DECISION
+            and (e.metadata.get("verdict") == "ALLOW" or e.payload.get("decision") == "ALLOW")
+        ]
+        assert len(allow_events) >= 1, "Expected Guard ALLOW decision trace event"
+
+    # 2. BLOCK action: attempt to modify secrets/prod.key
+    deny_payload = PreToolUsePayload(
+        session_id=session_id,
+        hook_event_name="PreToolUse",
+        tool_name="write_file",
+        tool_input={"path": "secrets/prod.key", "content": "tampered"},
+    )
+    code_deny, resp_deny = handle_pre_tool_use(deny_payload, store)
+    assert code_deny == 0
+    assert resp_deny["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    # Verify Guard BLOCK Trace exists in session store
+    with store.session_transaction(session_id) as tx:
+        events = tx.trace_store.list_events(tx.trace_id)
+        block_events = [
+            e for e in events
+            if e.actor == ActorKind.GUARD
+            and e.event_kind == EventKind.GUARD_DECISION
+            and (e.metadata.get("verdict") == "BLOCK" or e.payload.get("decision") == "BLOCK")
+        ]
+        assert len(block_events) >= 1, "Expected Guard BLOCK decision trace event"
 
 
 

@@ -150,7 +150,11 @@ class CodexSessionStore:
 
     def __init__(self, base_dir: str | Path | None = None) -> None:
         if base_dir is None:
-            self._base_dir = Path.cwd() / ".agentcontract" / "sessions"
+            env_dir = os.environ.get("AGENTCONTRACT_SESSION_DIR")
+            if env_dir:
+                self._base_dir = Path(env_dir).resolve()
+            else:
+                self._base_dir = Path.cwd() / ".agentcontract" / "sessions"
         else:
             self._base_dir = Path(base_dir).resolve()
 

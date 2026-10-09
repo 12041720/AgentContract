@@ -535,7 +535,7 @@ def run_hook(
     client: StructuredExtractionClient | None = None,
 ) -> tuple[int, dict[str, Any]]:
     """Parse hook input from stdin and dispatch to the appropriate event handler."""
-    store = session_store or CodexSessionStore()
+    store = session_store
 
     if stdin_data is None:
         try:
@@ -592,6 +592,16 @@ def run_hook(
 
     # Normalize event name
     event_str = str(effective_event).replace("-", "_").lower()
+
+    if store is None:
+        payload_cwd = raw_data.get("cwd")
+        if payload_cwd and not os.environ.get("AGENTCONTRACT_SESSION_DIR"):
+            try:
+                store = CodexSessionStore(base_dir=Path(payload_cwd) / ".agentcontract" / "sessions")
+            except Exception:
+                store = CodexSessionStore()
+        else:
+            store = CodexSessionStore()
 
     try:
         if "session_start" in event_str or event_str == "sessionstart":
