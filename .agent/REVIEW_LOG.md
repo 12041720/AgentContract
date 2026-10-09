@@ -793,3 +793,21 @@ Main agent also corrected integration docs to remove unsafe unconditional global
 M6 COMPLETE; no new active task.
 
 ---
+
+## 2026-10-09 — TASK-012 first review
+
+**Implementation:** `98c5eaea7ae56db6e9e88175b90d099cf863ddd0`  
+**Executor branch report head:** `86832ff28f0ad02daa8d4d2c668c49a3f4ce5b2e`  
+**Verdict:** CHANGES_REQUESTED
+
+Production patch is narrow and aligned with Codex PreToolUse: ALLOW/no rewritten args -> empty stdout; DENY -> structured hookSpecificOutput. Executor reports 358 passing tests, not independently reproduced.
+
+Blockers:
+1. Real tests copy real `~/.codex/auth.json` into temp CODEX_HOME, violating explicit test-auth isolation and creating credential copies.
+2. Both real tests use `--dangerously-bypass-approvals-and-sandbox`, allowing arbitrary local effects if Hook fails.
+3. DENY test accepts model prose containing 'constraint' without proving a tool was submitted and actually blocked; ALLOW test does not prove Hook itself ran/completed. Require actual guard trace events and correlated tool evidence.
+4. CLI subprocess ALLOW test inherits checkout cwd and creates `.agentcontract/sessions` outside test's tmp_path.
+
+No main integration. Full reproducible notes and acceptance requirements in TASK-012 file.
+
+---
