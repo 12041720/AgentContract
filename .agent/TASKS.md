@@ -60,6 +60,8 @@ TASK-001 through TASK-009 are accepted. No next task is activated automatically.
 
 | Task | Title | Status | Depends on |
 |---|---|---|---|
-| TASK-010 | Real Codex Harness Integration via Lifecycle Hooks | CHANGES_REQUESTED | TASK-009 |
+| TASK-010 | Real Codex Harness Integration via Lifecycle Hooks | ACCEPTED | TASK-009 |
 
 Goal: prove AgentContract against a real autonomous coding-agent tool loop rather than canned demo actions.
+
+M5 status: **COMPLETE**. TASK-010 accepted on 2026-10-09; no next task activated automatically.
