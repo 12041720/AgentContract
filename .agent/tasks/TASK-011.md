@@ -1,10 +1,10 @@
 # TASK-011 — Codex Configuration Isolation & Zero External Side Effects
 
-**Status:** READY_FOR_EXECUTOR  
+**Status:** CHANGES_REQUESTED  
 **Milestone:** M6 — Codex Integration Operational Safety  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-011-codex-isolation`  
-**Main-agent review:** pending
+**Main-agent review:** CHANGES_REQUESTED — round 1
 
 ## Objective
 
@@ -130,4 +130,58 @@ Official references:
 
 > Main agent only.
 
-Pending.
+**Verdict:** CHANGES_REQUESTED — round 1 (Codex isolation hardening)
+
+**Implementation reviewed:** `1de707eefb514f0ab35f3daf349f0103db1a7301`  
+**Branch head reviewed:** `74be048cc07d51b2a3b5b6df88296e7e48bf9085`
+
+**Accepted progress:** Test plugin/marketplace mutation subprocesses now set an isolated temporary `CODEX_HOME`; project installer merges hooks instead of overwriting the entire valid foreign-hook file in the common case; an audit command and regressions exist. The executor reports 351 green tests on Python 3.12.9. This is execution-agent evidence, not independently rerun by main agent.
+
+### BLOCKER 1 — mixed Hook groups lose third-party handlers during uninstall
+
+`src/agentcontract/integrations/codex/cli.py::_is_agentcontract_hook_entry` returns true if **any child handler** within a matcher group belongs to AgentContract. `uninstall_hooks` then drops the **entire group**.
+
+Concrete loss scenario:
+
+```json
+{"hooks":{"PreToolUse":[{"matcher":".*","hooks":[
+ {"type":"command","command":"python -m agentcontract.integrations.codex.hooks PreToolUse"},
+ {"type":"command","command":"node scripts/third_party_guard.js"}
+]}]}}
+```
+
+Uninstall destroys `third_party_guard.js`, violating isolation. **Fix:** remove only AgentContract-owned individual handlers; retain the original group and all unrelated handlers and metadata. Drop a group only if its own handler list becomes empty and no independent meaning/metadata needs preservation. Add exact semantic-preservation regression tests for mixed groups (also test idempotent install).
+
+### BLOCKER 2 — existing malformed *structure* overwritten, despite valid JSON
+
+`install_hooks` currently does `hooks_map[event] = []` when an existing event value is not a list, discarding foreign content. For a top-level `"hooks"` key that exists but is not an object, the code also falls back to `existing["hooks"] = {}` and overwrites that field.
+
+**Fix:** for unknown/unsupported structural shapes, explicitly fail non-destructively and leave the original bytes intact. Reject malformed `hooks` root map, malformed event arrays, malformed handlers or unsafe partial shape; do not silently coerce. Add cases for `{"hooks": []}`, `{"hooks":{"PreToolUse":{"hooks":[]}}}`, and null/string values, with unchanged file verification.
+
+### BLOCKER 3 — audit reports false global cleanliness, state-snapshot test misses in-place mutations
+
+`audit_hooks` checks `~/.codex/hooks.json` and only a narrow plugin-cache path; it does **not** examine `~/.codex/config.toml` for `[plugins."agentcontract@test_market_..."] enabled = true` or other plugin/marketplace config. This was the *actual residual observed on user's machine*. The code can print `[PASSED] Zero External Side Effects Confirmed` even with seven globally enabled AgentContract test entries.
+
+Additionally `tests/conftest.py` and the plugin smoke test compare only top-level directory entry names, which cannot detect **in-place modifications to existing config.toml, plugin registry or approval/trust files**. The current tests do not prove their stated zero-mutation guarantee.
+
+**Fix:**
+- Audit read-only relevant `config.toml` plugin/marketplace sections with safe TOML parser (`tomllib`), handling `CODEX_HOME` correctly, plus global hook sources; distinguish `CLEAN`, `RESIDUAL`, and `UNVERIFIED/INCOMPLETE` rather than making ungrounded blanket guarantees. Never expose secrets/config values.
+- Regressions with temporary synthetic global Codex homes containing precisely the seven-style `agentcontract@...` enabled entries and zero cache entries; should **not** print `PASSED`.
+- Validate isolated test provenance: assert test-created plugin marketplace and installation only under temporary CODEX_HOME. To assert unchanged real Codex state, compare relevant *existing file contents/hashes* or snapshots of controlled fake homes (not merely top-level names). Avoid legitimate concurrent user activity causing false positives. No mutation of real `~/.codex`.
+
+### BLOCKER 4 — root-path rejection is a no-op on ordinary Path objects
+
+`install_hooks()` currently uses `proj == proj.anchor`, but `proj` is a `Path` and `proj.anchor` is a `str`; a filesystem root such as `C:\\` is therefore not rejected by that comparison. The existing test checks only a fake user home and does not exercise a root path.
+
+**Fix:** use `proj == Path(proj.anchor)` (or equivalent resolved typed comparison), make user-home checks robust to Windows case/normalization, and test root detection **without actually writing to a system root** (e.g. inject/mocking path resolution/creation).
+
+### Final checks
+
+- `python -m pytest` Python 3.12.9; test plugin mutation with isolated CODEX_HOME and no global state changes.
+- Exact preservation of foreign handlers, event structure, order, and unrelated top-level fields after install/uninstall; invalid shapes never overwritten.
+- Audit recognizes residual `enabled = true` `agentcontract@test_market` plugin config even when cache missing; no false `Zero External Side Effects Confirmed` claim.
+- Project A opt-in does not activate AgentContract in B; CLI regression and manual desktop checklist clearly marked as MANUAL/UNVERIFIED if not executed.
+- Update Executor Report with final implementation SHA; commit/push `task/TASK-011-codex-isolation`. **Do not merge main.**
+
+No other features are requested.
+
