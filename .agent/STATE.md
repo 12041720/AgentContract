@@ -6,18 +6,18 @@
 
 - Name: AgentContract
 - Mission: Runtime constraint tracking and evidence-grounded completion verification for long-horizon tool-using agents.
-- Stage: v0.2 integration development
+- Stage: M5 Codex integration complete
 - Architecture version: 0.1
 - Default branch: `main`
 
 ## Current active task
 
-- Task: **TASK-010 — Real Codex Harness Integration via Lifecycle Hooks**
-- Task file: `.agent/tasks/TASK-010.md`
-- Work branch: `task/TASK-010-codex-hooks`
-- Status: **CHANGES_REQUESTED**
+- Task: **None — TASK-010 accepted**
+- Last completed task: `.agent/tasks/TASK-010.md`
+- Work branch: none
+- Status: **ACCEPTED / COMPLETE**
 - Owner: Execution agent
-- Main-agent review: TASK-010 round 4 changes requested; pre-tool unexpected-error deny and plugin-hook runtime proof outstanding
+- Main-agent review: TASK-010 accepted and selectively integrated to main
 
 ## Main-agent checkpoint
 
@@ -33,7 +33,7 @@
 - TASK-007 accepted and integrated to `main` as `12dad52df4b2901905c2ea92c07f8a71d2934d7f`.
 - TASK-008 accepted and integrated to `main` as `0469bf7a0204eba56aaa2fe44d65edfb63b8b4ac`.
 - External adapters, OTLP bridge, and real OpenAI-compatible extraction quickstart are available.
-- Live provider requirement enforcement is now working, but TASK-009 still needs claim-grounding, documentation-accuracy, and clean packaging fixes before v0.1 acceptance.
+- TASK-009 completed v0.1 packaging, evidence/claim grounding, and online provider acceptance.
 
 ## Current design decisions
 
@@ -68,3 +68,10 @@ On a new session:
 - Executor-reported full suite: 288 tests passed on Python 3.12.9.
 - CLI/package/documentation and real OpenAI-compatible provider smoke path are complete for v0.1.
 - No subsequent task is active by default.
+
+## M5 completion checkpoint (2026-10-09)
+
+- TASK-010 real Codex harness integration ACCEPTED and selectively integrated to `main` as `8b3d4ee1f7ad11991a04f72f83ba303387965623`.
+- Product code includes real Codex lifecycle hooks, persisted session ledger/trace, SpecGuard tool interception and EvidenceGate stop verification.
+- Executor-reported acceptance: 343 tests passed and real plugin-only Codex hook run with protected write DENY, unchanged file checksum and VERIFIED/UNVERIFIED claims.
+- No active development task unless explicitly selected.
