@@ -838,3 +838,15 @@ Detailed cases and acceptance gate: `.agent/tasks/TASK-012.md`. No main merge.
 **Verdict:** CHANGES_REQUESTED
 
 Explicit `--sandbox workspace-write` added and Executor Report now acknowledges **357 passed / 2 skipped** (online ALLOW/DENY unverified). Static blockers: missing `Any` import causes authenticated DENY test NameError; sandbox assertion is swallowed by `except Exception` and metadata is optional; Guard BLOCK match is not restricted to mutating operation, correlation IDs may be empty, and textual `BLOCK:` is not trustworthy machine-denial evidence; temporary auth cleanup misses pre-try failures and suppresses unlink errors. Both online E2E tests remain skipped, with no independent rerun or GitHub status checks. Detailed findings and remediation in `.agent/tasks/TASK-012.md`. No merge to main.
+
+---
+
+## 2026-10-09 — TASK-012 fourth review
+
+**Implementation reviewed:** `0ce55af4b423e09f43f32eccde25d2c890413772`  
+**Executor report HEAD:** `0493fb543f18c0709388cf1ef8fc8ed70e294140`  
+**Verdict:** CHANGES_REQUESTED
+
+Positive: missing typing import, broad sandbox-exception swallowing, empty-call-ID check and pre-try auth copy/cleanup scope fixed. Executor reports Python 3.12.9 **360 passed / 2 skipped**, with both real online E2E tests skipped. Independent Windows/Codex run unavailable; no GitHub combined status checks.
+
+Remaining blockers: `action_targets_protected_write` still allows shell command substring false positives (protected path as content value or `.bak` suffix rather than destination). The apparent machine-event evidence is checked against AgentContract trace events rather than Codex CLI JSONL, and remaining stderr checks are not correlated to the specific blocked call. Require exact mutating destination, call-linked machine/runtime denial evidence and matched ALLOW evidence. Real online ALLOW/DENY acceptance remains UNVERIFIED. Full directions in `.agent/tasks/TASK-012.md`. No product merge or next task.
