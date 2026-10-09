@@ -78,15 +78,30 @@ class PreToolUseOutput(BaseModel):
     hookEventName: str = "PreToolUse"
     permissionDecision: HookDecision = HookDecision.ALLOW
     permissionDecisionReason: str | None = None
+    updatedInput: Mapping[str, Any] | None = None
 
     def to_hook_response_dict(self) -> dict[str, Any]:
-        """Convert into Codex expected hookSpecificOutput envelope."""
+        """Convert into Codex expected hookSpecificOutput envelope.
+
+        Per Codex CLI v0.162.0+ protocol:
+        - When permissionDecision is ALLOW and no updatedInput is provided,
+          an empty response dictionary `{}` is returned (exit 0 with empty stdout).
+        - When permissionDecision is DENY, structured hookSpecificOutput with
+          permissionDecision="deny" and permissionDecisionReason is returned.
+        - When updatedInput is provided with ALLOW, updatedInput is included.
+        """
+        if self.permissionDecision == HookDecision.ALLOW and not self.updatedInput:
+            return {}
+
         output: dict[str, Any] = {
             "hookEventName": self.hookEventName,
             "permissionDecision": self.permissionDecision.value,
         }
         if self.permissionDecisionReason:
             output["permissionDecisionReason"] = self.permissionDecisionReason
+        if self.updatedInput:
+            output["updatedInput"] = dict(self.updatedInput)
+
         return {
             "hookSpecificOutput": output,
         }

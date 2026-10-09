@@ -67,7 +67,7 @@ def test_lifecycle_workflow_end_to_end(tmp_path: Path) -> None:
     )
     code, resp = handle_pre_tool_use(allow_payload, store)
     assert code == 0
-    assert resp["hookSpecificOutput"]["permissionDecision"] == "allow"
+    assert resp == {}
 
     # 5. PostToolUse: Record read_file result
     post_read = PostToolUsePayload(
@@ -257,7 +257,7 @@ def test_opaque_bash_fail_closed_with_active_hard_constraint(tmp_path: Path) -> 
     )
     code, resp = handle_pre_tool_use(pytest_payload, store)
     assert code == 0
-    assert resp["hookSpecificOutput"]["permissionDecision"] == "allow"
+    assert resp == {}
 
     # 6. Safe inspection command -> MUST BE ALLOWED (exit 0)
     cat_payload = PreToolUsePayload(
@@ -268,7 +268,7 @@ def test_opaque_bash_fail_closed_with_active_hard_constraint(tmp_path: Path) -> 
     )
     code, resp = handle_pre_tool_use(cat_payload, store)
     assert code == 0
-    assert resp["hookSpecificOutput"]["permissionDecision"] == "allow"
+    assert resp == {}
 
 
 def test_opaque_bash_allowed_when_no_hard_filesystem_constraints(tmp_path: Path) -> None:
@@ -284,7 +284,7 @@ def test_opaque_bash_allowed_when_no_hard_filesystem_constraints(tmp_path: Path)
     )
     code, resp = handle_pre_tool_use(py_payload, store)
     assert code == 0
-    assert resp["hookSpecificOutput"]["permissionDecision"] == "allow"
+    assert resp == {}
 
 
 def test_mixed_patch_with_file_write_only_constraint_is_denied(tmp_path: Path) -> None:
@@ -547,8 +547,8 @@ def test_mixed_patch_allowed_when_only_unrelated_path_is_deleted(tmp_path: Path)
     )
     code, resp = handle_pre_tool_use(payload, store)
     assert code == 0
-    # Must NOT false-BLOCK: write on secrets/prod.key is permitted, and delete is on tmp.txt
-    assert resp["hookSpecificOutput"]["permissionDecision"] == "allow"
+    # Must NOT false-BLOCK: write on secrets/prod.key is permitted, and delete is on tmp.txt (returns empty dict on allow)
+    assert resp == {}
 
 
 def test_mixed_patch_denied_when_matched_pair_violates(tmp_path: Path) -> None:
@@ -837,5 +837,27 @@ def test_pre_tool_use_cli_subprocess_forced_lock_timeout(tmp_path: Path) -> None
     data = json.loads(res.stdout)
     assert data["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert "timed out" in data["hookSpecificOutput"]["permissionDecisionReason"].lower()
+
+
+def test_pre_tool_use_cli_subprocess_allow_empty_stdout() -> None:
+    """Verify that CLI execution of PreToolUse on ALLOW returns exit 0 with empty stdout per Codex CLI v0.162.0+ protocol."""
+    import subprocess
+    import sys
+
+    payload_json = json.dumps({
+        "session_id": "sess_cli_allow",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "read_file",
+        "tool_input": {"path": "src/app.py"},
+    })
+    res = subprocess.run(
+        [sys.executable, "-m", "agentcontract.integrations.codex.hooks", "PreToolUse"],
+        input=payload_json,
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0
+    assert res.stdout.strip() == ""
+
 
 

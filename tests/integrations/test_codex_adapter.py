@@ -417,14 +417,20 @@ def test_to_action_mixed_patch_does_not_suppress_file_write() -> None:
 def test_pre_tool_use_wire_contract() -> None:
     from agentcontract.integrations.codex.models import HookDecision, PreToolUseOutput
 
-    # ALLOW wire format
+    # ALLOW wire format without updatedInput: per Codex CLI v0.162.0+ protocol, returns empty dict
     allow_resp = PreToolUseOutput(permissionDecision=HookDecision.ALLOW).to_hook_response_dict()
-    assert "decision" not in allow_resp
-    assert "continue" not in allow_resp
-    assert allow_resp == {
+    assert allow_resp == {}
+
+    # ALLOW wire format with updatedInput
+    allow_with_input = PreToolUseOutput(
+        permissionDecision=HookDecision.ALLOW,
+        updatedInput={"command": "safe_command"},
+    ).to_hook_response_dict()
+    assert allow_with_input == {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "allow",
+            "updatedInput": {"command": "safe_command"},
         }
     }
 
