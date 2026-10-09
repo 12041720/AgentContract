@@ -17,7 +17,7 @@
 - Work branch: `task/TASK-011-codex-isolation`
 - Status: **CHANGES_REQUESTED**
 - Owner: Execution agent
-- Main-agent review: Round 1 CHANGES_REQUESTED; mixed hook group deletion, malformed structure overwrite, audit false clean, root-path guard
+- Main-agent review: Round 2 CHANGES_REQUESTED; redirected .codex target, foreign JSON metadata preservation, audit false assurances
 
 ## Main-agent checkpoint
 
