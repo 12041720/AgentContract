@@ -65,3 +65,11 @@ TASK-001 through TASK-009 are accepted. No next task is activated automatically.
 Goal: prove AgentContract against a real autonomous coding-agent tool loop rather than canned demo actions.
 
 M5 status: **COMPLETE**. TASK-010 accepted on 2026-10-09; no next task activated automatically.
+
+## M6 — Codex Integration Isolation & Operational Safety
+
+| Task | Title | Status | Depends on |
+|---|---|---|---|
+| TASK-011 | Codex Configuration Isolation & Zero External Side Effects | READY_FOR_EXECUTOR | TASK-010 |
+
+Goal: AgentContract tests and project hooks must never change or activate in unrelated Codex desktop/CLI workspaces or mutate the normal user's global Codex home.
