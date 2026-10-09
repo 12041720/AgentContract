@@ -156,21 +156,27 @@ Target Project: C:\Users\...\my-project
   Project Hooks File: C:\Users\...\my-project\.codex\hooks.json (Present, AgentContract: Yes)
 
 User Codex Home: C:\Users\...\.codex
+  Global config.toml: Present (Clean, no AgentContract entries)
   Global hooks.json: Not Present (Clean)
   Global Plugins Cache: Clean (No AgentContract plugin)
 
+Inspection Coverage:
+  Inspected Sources: Project (C:\Users\...\my-project), config.toml, plugins/cache
+  Coverage Note: Desktop GUI state, system runtime memory, and uninspected external paths remain UNVERIFIED.
+
 Isolation Assessment:
-  [PASSED] Zero External Side Effects Confirmed.
-  AgentContract is strictly project-scoped and does not affect other Codex workspaces or Desktop.
+  [PROJECT_SCOPED_ONLY] No known AgentContract entries found in inspected global sources.
+  Notice: Static inspection is limited to file-based CLI configuration; Desktop GUI state remains UNVERIFIED.
 ============================================================
 ```
 
 ### Uninstall Hooks
 
-Uninstallation is strictly scoped and non-destructive:
-- It removes **only** AgentContract hook entries from `.codex/hooks.json`.
-- Foreign/third-party hook entries are preserved in their exact order and structure.
-- If all entries belonged to AgentContract, `.codex/hooks.json` is cleanly unlinked.
+Uninstallation is strictly scoped, lossless, and non-destructive:
+- It removes **only** AgentContract hook handlers from `.codex/hooks.json`.
+- Foreign/third-party hook handlers, group metadata, and empty foreign event arrays are preserved.
+- Unrelated top-level metadata (such as `schemaVersion` or custom annotations) is preserved.
+- `.codex/hooks.json` is unlinked **only** if the file was entirely AgentContract-generated and has no unrelated foreign content.
 
 ```bash
 agentcontract codex uninstall --project /path/to/my-project

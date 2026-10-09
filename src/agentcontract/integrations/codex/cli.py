@@ -88,6 +88,104 @@ def _is_forbidden_target_dir(target_dir: Path) -> bool:
     return False
 
 
+def _get_forbidden_codex_homes() -> list[Path]:
+    """Return canonical paths of user's global Codex home directories."""
+    homes = []
+    try:
+        homes.append((Path.home() / ".codex").resolve())
+    except Exception:
+        pass
+    env_codex = os.environ.get("CODEX_HOME")
+    if env_codex:
+        try:
+            homes.append(Path(env_codex).resolve())
+        except Exception:
+            pass
+    return homes
+
+
+def _validate_project_contained_path(target_path: Path, project_root: Path) -> tuple[bool, str]:
+    """Validate that target_path is strictly contained within canonical project_root.
+    
+    Rejects symlinks, directory junctions, and reparse points that escape project_root
+    or resolve to forbidden directories (system roots, user home, global CODEX_HOME).
+    """
+    try:
+        proj_canonical = project_root.resolve()
+    except Exception as err:
+        return False, f"Failed to resolve project root '{project_root}': {err}"
+
+    if _is_forbidden_target_dir(proj_canonical):
+        return False, f"Project root '{proj_canonical}' is a system root or user home directory."
+
+    # Traverse from target_path up to project root, validating any existing components
+    curr = target_path
+    visited_components = []
+    while True:
+        visited_components.append(curr)
+        if curr == proj_canonical or curr.parent == curr:
+            break
+        curr = curr.parent
+
+    for comp in reversed(visited_components):
+        is_link = False
+        try:
+            if comp.is_symlink() or (hasattr(comp, "is_junction") and comp.is_junction()):
+                is_link = True
+        except Exception:
+            pass
+
+        if comp.exists() or is_link:
+            try:
+                resolved_comp = comp.resolve()
+            except Exception as err:
+                return False, f"Path component '{comp}' cannot be safely resolved ({err})."
+
+            try:
+                if not resolved_comp.is_relative_to(proj_canonical):
+                    return False, (
+                        f"Path component '{comp}' escapes project root boundary "
+                        f"(resolves to '{resolved_comp}')."
+                    )
+            except (ValueError, AttributeError):
+                return False, (
+                    f"Path component '{comp}' escapes project root boundary "
+                    f"(resolves to '{resolved_comp}')."
+                )
+
+            if _is_forbidden_target_dir(resolved_comp):
+                return False, f"Path component '{comp}' resolves to forbidden directory '{resolved_comp}'."
+
+            for forbidden_home in _get_forbidden_codex_homes():
+                try:
+                    if resolved_comp == forbidden_home or resolved_comp.is_relative_to(forbidden_home):
+                        return False, (
+                            f"Path component '{comp}' resolves to global Codex home '{resolved_comp}'."
+                        )
+                except (ValueError, Exception):
+                    pass
+
+    # Final check on target_path canonical destination
+    try:
+        resolved_target = target_path.resolve()
+        if not resolved_target.is_relative_to(proj_canonical):
+            return False, f"Path '{target_path}' escapes project root boundary (resolves to '{resolved_target}')."
+        if _is_forbidden_target_dir(resolved_target):
+            return False, f"Path '{target_path}' resolves to forbidden directory '{resolved_target}'."
+        if _is_forbidden_target_dir(resolved_target.parent):
+            return False, f"Parent of '{target_path}' resolves to forbidden directory '{resolved_target.parent}'."
+        for forbidden_home in _get_forbidden_codex_homes():
+            try:
+                if resolved_target == forbidden_home or resolved_target.is_relative_to(forbidden_home):
+                    return False, f"Path '{target_path}' resolves to global Codex home '{resolved_target}'."
+            except (ValueError, Exception):
+                pass
+    except Exception as err:
+        return False, f"Failed to verify destination path '{target_path}': {err}"
+
+    return True, ""
+
+
 def _is_agentcontract_handler(handler: Any) -> bool:
     """Check if an individual hook handler dict belongs to AgentContract."""
     if isinstance(handler, dict):
@@ -180,6 +278,17 @@ def install_hooks(project_dir: str | Path = ".") -> int:
     codex_dir = proj / ".codex"
     hooks_file = codex_dir / "hooks.json"
 
+    # Validate that neither .codex nor hooks.json escapes project root via symlink/junction
+    ok_dir, reason_dir = _validate_project_contained_path(codex_dir, proj)
+    if not ok_dir:
+        sys.stderr.write(f"Error: Refusing to install hooks: {reason_dir}\n")
+        return 1
+
+    ok_file, reason_file = _validate_project_contained_path(hooks_file, proj)
+    if not ok_file:
+        sys.stderr.write(f"Error: Refusing to install hooks: {reason_file}\n")
+        return 1
+
     if hooks_file.is_file():
         # Validate existing JSON syntax
         try:
@@ -251,9 +360,19 @@ def status_hooks(project_dir: str | Path = ".") -> int:
     codex_dir = proj / ".codex"
     hooks_file = codex_dir / "hooks.json"
 
+    ok_dir, reason_dir = _validate_project_contained_path(codex_dir, proj)
+    if not ok_dir:
+        sys.stderr.write(f"Error: Refusing to query status: {reason_dir}\n")
+        return 1
+
+    ok_file, reason_file = _validate_project_contained_path(hooks_file, proj)
+    if not ok_file:
+        sys.stderr.write(f"Error: Refusing to query status: {reason_file}\n")
+        return 1
+
     print("AgentContract Codex Harness Status:")
     print(f"  Project Root: {proj}")
-    print("  Scope Boundary: Project-local only (zero effect on global ~/.codex)")
+    print("  Scope Boundary: Project-local only (.codex and .agentcontract within project root)")
 
     if hooks_file.is_file():
         try:
@@ -319,6 +438,16 @@ def uninstall_hooks(project_dir: str | Path = ".") -> int:
     codex_dir = proj / ".codex"
     hooks_file = codex_dir / "hooks.json"
 
+    ok_dir, reason_dir = _validate_project_contained_path(codex_dir, proj)
+    if not ok_dir:
+        sys.stderr.write(f"Error: Refusing to uninstall hooks: {reason_dir}\n")
+        return 1
+
+    ok_file, reason_file = _validate_project_contained_path(hooks_file, proj)
+    if not ok_file:
+        sys.stderr.write(f"Error: Refusing to uninstall hooks: {reason_file}\n")
+        return 1
+
     if not hooks_file.is_file():
         print(f"No hooks file found at {hooks_file}")
         return 0
@@ -341,57 +470,64 @@ def uninstall_hooks(project_dir: str | Path = ".") -> int:
         )
         return 1
 
-    hooks_map = existing.get("hooks", existing) if "hooks" in existing and isinstance(existing["hooks"], dict) else existing
+    is_wrapped = "hooks" in existing and isinstance(existing["hooks"], dict)
+    hooks_map = existing["hooks"] if is_wrapped else existing
+    unrelated_top_level_keys = set(existing.keys()) - {"hooks"} if is_wrapped else set()
 
     removed_handlers_count = 0
-    remaining_events = {}
+    events_to_delete = []
 
     for event, entries in list(hooks_map.items()):
-        if isinstance(entries, list):
-            new_entries = []
-            for entry in entries:
-                if isinstance(entry, dict) and "hooks" in entry and isinstance(entry["hooks"], list):
-                    # Mixed or single matcher group: filter individual handlers
-                    kept_handlers = []
-                    for h in entry["hooks"]:
-                        if _is_agentcontract_handler(h):
-                            removed_handlers_count += 1
-                        else:
-                            kept_handlers.append(h)
+        if not isinstance(entries, list):
+            continue
 
-                    if kept_handlers:
-                        # Retain the group with remaining foreign handlers intact
-                        entry["hooks"] = kept_handlers
+        event_had_ac = False
+        new_entries = []
+
+        for entry in entries:
+            if isinstance(entry, dict) and "hooks" in entry and isinstance(entry["hooks"], list):
+                kept_handlers = []
+                for h in entry["hooks"]:
+                    if _is_agentcontract_handler(h):
+                        removed_handlers_count += 1
+                        event_had_ac = True
+                    else:
+                        kept_handlers.append(h)
+
+                if kept_handlers:
+                    entry["hooks"] = kept_handlers
+                    new_entries.append(entry)
+                else:
+                    extra_keys = set(entry.keys()) - {"hooks", "matcher"}
+                    if extra_keys:
+                        entry["hooks"] = []
                         new_entries.append(entry)
                     else:
-                        # All handlers in this group belonged to AgentContract
-                        # If entry has custom metadata beyond hooks/matcher, preserve it
-                        if set(entry.keys()) - {"hooks", "matcher"}:
-                            entry["hooks"] = []
-                            new_entries.append(entry)
-                elif _is_agentcontract_handler(entry):
-                    removed_handlers_count += 1
-                else:
-                    new_entries.append(entry)
+                        pass
+            elif _is_agentcontract_handler(entry):
+                removed_handlers_count += 1
+                event_had_ac = True
+            else:
+                new_entries.append(entry)
 
+        if event_had_ac:
             if new_entries:
-                remaining_events[event] = new_entries
+                hooks_map[event] = new_entries
+            else:
+                events_to_delete.append(event)
+        else:
+            # Foreign event (e.g. PostToolUse: [] or third-party hooks) preserved as is
+            hooks_map[event] = new_entries
+
+    for event in events_to_delete:
+        del hooks_map[event]
 
     if removed_handlers_count == 0:
         print(f"No AgentContract hooks found in {hooks_file}; leaving untouched.")
         return 0
 
-    # If foreign hooks remain, preserve them
-    if remaining_events:
-        if "hooks" in existing and isinstance(existing["hooks"], dict):
-            existing["hooks"] = remaining_events
-        else:
-            existing.clear()
-            existing.update(remaining_events)
-        _atomic_write_json(hooks_file, existing)
-        print(f"Removed {removed_handlers_count} AgentContract handler(s) from {hooks_file} (preserved remaining project hooks)")
-    else:
-        # File contained only AgentContract hooks
+    # Delete file only if it was entirely AgentContract-generated and has no unrelated content
+    if not unrelated_top_level_keys and not hooks_map:
         hooks_file.unlink(missing_ok=True)
         print(f"Removed AgentContract hooks from {hooks_file}")
         try:
@@ -399,7 +535,11 @@ def uninstall_hooks(project_dir: str | Path = ".") -> int:
                 codex_dir.rmdir()
         except OSError:
             pass
+        return 0
 
+    # Foreign configuration or metadata remains: preserve structurally valid config
+    _atomic_write_json(hooks_file, existing)
+    print(f"Removed {removed_handlers_count} AgentContract handler(s) from {hooks_file} (preserved foreign configuration)")
     return 0
 
 
@@ -426,10 +566,7 @@ def _inspect_codex_config_toml(config_path: Path) -> tuple[str, list[str]]:
     if isinstance(plugins_table, dict):
         for plugin_name, plugin_cfg in plugins_table.items():
             if "agentcontract" in plugin_name.lower():
-                enabled_info = ""
-                if isinstance(plugin_cfg, dict) and "enabled" in plugin_cfg:
-                    enabled_info = f" (enabled={plugin_cfg['enabled']})"
-                residual_items.append(f'plugins."{plugin_name}"{enabled_info}')
+                residual_items.append(f'plugins."{plugin_name}"')
 
     # Check [marketplaces] table
     marketplaces_table = config_data.get("marketplaces")
@@ -459,8 +596,15 @@ def audit_hooks(project_dir: str | Path = ".") -> int:
     print("=" * 60)
     print(f"Target Project: {proj}")
 
-    # 1. Project-local check
-    if hooks_file.is_file():
+    # 1. Project-local check & boundary containment
+    ok_dir, reason_dir = _validate_project_contained_path(codex_dir, proj)
+    ok_file, reason_file = _validate_project_contained_path(hooks_file, proj)
+    has_project_escape = not ok_dir or not ok_file
+
+    if has_project_escape:
+        escape_reason = reason_dir if not ok_dir else reason_file
+        print(f"  Project Hooks Directory: [SUSPICIOUS / ESCAPE DETECTED] ({escape_reason})")
+    elif hooks_file.is_file():
         try:
             data = json.loads(hooks_file.read_text(encoding="utf-8"))
             is_valid, validation_err = _validate_hooks_json_structure(data, hooks_file)
@@ -483,9 +627,15 @@ def audit_hooks(project_dir: str | Path = ".") -> int:
     # 2. Read-only User Global Codex Home check
     print(f"\nUser Codex Home: {user_codex_home}")
     if not user_codex_home.exists():
-        print("  Status: User Codex home does not exist.")
+        print("  Status: User Codex home directory does not exist.")
+        print("\nInspection Coverage:")
+        print(f"  Inspected Sources: Project root ({proj}); Global Codex home directory not present.")
+        print("  Coverage Note: Desktop GUI state, system runtime memory, and uninspected external paths remain UNVERIFIED.")
         print("\nIsolation Assessment:")
-        print("  [CLEAN] Zero External Side Effects Confirmed.")
+        if has_project_escape:
+            print("  [ESCAPE_DETECTED] Project-local .codex directory escapes project root boundary.")
+        else:
+            print("  [PROJECT_SCOPED_ONLY] No global Codex configuration directory exists.")
         print("=" * 60)
         return 0
 
@@ -520,35 +670,57 @@ def audit_hooks(project_dir: str | Path = ".") -> int:
     # 2c. Inspect global plugin cache
     plugin_cache_dir = user_codex_home / "plugins" / "cache"
     has_global_plugin = False
+    cached_marketplaces = []
     if plugin_cache_dir.is_dir():
         try:
             for mkt in plugin_cache_dir.iterdir():
                 if (mkt / "agentcontract").exists():
                     has_global_plugin = True
-                    break
+                    cached_marketplaces.append(mkt.name)
         except Exception:
             pass
 
-    print(f"  Global Plugins Cache: {'Contains AgentContract registration' if has_global_plugin else 'Clean (No AgentContract plugin)'}")
+    print(f"  Global Plugins Cache: {'Contains AgentContract registration (' + ', '.join(cached_marketplaces) + ')' if has_global_plugin else 'Clean (No AgentContract plugin)'}")
 
-    # 3. Assessment & Guidance
+    # 3. Inspection Coverage Summary
+    print("\nInspection Coverage:")
+    inspected_items = [f"Project ({proj})"]
+    if config_path.is_file():
+        inspected_items.append("config.toml")
+    if global_hooks.is_file():
+        inspected_items.append("hooks.json")
+    if plugin_cache_dir.is_dir():
+        inspected_items.append("plugins/cache")
+    print(f"  Inspected Sources: {', '.join(inspected_items)}")
+    print("  Coverage Note: Desktop GUI state, system runtime memory, and uninspected external paths remain UNVERIFIED.")
+
+    # 4. Assessment & Guidance
     print("\nIsolation Assessment:")
     is_residual = (config_status == "RESIDUAL" or has_global_ac_hooks or has_global_plugin)
     is_unverified = (config_status == "UNVERIFIED/INCOMPLETE" or global_hooks_unparseable)
 
-    if is_residual:
+    if has_project_escape:
+        print("  [ESCAPE_DETECTED] Project-local .codex configuration escapes project root boundary.")
+    elif is_residual:
         print("  [RESIDUAL] Residual global AgentContract registrations detected in user's Codex home.")
-        print("  To surgically remove global registrations without affecting other plugins, run:")
-        if has_global_plugin or config_status == "RESIDUAL":
-            print("    codex plugin remove agentcontract")
+        print("  Guidance for targeted, non-destructive cleanup:")
+        if has_global_plugin:
+            print("    - Active cached plugin detected. To remove via Codex CLI:")
+            print("        codex plugin remove agentcontract")
+        if config_status == "RESIDUAL" and not has_global_plugin:
+            print(f"    - Stale configuration entries detected in {config_path} without active cached plugin.")
+            print("      To remove safely: create a backup of config.toml and remove only the specific section(s):")
+            for item in config_residuals:
+                print(f"        * Remove [{item}]")
         if has_global_ac_hooks:
-            print(f"    (Manually remove AgentContract entries from {global_hooks})")
+            print(f"    - AgentContract hooks detected in {global_hooks}.")
+            print("      To remove safely: create a backup of hooks.json and remove only AgentContract command handlers.")
         print("  Note: AgentContract never automatically modifies or deletes global configurations.")
     elif is_unverified:
         print("  [UNVERIFIED/INCOMPLETE] Unable to verify full global isolation status due to unreadable config files.")
     else:
-        print("  [CLEAN] Zero External Side Effects Confirmed.")
-        print("  AgentContract is strictly project-scoped and does not affect other Codex workspaces or Desktop.")
+        print("  [PROJECT_SCOPED_ONLY] No known AgentContract entries found in inspected global sources.")
+        print("  Notice: Static inspection is limited to file-based CLI configuration; Desktop GUI state remains UNVERIFIED.")
 
     print("=" * 60)
     return 0

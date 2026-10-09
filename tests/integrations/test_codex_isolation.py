@@ -235,7 +235,7 @@ def test_malformed_hook_structures_rejected(tmp_path: Path) -> None:
 
 
 def test_audit_detects_residual_config_toml_without_cache(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
-    """Blocker 3: Audit must detect residual [plugins.'agentcontract@...'] in config.toml even with zero cache entries."""
+    """Blocker 3: Audit must detect residual [plugins.'agentcontract@...'] in config.toml and recommend exact section removal."""
     fake_codex_home = tmp_path / "fake_codex_home"
     fake_codex_home.mkdir(parents=True)
     monkeypatch.setenv("CODEX_HOME", str(fake_codex_home))
@@ -263,11 +263,15 @@ def test_audit_detects_residual_config_toml_without_cache(tmp_path: Path, capsys
     assert "agentcontract@test_market_123456" in captured.out
     assert "[CLEAN] Zero External Side Effects Confirmed" not in captured.out
     assert "[PASSED] Zero External Side Effects Confirmed" not in captured.out
-    assert "codex plugin remove agentcontract" in captured.out
+
+    # Must recommend targeted section removal rather than broad plugin removal when not cached
+    assert "Stale configuration entries detected in" in captured.out
+    assert 'Remove [plugins."agentcontract@test_market_123456"]' in captured.out
+    assert "codex plugin remove agentcontract" not in captured.out
 
 
 def test_audit_clean_synthetic_home(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
-    """Blocker 3: Audit reports CLEAN when config.toml has only unrelated third-party plugins."""
+    """Blocker 3: Audit reports PROJECT_SCOPED_ONLY and notes Desktop GUI remains UNVERIFIED without overclaiming."""
     clean_home = tmp_path / "clean_home"
     clean_home.mkdir(parents=True)
     monkeypatch.setenv("CODEX_HOME", str(clean_home))
@@ -286,7 +290,11 @@ def test_audit_clean_synthetic_home(tmp_path: Path, capsys: pytest.CaptureFixtur
     ret = audit_hooks(project_dir=proj)
     assert ret == 0
     captured = capsys.readouterr()
-    assert "[CLEAN] Zero External Side Effects Confirmed" in captured.out
+    assert "[PROJECT_SCOPED_ONLY]" in captured.out
+    assert "Desktop GUI state" in captured.out
+    assert "UNVERIFIED" in captured.out
+    assert "[CLEAN] Zero External Side Effects Confirmed" not in captured.out
+    assert "[PASSED] Zero External Side Effects Confirmed" not in captured.out
     assert "RESIDUAL" not in captured.out
 
 
@@ -303,6 +311,145 @@ def test_root_path_rejection(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     assert status_hooks(project_dir=dummy) == 1
 
 
+def test_junction_symlink_boundary_escape_rejection(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Round 2 Blocker 1: Project-local .codex junction or symlink escaping project root must be rejected with zero changes to target."""
+    proj_a = tmp_path / "proj_a"
+    proj_b = tmp_path / "proj_b"
+    proj_a.mkdir()
+    proj_b.mkdir()
+
+    external_target = proj_b / "external_codex"
+    external_target.mkdir()
+    sentinel_file = external_target / "sentinel.txt"
+    sentinel_file.write_text("unrelated_external_data", encoding="utf-8")
+
+    junction_link = proj_a / ".codex"
+
+    # Create directory junction on Windows or symlink on POSIX
+    created = False
+    if sys.platform == "win32":
+        try:
+            import _winapi
+            _winapi.CreateJunction(str(external_target), str(junction_link))
+            created = True
+        except Exception:
+            pass
+
+    if not created:
+        try:
+            junction_link.symlink_to(external_target, target_is_directory=True)
+            created = True
+        except Exception:
+            pytest.skip("Filesystem does not support junction or symlink creation in test environment")
+
+    assert junction_link.exists()
+
+    # 1. install_hooks must refuse to install and return 1
+    ret_install = install_hooks(project_dir=proj_a)
+    assert ret_install == 1
+    # Verify external target was NOT modified: hooks.json was NOT written
+    assert not (external_target / "hooks.json").exists()
+    assert sentinel_file.read_text(encoding="utf-8") == "unrelated_external_data"
+
+    # 2. uninstall_hooks must refuse to operate and return 1
+    ret_uninstall = uninstall_hooks(project_dir=proj_a)
+    assert ret_uninstall == 1
+    # External target must remain completely untouched
+    assert sentinel_file.read_text(encoding="utf-8") == "unrelated_external_data"
+
+    # 3. status_hooks must refuse to query redirected path and return 1
+    ret_status = status_hooks(project_dir=proj_a)
+    assert ret_status == 1
+
+    # 4. audit_hooks must detect and report the escape without misleading output
+    ret_audit = audit_hooks(project_dir=proj_a)
+    assert ret_audit == 0
+    captured = capsys.readouterr()
+    assert "[SUSPICIOUS / ESCAPE DETECTED]" in captured.out or "[ESCAPE_DETECTED]" in captured.out
+
+
+def test_uninstall_lossless_wrapped_foreign_config_with_empty_arrays(tmp_path: Path) -> None:
+    """Round 2 Blocker 2: Uninstall must preserve top-level metadata, unknown keys, and foreign empty event arrays."""
+    proj = tmp_path / "wrapped_foreign_proj"
+    codex_dir = proj / ".codex"
+    codex_dir.mkdir(parents=True)
+    hooks_file = codex_dir / "hooks.json"
+
+    # Exact reproduction structure from Round 2 review:
+    # wrapped config with schemaVersion, foreign note, PreToolUse with AC hook, and empty foreign PostToolUse array
+    initial_wrapped_config: dict[str, Any] = {
+        "schemaVersion": 1,
+        "note": "foreign metadata",
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": ".*",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "python -m agentcontract.integrations.codex.hooks PreToolUse",
+                        }
+                    ],
+                }
+            ],
+            "PostToolUse": [],
+        },
+    }
+    hooks_file.write_text(json.dumps(initial_wrapped_config, indent=2), encoding="utf-8")
+
+    # 1. Uninstall should remove ONLY PreToolUse (AgentContract) and preserve foreign metadata & empty array
+    ret_uninstall = uninstall_hooks(project_dir=proj)
+    assert ret_uninstall == 0
+    assert hooks_file.is_file(), "hooks.json must NOT be deleted because foreign metadata and empty array remain"
+
+    data_after_uninstall = json.loads(hooks_file.read_text(encoding="utf-8"))
+    assert data_after_uninstall["schemaVersion"] == 1
+    assert data_after_uninstall["note"] == "foreign metadata"
+    assert "hooks" in data_after_uninstall
+    assert data_after_uninstall["hooks"]["PostToolUse"] == [], "Empty foreign array PostToolUse: [] must be preserved"
+    assert "PreToolUse" not in data_after_uninstall["hooks"], "PreToolUse containing only AgentContract must be removed"
+
+    # 2. Test multi-event foreign config with empty foreign array and foreign handlers
+    proj2 = tmp_path / "multi_foreign_proj"
+    (proj2 / ".codex").mkdir(parents=True)
+    hooks_file2 = proj2 / ".codex" / "hooks.json"
+    multi_config = {
+        "schemaVersion": 2,
+        "customKey": "keep_this",
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": ".*",
+                    "hooks": [
+                        {"type": "command", "command": "python -m agentcontract.integrations.codex.hooks PreToolUse"},
+                    ],
+                }
+            ],
+            "PostToolUse": [],
+            "SessionStart": [
+                {
+                    "matcher": ".*",
+                    "hooks": [
+                        {"type": "command", "command": "node scripts/custom_logger.js"},
+                    ],
+                }
+            ],
+        },
+    }
+    hooks_file2.write_text(json.dumps(multi_config, indent=2), encoding="utf-8")
+
+    ret_uninst2 = uninstall_hooks(project_dir=proj2)
+    assert ret_uninst2 == 0
+    assert hooks_file2.is_file()
+    data2 = json.loads(hooks_file2.read_text(encoding="utf-8"))
+    assert data2["schemaVersion"] == 2
+    assert data2["customKey"] == "keep_this"
+    assert data2["hooks"]["PostToolUse"] == []
+    assert len(data2["hooks"]["SessionStart"]) == 1
+    assert data2["hooks"]["SessionStart"][0]["hooks"][0]["command"] == "node scripts/custom_logger.js"
+    assert "PreToolUse" not in data2["hooks"]
+
+
 def test_cli_subcommand_audit_integration(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """Test 'agentcontract codex audit --project <dir>' command routing."""
     proj = tmp_path / "cli_audit_proj"
@@ -312,4 +459,46 @@ def test_cli_subcommand_audit_integration(tmp_path: Path, capsys: pytest.Capture
     assert ret == 0
     captured = capsys.readouterr()
     assert "AgentContract Codex Isolation Audit Report" in captured.out
+
+
+def test_environment_integrity_guard_resilience(tmp_path: Path) -> None:
+    """Requirement: Environment integrity check must execute even if a test case raises failure/exception."""
+    import hashlib
+
+    fake_home = tmp_path / "fake_home"
+    fake_home.mkdir()
+    tracked = fake_home / "config.toml"
+    tracked.write_text("model = 'init'\n", encoding="utf-8")
+
+    initial_hash = hashlib.sha256(tracked.read_bytes()).hexdigest()
+
+    teardown_executed = False
+    caught_mutation = False
+
+    def simulated_fixture():
+        nonlocal teardown_executed, caught_mutation
+        pre_h = hashlib.sha256(tracked.read_bytes()).hexdigest()
+        try:
+            yield
+        finally:
+            teardown_executed = True
+            post_h = hashlib.sha256(tracked.read_bytes()).hexdigest()
+            if post_h != pre_h:
+                caught_mutation = True
+                raise AssertionError("Guarded configuration mutated in-place!")
+
+    # 1. Simulate a test that fails (raises ValueError) while also mutating a tracked file
+    gen = simulated_fixture()
+    next(gen)
+    tracked.write_text("model = 'mutated'\n", encoding="utf-8")
+
+    with pytest.raises(AssertionError, match="Guarded configuration mutated in-place!"):
+        try:
+            raise ValueError("Simulated test failure")
+        except Exception:
+            # pytest fixture teardown executes on test exception via gen.throw or next
+            gen.throw(ValueError("Simulated test failure"))
+
+    assert teardown_executed is True, "Integrity check must execute on test failure"
+    assert caught_mutation is True, "Integrity check must catch in-place mutations"
 

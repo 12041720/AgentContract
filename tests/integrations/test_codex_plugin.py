@@ -193,15 +193,15 @@ def test_real_codex_plugin_marketplace_discovery_and_install_smoke(tmp_path: Pat
         subprocess.run(["codex", "plugin", "remove", "agentcontract"], capture_output=True, shell=True, env=iso_env)
         subprocess.run(["codex", "plugin", "marketplace", "remove", market_name], capture_output=True, shell=True, env=iso_env)
 
-    # 6. Verify real user ~/.codex was NOT modified or polluted
-    if real_codex_pre_exists:
-        # Verify in-place mutations did not occur on tracked files
-        for f, pre_h in pre_hashes.items():
-            if pre_h is not None:
-                assert _hash_f(real_codex_home / f) == pre_h, f"real user {f} mutated in-place by plugin smoke test!"
+        # 6. Verify real user ~/.codex was NOT modified or polluted (guaranteed to execute even on test assertion failure)
+        if real_codex_pre_exists:
+            # Verify in-place mutations did not occur on tracked files
+            for f, pre_h in pre_hashes.items():
+                if pre_h is not None:
+                    assert _hash_f(real_codex_home / f) == pre_h, f"real user {f} mutated in-place by plugin smoke test!"
 
-        real_codex_post_entries = set(real_codex_home.iterdir())
-        new_entries = real_codex_post_entries - real_codex_pre_entries
-        # Ensure no test marketplace or plugin directories were written to real user home
-        assert not any(market_name in p.name for p in new_entries)
-        assert not (real_codex_home / "plugins" / "cache" / market_name).exists()
+            real_codex_post_entries = set(real_codex_home.iterdir())
+            new_entries = real_codex_post_entries - real_codex_pre_entries
+            # Ensure no test marketplace or plugin directories were written to real user home
+            assert not any(market_name in p.name for p in new_entries)
+            assert not (real_codex_home / "plugins" / "cache" / market_name).exists()
