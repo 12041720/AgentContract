@@ -6,18 +6,17 @@
 
 - Name: AgentContract
 - Mission: Runtime constraint tracking and evidence-grounded completion verification for long-horizon tool-using agents.
-- Stage: M6 Codex integration isolation hardening
+- Stage: M6 Codex integration isolation hardening COMPLETE
 - Architecture version: 0.1
 - Default branch: `main`
 
 ## Current active task
 
-- Task: **TASK-011 — Codex Configuration Isolation & Zero External Side Effects**
-- Task file: `.agent/tasks/TASK-011.md`
-- Work branch: `task/TASK-011-codex-isolation`
-- Status: **CHANGES_REQUESTED**
-- Owner: Execution agent
-- Main-agent review: Round 2 CHANGES_REQUESTED; redirected .codex target, foreign JSON metadata preservation, audit false assurances
+- Task: **None — TASK-011 ACCEPTED**
+- Status: **IDLE / awaiting next task**
+- Last completed task: `.agent/tasks/TASK-011.md`
+- Integration commit: `a8343521416cbe97a257a4c06f19730c3265ee60`
+- Next task: not yet activated; main agent will create it upon direction
 
 ## Main-agent checkpoint
 
@@ -81,3 +80,11 @@ On a new session:
 - TASK-011 activated after discovering that real Codex plugin marketplace tests use inherited user Codex configuration and uninstall by broad plugin name.
 - Acceptance requirement: AgentContract project and tests must not modify user-global Codex plugin, hook, trust, approval, configuration, or unrelated workspaces (CLI or desktop).
 - Run global-mutating integration tests only with isolated CODEX_HOME; scoped install/uninstall must preserve existing project hooks.
+
+## M6 completion checkpoint (2026-10-09)
+
+- TASK-011 Codex Configuration Isolation & Zero External Side Effects ACCEPTED after third-round review.
+- Isolated Codex plugin mutation subprocesses with temporary CODEX_HOME; scoped hook install/uninstall preserves foreign hooks and metadata; rejected symlink/Junction escape destinations; audit reports limited inspection and stale global records without changing them.
+- Selective product/test/docs integration to main: `a8343521416cbe97a257a4c06f19730c3265ee60`.
+- Executor-reported Windows Python 3.12.9 regression: 355 passed, 0 failed. Main agent independently reviewed code/tests, but could not rerun tests (no GitHub DNS access in its container).
+- Codex Desktop GUI isolation remains MANUAL/UNVERIFIED. No automatic global Codex cleanup or next task activated.
