@@ -828,3 +828,13 @@ Blockers:
 Detailed cases and acceptance gate: `.agent/tasks/TASK-012.md`. No main merge.
 
 ---
+
+---
+
+## 2026-10-09 — TASK-012 third review
+
+**Implementation:** `1c4877a90bc60c82f490d5a44a86cf85b903f4e6`  
+**Reviewed branch head:** `9bb6a3325db60ccab7e2b4ebde3a9080092f8722`  
+**Verdict:** CHANGES_REQUESTED
+
+Explicit `--sandbox workspace-write` added and Executor Report now acknowledges **357 passed / 2 skipped** (online ALLOW/DENY unverified). Static blockers: missing `Any` import causes authenticated DENY test NameError; sandbox assertion is swallowed by `except Exception` and metadata is optional; Guard BLOCK match is not restricted to mutating operation, correlation IDs may be empty, and textual `BLOCK:` is not trustworthy machine-denial evidence; temporary auth cleanup misses pre-try failures and suppresses unlink errors. Both online E2E tests remain skipped, with no independent rerun or GitHub status checks. Detailed findings and remediation in `.agent/tasks/TASK-012.md`. No merge to main.
