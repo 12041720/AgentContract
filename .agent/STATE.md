@@ -17,7 +17,7 @@
 - Work branch: `task/TASK-012-codex-pretooluse-compat`
 - Status: **CHANGES_REQUESTED**
 - Owner: Execution agent
-- Main-agent review: Round 2 CHANGES_REQUESTED (missing explicit sandbox, uncorrelated real DENY evidence; 2 real online tests skipped)
+- Main-agent review: Round 3 CHANGES_REQUESTED (test NameError; ineffective sandbox assertion; incomplete DENY correlation and auth cleanup; 2 live E2E tests skipped)
 - Previous accepted milestone: TASK-011 / M6
 
 ## Main-agent checkpoint
@@ -98,3 +98,9 @@ On a new session:
 - Round 1 review CHANGES_REQUESTED because real CLI tests copy the user's global Codex auth.json, run unrestricted with --dangerously-bypass-approvals-and-sandbox, and do not robustly prove DENY was caused by a recorded SpecGuard block.
 - Added subprocess fixture cwd isolation requirement to prevent repository-local .agentcontract state writes.
 - Full findings in `.agent/tasks/TASK-012.md`. No production code merged and M7 not accepted.
+
+## M7 round 3 checkpoint (2026-10-09)
+
+- Reviewed executor implementation `1c4877a9` and report branch `9bb6a332`: explicit bounded sandbox requested; live online tests still skipped.
+- Round 3 CHANGES_REQUESTED for authenticated test NameError, ineffective sandbox evidence assertion, insufficient mutating-call/structured-denial correlation, and pre-try test-auth cleanup gap.
+- Source and diff reviewed through GitHub; no independent Windows runtime testing or CI checks. No TASK-012 acceptance, main product merge, or new task.
