@@ -101,7 +101,7 @@ Conversely, when SpecGuard denies a tool call, the structured denial JSON (`perm
 - Real online Codex CLI tests (`test_real_codex_cli_pretooluse_allow_completed` and `test_real_codex_cli_pretooluse_deny_blocked`) were explicitly skipped because no separate isolated test credentials (`AGENTCONTRACT_TEST_CODEX_AUTH_JSON` or `CODEX_TEST_AUTH_JSON`) were provided in the local test environment. Live E2E Codex backend integration remains UNVERIFIED until dedicated test credentials are provisioned. User personal auth is strictly uncopied per protocol.
 
 **Commit SHA:**
-- `9169ff8824493bb4c8d31137172a60fee7a60af1`
+- `1c4877a90bc60c82f490d5a44a86cf85b903f4e6`
 
 **Questions/blockers for main-agent review:**
 - None. Round 2 blockers resolved, explicit sandbox enforced, DENY trace strictly bound to protected action, and verification scope honestly reported.
