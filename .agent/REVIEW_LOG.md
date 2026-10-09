@@ -742,3 +742,21 @@ TASK-010 complete; M5 Codex integration milestone accepted. No next task active.
 The project's Codex plugin integration test invokes marketplace/plugin mutation commands against the inherited user configuration; this can affect ordinary Codex desktop/CLI use, even though cleanup is attempted. `install_hooks()` also replaces pre-existing project hook configuration. The user requires AgentContract to have no cross-workspace or global impact. Opened `.agent/tasks/TASK-011.md` with explicit isolated CODEX_HOME tests, lossless project-only hook merge/uninstall, opt-in plugin trust, and before/after global state checks.
 
 ---
+
+## 2026-10-09 — TASK-011 first review
+
+**Implementation:** `1de707eefb514f0ab35f3daf349f0103db1a7301`  
+**Branch head:** `74be048cc07d51b2a3b5b6df88296e7e48bf9085`  
+**Verdict:** CHANGES_REQUESTED
+
+**Improvement:** Codex plugin mutation subprocesses now use test-local CODEX_HOME; common-case project hook merge/uninstall and audit features implemented. Executor reports 351 passing tests.
+
+**Blocking findings:**
+1. Mixed matcher group with AgentContract and third-party child hooks: uninstall deletes entire group and third-party hook.
+2. Valid JSON with invalid/unknown hook structural shape gets silently overwritten by installer.
+3. Audit ignores global config.toml enabled AgentContract test plugin entries and can falsely certify zero global impact; top-level-only test snapshots miss in-place edits.
+4. Filesystem root path guard compares Path to str and fails to block root.
+
+Full reproducible cases and acceptance requirements in `.agent/tasks/TASK-011.md`. No main merge.
+
+---
