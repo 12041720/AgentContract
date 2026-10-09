@@ -776,3 +776,20 @@ Round-1 defects substantially repaired; executor reports 352 passing tests. Rema
 Full reproducible examples and acceptance criteria: `.agent/tasks/TASK-011.md`. **No merge to main.**
 
 ---
+
+## 2026-10-09 — TASK-011 third review and acceptance
+
+**Executor implementation:** `994ea60b9dc076263ae78d4beea6c3bf045ca35e`  
+**Reviewed branch:** `29addcc3debadfd1b7a459776392305812a54588` (plus main-agent docs safety edit `f783f93e54761a5acb86a81f03f36e518a62abf3`)  
+**Main selective integration:** `a8343521416cbe97a257a4c06f19730c3265ee60`  
+**Verdict:** ACCEPTED
+
+Round-2 issues resolved by source inspection and new regressions: rejects escaping project .codex Junction/symlink paths before install/uninstall, preserves all foreign top-level JSON metadata and empty foreign hook event arrays, scopes audit claims to inspected Codex global sources and avoids broad plugin deletion for stale config-only entries, and forces integrity checks in pytest teardown on test failure.
+
+Main agent also corrected integration docs to remove unsafe unconditional global plugin removal guidance and mark unexecuted Codex Desktop checks MANUAL/UNVERIFIED.
+
+**Verification:** Executor reports 355 passing tests (Python 3.12.9, Windows), 0 failing; main agent reviewed implementation/tests/docs but independent clone/testing unavailable because GitHub DNS resolution failed in this container. GitHub combined status had no CI checks. GUI checks remain manual/unverified.
+
+M6 COMPLETE; no new active task.
+
+---
