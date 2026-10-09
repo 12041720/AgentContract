@@ -78,7 +78,53 @@ Official references:
 
 > Execution agent fills this section.
 
-Pending.
+**Implementation summary:**
+- **Part A (Test Isolation & Zero User Home Mutation):**
+  - Updated `tests/integrations/test_codex_plugin.py::test_real_codex_plugin_marketplace_discovery_and_install_smoke` to run against an isolated `CODEX_HOME` (`tmp_path / "isolated_codex_home"`).
+  - Verified that all `codex plugin marketplace add/list/remove` and `codex plugin add/list/remove` subprocesses receive `env=dict(os.environ, CODEX_HOME=str(isolated_codex_home))`.
+  - Added pre/post snapshot checks ensuring user's real `Path.home() / ".codex"` is completely untouched.
+  - Added session-scoped autouse safeguard fixture `guard_user_codex_home_isolation` in `tests/conftest.py` that asserts no AgentContract artifacts, `.bak` files, or test marketplaces leaked into the user's real `~/.codex` during any pytest session.
+- **Part B (Project-Scoped Installer/Uninstaller with Lossless Merging & Atomic Writes):**
+  - Refactored `src/agentcontract/integrations/codex/cli.py`:
+    - `install_hooks`: Rejects dangerous system root or user home directory targets. Checks for existing `hooks.json` syntax; safely refuses to overwrite if corrupted. Losslessly merges only AgentContract-owned entries (`_is_agentcontract_hook_entry`), preserving all foreign/third-party hooks, their order, and structure. Idempotent on repeat runs. Uses atomic file writes (`_atomic_write_json`) via temp files and `os.replace` to prevent partial write risks.
+    - `uninstall_hooks`: Selectively removes ONLY AgentContract-owned entries. If foreign hooks remain in the project, preserves them with atomic write; unlinks `hooks.json` only if all entries belonged to AgentContract. Does not restore stale `.bak` files.
+    - `status_hooks`: Explicitly reports project-local scope boundary (`Project-local only (zero effect on global ~/.codex)`) and counts foreign vs AgentContract hook entries.
+- **Part C (Opt-In Diagnostic Audit & Documentation):**
+  - Implemented `agentcontract codex audit [--project <dir>]` in `cli.py`: performs non-destructive read-only checks of the project-local hooks and user global Codex home (`~/.codex`). Reports an isolation assessment and gives surgical manual cleanup commands (`codex plugin remove agentcontract`) without automatically mutating global state.
+  - Updated `docs/integrations/codex.md` with zero external side effects architecture, audit command, surgical cleanup procedures, and manual Codex Desktop checklist.
+- **Part D (Comprehensive Isolation Regressions):**
+  - Added `tests/integrations/test_codex_isolation.py` with 8 comprehensive tests covering:
+    1. Single-project lifecycle without affecting sibling projects (`test_temporary_project_install_status_uninstall_isolation`).
+    2. Merging foreign hooks, idempotence, and exact semantic restoration upon uninstall (`test_merge_and_preserve_foreign_hooks`).
+    3. Safe failure without overwriting or deleting corrupted hooks files (`test_invalid_hooks_file_safe_failure`).
+    4. Rejection of system root and home directory targets (`test_dangerous_root_and_home_targets_rejected`).
+    5. Sibling workspaces isolation (`test_sibling_workspaces_isolation`).
+    6. Read-only non-destructive audit command verification (`test_audit_command_read_only`).
+    7. Import and standard suite zero global side effects (`test_import_and_test_suite_zero_global_effects`).
+    8. CLI main integration for audit command (`test_cli_subcommand_audit_integration`).
+
+**Files changed:**
+- `src/agentcontract/integrations/codex/cli.py`
+- `src/agentcontract/cli.py`
+- `docs/integrations/codex.md`
+- `tests/conftest.py`
+- `tests/integrations/test_codex_plugin.py`
+- `tests/integrations/test_codex_isolation.py`
+- `.agent/tasks/TASK-011.md`
+
+**Tests/checks run and results:**
+- Full pytest suite on Python 3.12.9: **351 passed, 0 failed in 8.80s** (`python -m pytest`).
+- `test_codex_isolation.py`: 8 passed in 0.56s.
+- `test_codex_cli.py`: 2 passed in 1.65s.
+- `test_codex_plugin.py`: 3 passed in 1.45s (under isolated `CODEX_HOME`).
+- Direct CLI invocation `python -m agentcontract.cli codex audit` verified read-only and accurate.
+- Real user `~/.codex` verified untouched by test suite.
+
+**Known limitations:**
+- Headless automated tests cover CLI hooks and configuration isolation. Visual GUI dialogs in Codex Desktop cannot be headlessly automated and are tracked as `MANUAL/UNVERIFIED` in accordance with the task specification.
+
+**Commit SHA:**
+- Implementation: `1de707eefb514f0ab35f3daf349f0103db1a7301`
 
 ## Main Agent Review
 
