@@ -198,36 +198,33 @@ integrations/codex-plugin/
 └── README.md
 ```
 
-### Zero External Side Effects & Scope Boundary
+### Scope Boundary and Known Verification Limits
 
-To ensure AgentContract never interferes with unrelated projects, external workspaces, or standard Codex CLI/Desktop behavior:
+The project-level integration is designed to avoid writes to unrelated Codex workspaces and the user-global Codex home. This is an implementation boundary, **not proof that all Codex Desktop behavior or existing global plugins are unaffected**.
 
 1. **Project-Scoped Installation by Default**:
-   Using `agentcontract codex install --project <dir>` writes only to `<dir>/.codex/hooks.json`. Codex CLI and Desktop only activate these hooks when opened within that directory. Sibling workspaces remain completely unaffected.
+   `agentcontract codex install --project <dir>` edits only that project's `.codex/hooks.json`. The installer rejects destinations whose resolved `.codex` / `hooks.json` path escapes the project (including Windows junctions and symlinks). Other user-level plugins or trust settings are not changed by this command.
 
 2. **Test Isolation via Isolated `CODEX_HOME`**:
-   All automated plugin tests run against temporary, isolated test directories passed as `CODEX_HOME`. The test suite never touches or mutates the user's real `~/.codex` configuration.
+   Plugin/marketplace mutation tests pass a temporary test-only `CODEX_HOME`; no real user config or authentication database is copied into that home. Test fixtures also check for changes to selected real-home files. Desktop GUI/plugin trust state remains **MANUAL/UNVERIFIED**.
 
-3. **Safe Surgical Cleanup of Historical Global Registrations**:
-   If a user previously registered an experimental AgentContract plugin or marketplace into their global Codex home, they can surgically inspect and remove it without altering other plugins or settings:
+3. **Inspection-Before-Cleanup for Historical Global Registrations**:
+   Read-only inspection:
    ```bash
-   # Check isolation status
    agentcontract codex audit
-
-   # Remove residual plugin registration if present
-   codex plugin remove agentcontract
-
-   # Remove residual test marketplace if present
-   codex plugin marketplace remove <marketplace-name>
+   codex plugin list
+   codex plugin marketplace list
    ```
+   If `audit` reports stale `[plugins."agentcontract@..."]` sections but `codex plugin list` does not show an installed AgentContract plugin, back up `~/.codex/config.toml` and remove only those **exact** stale sections after inspecting their contents. Do not run `codex plugin remove agentcontract` merely to clean up stale config entries: this could remove a different, intentionally installed plugin. Likewise, remove a marketplace only after identifying its exact name and confirming it belongs to an obsolete AgentContract test. No cleanup is automatic.
 
 ### Manual Codex Desktop Verification Checklist
 
-While headless CLI workflows are automated in the test suite, desktop GUI behavior can be manually validated with this checklist:
-- [x] **Project Scoping**: Open Project A (opted in with `.codex/hooks.json`) in Codex Desktop -> AgentContract hooks execute during tool invocations.
-- [x] **External Workspace Isolation**: Open Project B (sibling workspace without `.codex/hooks.json`) in Codex Desktop -> No AgentContract hooks or guardrails are invoked; tool execution is unconstrained.
-- [x] **Zero Global Trust Prompts**: Because project hooks are local, opening unrelated projects never triggers AgentContract plugin trust dialogs.
-*(Note: Because Codex Desktop does not currently provide a headless automation harness for GUI dialogs, Desktop-specific visual checks are tracked as MANUAL/UNVERIFIED in the automated suite).*
+These are **unverified manual steps**, not completed test results:
+- [ ] **Project Scoping (MANUAL/UNVERIFIED)**: Open Project A with an explicitly installed `.codex/hooks.json` in Codex Desktop; check that AgentContract Hooks execute when appropriate.
+- [ ] **External Workspace Isolation (MANUAL/UNVERIFIED)**: Open unrelated Project B with no AgentContract integration; check that its tool calls do not load AgentContract project Hooks.
+- [ ] **Plugin Trust Dialogs (MANUAL/UNVERIFIED)**: Open an unrelated project; check whether AgentContract-specific prompts appear. Existing user-global plugin state can affect this result.
+
+The automated suite does not exercise Codex Desktop GUI trust or runtime behavior, so these checks must not be marked passed until someone runs them.
 
 ---
 
