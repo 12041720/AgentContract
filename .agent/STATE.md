@@ -12,11 +12,13 @@
 
 ## Current active task
 
-- Task: **None — TASK-011 ACCEPTED**
-- Status: **IDLE / awaiting next task**
+- Task: `.agent/tasks/TASK-012.md`
+- Status: **READY_FOR_EXECUTOR**
+- Milestone: M7 — Codex Runtime Protocol Compatibility
+- Branch: `task/TASK-012-codex-pretooluse-compat`
 - Last completed task: `.agent/tasks/TASK-011.md`
 - Integration commit: `a8343521416cbe97a257a4c06f19730c3265ee60`
-- Next task: not yet activated; main agent will create it upon direction
+
 
 ## Main-agent checkpoint
 

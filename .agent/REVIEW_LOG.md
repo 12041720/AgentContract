@@ -793,3 +793,17 @@ Main agent also corrected integration docs to remove unsafe unconditional global
 M6 COMPLETE; no new active task.
 
 ---
+
+## 2026-10-09 — TASK-012 activated: Codex CLI PreToolUse protocol compatibility
+
+**Status:** READY_FOR_EXECUTOR
+
+PreToolUse hook returned `permissionDecision="allow"` without `updatedInput`, causing Codex CLI v0.162.0 to treat PreToolUse as `Failed`.
+Requirements:
+1. ALLOW without input rewriting must return empty response (`{}` / empty stdout) with exit code 0.
+2. DENY must preserve structured rejection JSON without weakening constraints.
+3. Add tests verifying real Codex CLI execution completes tools on ALLOW and blocks tools on DENY in isolated `CODEX_HOME`.
+4. Run full pytest suite on Python 3.12.9, fill Executor Report, commit + push on `task/TASK-012-codex-pretooluse-compat`. No main merge.
+
+---
+
