@@ -70,6 +70,8 @@ M5 status: **COMPLETE**. TASK-010 accepted on 2026-10-09; no next task activated
 
 | Task | Title | Status | Depends on |
 |---|---|---|---|
-| TASK-011 | Codex Configuration Isolation & Zero External Side Effects | CHANGES_REQUESTED | TASK-010 |
+| TASK-011 | Codex Configuration Isolation & Zero External Side Effects | ACCEPTED | TASK-010 |
 
 Goal: AgentContract tests and project hooks must never change or activate in unrelated Codex desktop/CLI workspaces or mutate the normal user's global Codex home.
+
+M6 status: **COMPLETE** — TASK-011 accepted on 2026-10-09, selectively integrated into `main` as `a8343521416cbe97a257a4c06f19730c3265ee60`. No next task activated. Codex Desktop smoke checklist remains MANUAL/UNVERIFIED.
