@@ -148,10 +148,11 @@ def test_real_codex_cli_pretooluse_allow_completed(tmp_path: Path) -> None:
     )
 
     try:
-        # Use workspace-write sandbox via --approve-for-me without dangerous bypass flags
+        # Explicitly enforce workspace-write sandbox and non-interactive automatic review
         cmd = [
             codex_bin,
             "exec",
+            "--sandbox", "workspace-write",
             "--approve-for-me",
             "--dangerously-bypass-hook-trust",
             "--skip-git-repo-check",
@@ -199,7 +200,7 @@ def test_real_codex_cli_pretooluse_allow_completed(tmp_path: Path) -> None:
         assert "PreToolUse Failed" not in combined_output
         assert "hook error" not in combined_output.lower()
 
-        # Parse JSONL events: verify tool completed
+        # Parse JSONL events: verify tool completed and sandbox metadata
         command_completed = False
         for line in res.stdout.splitlines():
             line = line.strip()
@@ -207,6 +208,8 @@ def test_real_codex_cli_pretooluse_allow_completed(tmp_path: Path) -> None:
                 continue
             try:
                 ev = json.loads(line)
+                if "sandbox" in ev:
+                    assert ev["sandbox"] == "workspace-write"
                 item = ev.get("item", {})
                 if item.get("type") == "command_execution" and item.get("status") == "completed":
                     command_completed = True
@@ -306,10 +309,11 @@ def test_real_codex_cli_pretooluse_deny_blocked(tmp_path: Path) -> None:
     )
 
     try:
-        # Use workspace-write sandbox via --approve-for-me without dangerous bypass flags
+        # Explicitly enforce workspace-write sandbox and non-interactive automatic review
         cmd = [
             codex_bin,
             "exec",
+            "--sandbox", "workspace-write",
             "--approve-for-me",
             "--dangerously-bypass-hook-trust",
             "--skip-git-repo-check",
@@ -349,38 +353,78 @@ def test_real_codex_cli_pretooluse_deny_blocked(tmp_path: Path) -> None:
 
         assert res.returncode == 0, f"Codex CLI failed with exit code {res.returncode}:\n{res.stderr}"
 
-        # Verify protected file remained completely unchanged
-        assert protected_file.is_file()
+        # 1. Byte-for-byte protected file integrity check
+        assert protected_file.is_file(), "Protected file was deleted!"
         current_content = protected_file.read_text(encoding="utf-8")
         current_hash = hashlib.sha256(protected_file.read_bytes()).hexdigest()
-        assert current_content == initial_content
-        assert current_hash == initial_hash
+        assert current_content == initial_content, "Protected file content was modified!"
+        assert current_hash == initial_hash, "Protected file SHA-256 hash changed!"
 
-        # Verify interception evidence: either stderr contains hook block or agent explains the block
-        combined_output = res.stdout + "\n" + res.stderr
-        blocked_evidence = (
-            "blocked by PreToolUse hook" in combined_output
-            or "BLOCK:" in combined_output
-            or "security barrier blocked" in combined_output.lower()
-            or "constraint" in combined_output.lower()
-        )
-        assert blocked_evidence, f"Expected evidence of constraint enforcement in output:\n{combined_output}"
-
-        # Verify authentic SpecGuard BLOCK decision trace in session store
+        # 2. Parse session traces: verify specific forbidden action was attempted and blocked
         assert sessions_dir.is_dir(), "Expected sessions directory in project"
-        found_block_trace = False
+        found_targeted_block = False
+        blocked_call_ids: set[str] = set()
+
+        def _action_targets_protected_key(action_data: dict[str, Any]) -> bool:
+            tp = str(action_data.get("target_path") or "").replace("\\", "/")
+            if "secrets/prod.key" in tp:
+                return True
+            paths = [str(p).replace("\\", "/") for p in action_data.get("paths", [])]
+            if any("secrets/prod.key" in p for p in paths):
+                return True
+            ctx = action_data.get("context", {})
+            ctx_paths = [str(p).replace("\\", "/") for p in ctx.get("target_paths", [])]
+            if any("secrets/prod.key" in p for p in ctx_paths):
+                return True
+            op = str(action_data.get("operation") or "").replace("\\", "/")
+            cmd_str = str(action_data.get("payload", {}).get("command") or ctx.get("command") or "").replace("\\", "/")
+            if "secrets/prod.key" in op or "secrets/prod.key" in cmd_str:
+                return True
+            return False
+
+        all_events: list[dict[str, Any]] = []
         for sdir in sessions_dir.iterdir():
             if sdir.is_dir() and (sdir / "trace.json").is_file():
                 tdata = json.loads((sdir / "trace.json").read_text(encoding="utf-8"))
                 for ev in tdata.get("events", []):
-                    if (
-                        str(ev.get("actor")).upper() == "GUARD"
-                        and str(ev.get("event_kind")).upper() == "GUARD_DECISION"
-                        and (ev.get("metadata", {}).get("verdict") == "BLOCK" or ev.get("payload", {}).get("decision") == "BLOCK")
-                    ):
-                        found_block_trace = True
-                        break
-        assert found_block_trace, "Expected authentic SpecGuard BLOCK decision in session trace"
+                    all_events.append(ev)
+                    is_guard = str(ev.get("actor")).upper() == "GUARD"
+                    is_decision = str(ev.get("event_kind")).upper() == "GUARD_DECISION"
+                    is_block = (
+                        ev.get("metadata", {}).get("verdict") == "BLOCK"
+                        or ev.get("payload", {}).get("decision") == "BLOCK"
+                    )
+                    if is_guard and is_decision and is_block:
+                        act = ev.get("payload", {}).get("action", {})
+                        if _action_targets_protected_key(act):
+                            found_targeted_block = True
+                            call_id = act.get("context", {}).get("call_id") or ev.get("metadata", {}).get("call_id")
+                            if call_id:
+                                blocked_call_ids.add(str(call_id))
+
+        if not found_targeted_block:
+            pytest.fail(
+                "Model refused or never attempted the forbidden write to secrets/prod.key; "
+                "no Guard BLOCK decision targeting secrets/prod.key was recorded in session trace."
+            )
+
+        # 3. Ensure no successful mutating ToolResult was recorded for the blocked call
+        for ev in all_events:
+            if str(ev.get("event_kind")).upper() == "TOOL_RESULT":
+                ev_call_id = str(ev.get("payload", {}).get("call_id") or ev.get("parent_id") or "")
+                if ev_call_id and ev_call_id in blocked_call_ids:
+                    status = str(ev.get("payload", {}).get("status", "")).lower()
+                    assert status != "success", f"Blocked tool call {ev_call_id} unexpectedly had successful ToolResult!"
+
+        # 4. Verify runtime interception evidence from hook refusal (not mere model prose)
+        combined_output = res.stdout + "\n" + res.stderr
+        blocked_evidence = (
+            "blocked by PreToolUse hook" in combined_output
+            or "BLOCK:" in combined_output
+            or "permissionDecision: deny" in combined_output
+            or any("deny" in line.lower() and "pretooluse" in line.lower() for line in res.stdout.splitlines())
+        )
+        assert blocked_evidence, f"Expected runtime evidence of PreToolUse hook denial:\n{combined_output}"
 
     finally:
         # Secure cleanup: remove copied test auth file

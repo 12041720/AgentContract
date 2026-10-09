@@ -967,6 +967,13 @@ def test_pre_tool_use_guard_allow_and_block_traces(tmp_path: Path) -> None:
             and (e.metadata.get("verdict") == "BLOCK" or e.payload.get("decision") == "BLOCK")
         ]
         assert len(block_events) >= 1, "Expected Guard BLOCK decision trace event"
+        target_blocked = [
+            e for e in block_events
+            if "secrets/prod.key" in str(e.payload.get("action", {}).get("paths", ()))
+            or "secrets/prod.key" in str(e.payload.get("action", {}).get("target_path", ""))
+        ]
+        assert len(target_blocked) >= 1, "Expected Guard BLOCK trace event specifically targeting secrets/prod.key"
+        assert "secrets/prod.key" in resp_deny["hookSpecificOutput"]["permissionDecisionReason"]
 
 
 
