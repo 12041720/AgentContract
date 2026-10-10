@@ -4,7 +4,7 @@
 **Milestone:** M7 — Codex Runtime Protocol Compatibility  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-012-codex-pretooluse-compat`  
-**Main-agent review:** CHANGES_REQUESTED — round 4
+**Main-agent review:** CHANGES_REQUESTED — round 5
 
 ## Objective
 
@@ -183,3 +183,23 @@ Keep patch tightly scoped to test safety, evidence correlation, and report accur
 **Evidence gate still open:** Ordinary offline pytest may skip the two online E2E tests without accessing real user auth, but M7's explicit real Codex acceptance criterion remains UNVERIFIED. Do not count `360 passed / 2 skipped` as online success or merge. Run the corrected two E2E tests only with dedicated opt-in test authentication and isolated CODEX_HOME, bounded workspace-write sandbox and trusted runtime evidence. If credentials are unavailable, report BLOCKED/UNVERIFIED for E2E and do not repeat a generic success claim. Sandbox metadata is checked only when emitted; absence is not positive proof of effective sandbox.
 
 **Disposition:** Continue TASK-012 in same task branch; fix both blockers and obtain real E2E proof, or surface a precise credential blocker for an acceptance-scope decision. Do not merge product code to `main` or activate TASK-013.
+
+
+### Round 5 review — 2026-10-10
+
+**Verdict:** CHANGES_REQUESTED  
+**Reviewed remote branch HEAD:** `2741178152075a8aaa310ceb02b64e77a598023d`  
+**Executor Report implementation SHA:** `0876d8c02f8d3c70adbdf71de284d65806e0d55b` (GitHub returned 422 / no commit found for that SHA).  
+**Review scope:** GitHub static source/diff and Executor Report; no independent Windows Codex runtime rerun. GitHub combined status has no checks; attempting to obtain a clone locally failed with GitHub DNS resolution error.
+
+**Progress:** The previous value-vs-destination cases were substantially improved by explicit shell destination extraction; Codex CLI JSONL and AgentContract trace are now handled separately; stderr BLOCK lines include a tool_use_id tag when available. Executor reports **362 passed, 2 skipped, 0 failures** on Python 3.12.9. Both required real online ALLOW/DENY E2E tests are **SKIPPED** for absent dedicated test authentication and therefore **UNVERIFIED**. No real runtime success can be inferred.
+
+**BLOCKER 1 — shell destination extraction still produces a false positive from quoted data.** `extract_write_destinations_from_command()` applies the `>` redirection regex to the entire unlexed string, including quoted strings. For example, `echo 'look > secrets/prod.key'` contains no redirection, but the regex captures `secrets/prod.key'`, and `_normalize_path` strips the trailing quote; the helper classifies it as protected write. Likewise `Set-Content -Path harmless.txt -Value 'note > secrets/prod.key'` should not correlate to writing the protected file. Also `_path_matches()` accepts *any* absolute path ending `/secrets/prod.key`, including a different project, rather than resolving against the temp workspace root. Redirection detection must be quote-aware and destination comparison must be workspace-aware. Add both negative cases to deterministic tests.
+
+**BLOCKER 2 — runtime execution/denial evidence remains insufficient.** ALLOW `completed_codex_items` includes `command_execution` items with any status other than `failed`, including `in_progress`, empty or `blocked`, so it can report a completed action without completion. Require actual terminal successful item evidence. DENY treats the hook's *own* stderr `[AgentContract SpecGuard] BLOCKED [call_id=...]` as proof that Codex accepted/obeyed a denial; it proves the hook evaluated an action, not necessarily that the Codex runtime honored its output. Another stderr fallback matches only `secrets/prod.key`, not a unique call. Demand separate Codex-side blocked/denied result tied to the same call (or independently captured structured hook decision/result and attempted action) plus unchanged file. If Codex does not expose such evidence, explicitly mark INCONCLUSIVE rather than pass. Keep Guard trace `call_id` and Codex event IDs separate until their correspondence is actually established.
+
+**BLOCKER 3 — report provenance:** Executor Report lists implementation commit `0876d8c...`, which could not be retrieved from GitHub (422, no commit found), while the remote branch HEAD is `274117815...`. Correct the report to a verified reachable commit; do not mistake a local or guessed SHA for an accessible pushed commit.
+
+**E2E gate:** M7 requires one trustworthy isolated opt-in Codex CLI ALLOW/Completed and one DENY/Blocked run; ordinary offline pytest is allowed to skip them, but these skips cannot close the task. No personal `~/.codex/auth.json` copy, unrestricted sandbox, global config mutation, or broad machine cleanup. If dedicated test auth is unavailable, stop claiming `fully verified` and treat online acceptance as an explicit blocker requiring a scoped decision, not another test-count increase.
+
+**Disposition:** CHANGES_REQUESTED; TASK-012 remains the sole active task. No product merge to `main` and no TASK-013.
