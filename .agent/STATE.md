@@ -15,9 +15,9 @@
 - Task: **TASK-012 — Codex CLI PreToolUse Output Protocol Compatibility**
 - Task file: `.agent/tasks/TASK-012.md`
 - Work branch: `task/TASK-012-codex-pretooluse-compat`
-- Status: **CHANGES_REQUESTED**
+- Status: **BLOCKED**
 - Owner: Execution agent
-- Main-agent review: Round 7 CHANGES_REQUESTED (authenticated live E2E tests both fail Codex argument parsing: --sandbox conflicts with --approve-for-me)
+- Main-agent review: Round 8 BLOCKED (real Codex launch succeeds; Windows native tool process rejected by policy, missing project hook traces)
 - Previous accepted milestone: TASK-011 / M6
 
 ## Main-agent checkpoint
@@ -131,3 +131,11 @@ On a new session:
 - User obtained dedicated opt-in test authentication and ran the two real Codex CLI E2E pytest tests locally on Windows Python 3.12.9. Both failed before hook execution: exit code 2, `--sandbox workspace-write` incompatible with `--approve-for-me` (2 failed, 7 deselected).
 - Main Agent review changes TASK-012 from BLOCKED to CHANGES_REQUESTED; fix both test subprocess argv arrays by removing only `--approve-for-me`, retaining sandbox, isolation and hook trust control, then rerun with dedicated credentials.
 - The separate temporary CODEX_HOME PATH alias warning is not presently causal. Real ALLOW/DENY runtime acceptance remains UNVERIFIED; no merge or next task.
+
+## M7 round 8 checkpoint (2026-10-10)
+
+- Live user-run Python 3.12.9 pytest `-k real_codex_cli_pretooluse`: 2 failed / 8 deselected. Previous Codex flag conflict fixed; model and runtime started.
+- ALLOW attempted harmless PowerShell file read, rejected by Codex tool router (`CreateProcess ... blocked by policy`) before shell launch despite Codex process returncode 0; no ALLOW runtime verification.
+- DENY `deny_proj/.agentcontract/sessions` absent: installed `.codex/hooks.json` is not evidence that hook was called; no Guard BLOCK trace/runtime rejection evidence. File integrity alone is not acceptance.
+- Round 8 main-agent verdict: **BLOCKED pending bounded Windows sandbox tool execution + authentic project-hook dispatch preflight**. Investigate explicit test-only `windows.sandbox=elevated`, WindowsApps pwsh restrictions, temp CODEX_HOME helper warning and trust, without changing personal global config or sandbox restrictions.
+- No product merge, TASK-012 acceptance, or TASK-013.
