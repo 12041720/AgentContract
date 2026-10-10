@@ -101,3 +101,17 @@ Install/status/uninstall and default tests must only affect the explicitly selec
 Windows Codex elevated sandbox setup can alter real user-profile ACLs despite isolated CODEX_HOME. AgentContract MUST NOT automatically initiate elevated/unelevated native sandbox provisioning, run ACL grant/reset, fall back to danger-full-access or unrestricted mode, or suggest these as normal-user fixes. Report unsafe/broken upstream environment as BLOCKED/UNVERIFIED and preserve other user workflows. We can guarantee AgentContract-owned actions, not upstream Codex internal side effects.
 
 Default tests should be simple, offline, no network, no test auth, no LLM expense, and free from unrelated effects. True Codex online ALLOW/Completed + DENY/Blocked remains an opt-in E2E acceptance check; skipping or failing upstream sandbox/tool init never counts as verified. Trace absence and tool-policy rejections are diagnostic, not proof Guard worked. A VM may be optional upstream research only, not a product requirement.
+
+
+## Mandatory task handoff synchronization (remote main-agent review to local executor)
+
+Main-agent review/task updates may be committed directly to the GitHub remote on both `main` and the active task branch. Those updates **do not automatically appear in a developer's local Windows checkout or an already-running executor's filesystem context**.
+
+Before starting each new execution round, the execution agent MUST:
+1. Preserve existing work: check `git status --short`. Do not discard or overwrite uncommitted work. If working-tree changes prevent a safe fast-forward, report the issue rather than reset, clean or force-pull.
+2. Fetch from `origin` and synchronize the task branch safely (e.g. `git fetch origin`, `git switch task/TASK-012-codex-pretooluse-compat`, `git pull --ff-only origin task/TASK-012-codex-pretooluse-compat` for the current task). Never silently rely on a stale, previously read task file or on the main branch's copy.
+3. After synchronization, **open and read from the local filesystem** these files, in order: `AGENTS.md`, `.agent/STATE.md`, `.agent/TASKS.md`, `.agent/tasks/<current-task>.md`, and relevant `.agent/REVIEW_LOG.md` entries. For TASK-012, verify the local task file contains the latest required main-agent review marker (`Round 11 main-agent review` as of 2026-10-10; later review supersedes it). Check that `.agent/STATE.md` identifies the same active task, branch, status and round.
+4. In the execution report, explicitly state the local checked-out branch, the main-agent review round read, and the Git commit SHA from which the executor read its task instructions. These are a handoff audit trail; do not claim task visibility based only on a chat prompt.
+5. Implement only after the above confirmation. If remote fetch is unavailable, the review marker is absent, or state/task metadata disagree, **stop and report TASK_HANDOFF_STALE / TASK_HANDOFF_UNVERIFIED** rather than implement from guessed or stale instructions.
+
+This is a **development workflow**, not an AgentContract product feature. It must not cause any global Codex configuration/credential/ACL/process changes, and does not authorize force-resetting developer work.
