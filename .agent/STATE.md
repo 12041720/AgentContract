@@ -6,18 +6,18 @@
 
 - Name: AgentContract
 - Mission: Runtime constraint tracking and evidence-grounded completion verification for long-horizon tool-using agents.
-- Stage: M7 Codex PreToolUse protocol compatibility review
+- Stage: M8 Real OpenCode + AgentContract project-only A/B outcome evaluation
 - Architecture version: 0.1
 - Default branch: `main`
 
 ## Current active task
 
-- Task: **TASK-012 — Codex CLI PreToolUse Output Protocol Compatibility**
-- Task file: `.agent/tasks/TASK-012.md`
-- Work branch: `task/TASK-012-codex-pretooluse-compat`
-- Status: **CHANGES_REQUESTED**
+- Task: **TASK-013 — Real OpenCode + AgentContract A/B Proof**
+- Task file: `.agent/tasks/TASK-013.md`
+- Work branch: `task/TASK-013-opencode-ab-evaluation`
+- Status: **READY_FOR_EXECUTOR**
 - Owner: Execution agent
-- Main-agent review: Round 11 CHANGES_REQUESTED (doctor ALLOW stdout false-positive; Codex-home integrity snapshot overclaims)
+- Main-agent review: M8 new scope authorized 2026-10-10; Codex TASK-012 remains blocked independently
 - Previous accepted milestone: TASK-011 / M6
 
 ## Main-agent checkpoint
@@ -161,3 +161,10 @@ On a new session:
 - Nonfatal PATH warning no longer treated as blocker, doctor now calls actual configured SessionStart/PreToolUse via safe offline subprocess, and cleanup errors are visible.
 - Round 11 CHANGES_REQUESTED: doctor currently accepts garbage or structured nonempty ALLOW stdout, contradicting required empty-wire-format; global Codex home snapshot observes only additions + three files and may falsely claim entire home unchanged after deletion or other changes.
 - Fix two narrow evidence issues, maintain normal Windows existing Codex account/project isolation; no product merge/TASK-013.
+
+## M8 new user-defined priority — 2026-10-10
+
+- The user explicitly requires evidence that **a real agent** performs better with AgentContract than without, and permits OpenCode rather than Codex. Fastest live empirical proof is now the top priority, not diagnostic refinements.
+- TASK-013 branch intentionally starts from stable main (TASK-001–011 accepted), excludes unmerged blocked Codex TASK-012, and must not modify global OpenCode/Codex state or normal external sessions/workspaces.
+- Required deliverable: working project-only OpenCode before/after hooks plus reusable AgentContract Python bridge, matched stock-OpenCode vs guarded-OpenCode runs, externally graded objectives and metrics. Negative/inconclusive results must be reported honestly.
+- Do not claim proof or release readiness before real OpenCode tool calls succeed and independent A/B metrics exist. No merge until empirical acceptance.

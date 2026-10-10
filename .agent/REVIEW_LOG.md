@@ -926,3 +926,9 @@ Round 10 improvements landed: fatal vs nonfatal warnings, direct subprocess exec
 2. Doctor compares only *new* Codex home entries and 3 hashes; deletions, changes to other existing entries and unreadable hash errors can slip through while claiming "global ~/.codex observed untouched." Compare both sides of entry set and narrow read-only snapshot claims, with failures/inconclusive coverage, avoiding full recursive personal-data reads.
 
 Do not broaden task or change Windows sandbox/global Codex configs, ACLs, process state; leave live E2E separately UNVERIFIED and no product merge/TASK-013. Full detail in task Round 11.
+
+---
+
+## 2026-10-10 — TASK-013 created: genuine OpenCode A/B proof
+
+User explicitly prioritizes demonstrating that the same real agent improves with AgentContract versus without it, with strict isolation outside test projects. Main agent researched official OpenCode project-level plugins, `tool.execute.before`/after and CLI JSON mode and started independent M8 branch from accepted main. The task requires first real hook activation and actual interrupted tool invocation, then a thin existing-runtime bridge and controlled A/B paired experiment with objective external filesystem/test/claim grading. No use of mock Agent, token/cost invention, global plugin configuration, Codex sandbox modifications or cherrypicked tasks. Native Codex TASK-012 remains blocked separately. No results proven yet.

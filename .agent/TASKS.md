@@ -95,3 +95,11 @@ M7 round 9 (2026-10-10): CHANGES_REQUESTED — improve normal Windows/Codex ease
 M7 round 10 review (2026-10-10): CHANGES_REQUESTED. Offline doctor and safe upstream block classification introduced, executor reports 373 passed/2 skipped, but nonfatal PATH alias warning triggers false E2E skip, doctor direct run_hook can falsely pass invalid installed handler and overstates global integrity. Fix evidence/diagnostics; real Codex CLI remains UNVERIFIED. See TASK-012. No merge/TASK-013.
 
 M7 round 11 review (2026-10-10): CHANGES_REQUESTED — executor reports 377 passed / 2 skipped; doctor improves command verification and warning classification. Remaining blockers: doctor incorrectly accepts nonempty ALLOW stdout, and global home snapshot/unchanged claim misses deletions/other files. Need precise wire-format regression + honest bounded global integrity checking. Live real Codex E2E UNVERIFIED, no merge/TASK-013. See TASK-012 review.
+
+## M8 — Real OpenCode A/B Outcome Proof (independent of blocked M7)
+
+| Task | Title | Status | Depends on |
+|---|---|---|---|
+| TASK-013 | Real OpenCode + AgentContract A/B Proof and Project-Only Integration | READY_FOR_EXECUTOR | TASK-009 (Core v0.1 SDK); TASK-012 NOT required |
+
+Goal: working project-only OpenCode plugin and actual A/B agent outcome proof on the same provider/model/tasks, with external grading and zero modifications to other agent workspaces or global configuration. Prioritize **real plugin interception and paired live runs** over further synthetic diagnostics. M7 native Codex E2E remains separately BLOCKED/UNVERIFIED; it is not a prerequisite for M8. See `.agent/tasks/TASK-013.md`.
