@@ -80,10 +80,12 @@ M6 status: **COMPLETE** — TASK-011 accepted on 2026-10-09, selectively integra
 
 | Task | Title | Status | Depends on |
 |---|---|---|---|
-| TASK-012 | Codex CLI PreToolUse Output Protocol Compatibility | CHANGES_REQUESTED | TASK-011 |
+| TASK-012 | Codex CLI PreToolUse Output Protocol Compatibility | BLOCKED | TASK-011 |
 
 Goal: correct ALLOW wire format while demonstrating real runtime ALLOW/Completed and DENY/Blocked under truly isolated, sandboxed Codex tests.
 
 M7 status: **BLOCKED / LIVE E2E UNVERIFIED** — round 6 review (2026-10-10). Static remediation reviewed; executor reports 362 passed / 2 skipped. Both real Codex CLI ALLOW/DENY tests intentionally SKIPPED because no independent test-only auth was supplied. Await bounded isolated live E2E evidence, not another offline-only implementation iteration. Details in `.agent/tasks/TASK-012.md`. No product merge or TASK-013.
 
 M7 round 7 update (2026-10-10): dedicated test auth now available. Real E2E invocation attempted, but both tests fail at Codex CLI argument parsing (workspace-write sandbox conflicts with `--approve-for-me`), before AgentContract hook execution. Status **CHANGES_REQUESTED** for minimal argv correction plus live rerun; M7 still UNVERIFIED. See TASK-012 review; no product merge or TASK-013.
+
+M7 round 8 update (2026-10-10): **BLOCKED / LIVE E2E FAILED PRECONDITIONS**. Authenticated real CLI run selected ALLOW/DENY tests; 2 failed. Harmless read denied by Windows Codex tool policy before child process; DENY project session/Guard trace absent. Need bounded Windows sandbox native-tool preflight and verified project hook activation, not a security bypass. Details in task review. No merge/TASK-013.
