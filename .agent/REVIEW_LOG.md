@@ -873,3 +873,9 @@ Blocking: redirection regex counts `>` inside a quoted string as a write to `sec
 Static improvements address quoted redirection, workspace-aware path comparison, ALLOW terminal-success filtering, and independent Codex-side runtime signal checking for DENY. Executor reports Python 3.12.9 362 passed / 2 skipped (zero failures). **Both required real Codex CLI E2E scenarios skipped** because dedicated test-only credentials were unavailable; no independent runtime run or GitHub CI status. Cannot conclude Codex honored PreToolUse output. A generic failed command item is not necessarily hook rejection; authentic runtime evidence must distinguish these.
 
 Mark TASK-012 BLOCKED pending dedicated test auth and isolated ALLOW/Completed + DENY/Blocked evidence. Preserve protected bytes; no personal auth copying, sandbox bypass, global config mutation, product merge, or next task. Full review in task document.
+
+---
+
+## 2026-10-10 — TASK-012 round 7: authenticated E2E invocation failed before hooks
+
+**Verdict:** CHANGES_REQUESTED. First user-supplied independent test-auth run selected both live E2E scenarios; **2 failed, 7 deselected**, Python 3.12.9, both Codex exit code 2 because `--sandbox workspace-write` conflicts with `--approve-for-me`. This is an invalid CLI argument combination, **not evidence that ALLOW or DENY protocol failed**. Separate temp CODEX_HOME PATH-alias warning was not the cause. Remove `--approve-for-me` from both test argv arrays while retaining workspace-write and isolation; add deterministic CLI option regression; rerun both real online tests with dedicated auth and capture sanitized evidence. Remains UNVERIFIED; no product merge or TASK-013. See `.agent/tasks/TASK-012.md`.
