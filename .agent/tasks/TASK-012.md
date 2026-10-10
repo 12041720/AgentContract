@@ -1,10 +1,10 @@
 # TASK-012 — Codex CLI PreToolUse Output Protocol Compatibility
 
-**Status:** CHANGES_REQUESTED  
+**Status:** BLOCKED  
 **Milestone:** M7 — Codex Runtime Protocol Compatibility  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-012-codex-pretooluse-compat`  
-**Main-agent review:** CHANGES_REQUESTED — round 7
+**Main-agent review:** BLOCKED — round 8
 
 ## Objective
 
@@ -249,3 +249,25 @@ The `WARNING: ... could not create PATH aliases ... Refusing to create helper bi
 **Regression and proof:** Add a deterministic assertion preventing incompatible approval flags on either E2E invocation; run local Python 3.12.9 offline suite, then re-run `python -m pytest tests/integrations/test_codex_cli.py -k "real_codex_cli_pretooluse" -vv -rs` with the *already independently supplied* dedicated test auth. Preserve sanitized stdout JSONL, stderr and trace evidence for actual ALLOW/Completed and DENY/Blocked. If any new runtime failure appears, document it precisely and do not declare success based on static tests or hook stderr alone. Do not paste auth or API tokens into report.
 
 **Disposition:** Dedicated auth prerequisite is now available in the user's local test environment, but test harness commands fail before agent runtime. Change task status from BLOCKED to CHANGES_REQUESTED pending CLI flag fix and live retest. No product merge, no TASK-013, no global Codex changes.
+
+
+### Round 8 review — 2026-10-10 — authenticated E2E reaches Codex but Windows execution policy blocks tools
+
+**Verdict:** BLOCKED — Windows sandbox/tool-process preflight and project-hook activation unverified; NOT ACCEPTED.  
+**Reviewed branch/report HEAD:** `98ae1a28a7907499eff263cc6526f6546187e2ca`  
+**Evidence:** User-provided native Windows PowerShell pytest output for Python 3.12.9, 2 failed / 8 deselected in 32.03s. This is actual opt-in authenticated Codex CLI invocation evidence, not a passing live E2E.
+
+**ALLOW failure:** Prior `--approve-for-me` conflict is resolved. Codex produces JSONL thread/turn events and connects to the model, but `Get-Content -LiteralPath probe.txt` fails **before the child shell starts**, with `codex_core::tools::router: exec_command failed: CreateProcess ... rejected: blocked by policy`. Codex exits 0 and emits an agent message saying the environment blocked the command; `probe_content` is absent. This is NOT evidence of SpecGuard rejecting a compliant action. It is a tool execution policy/sandbox issue. A separate warning reports inability to create PATH aliases because test `CODEX_HOME` is beneath Windows TEMP; possible environment contributor, not established root cause.
+
+**DENY failure:** Codex subprocess completes sufficiently to reach the test's later assertion, but `deny_proj/.agentcontract/sessions` **does not exist**. The test did install project-local `.codex/hooks.json`; nevertheless installation alone does not demonstrate that Codex loaded/called the hook. Because no Guard trace exists, neither a protected write attempt nor Guard BLOCK nor runtime hook DENY can be established. The protected file remaining unchanged is insufficient: no tool execution/hook activation has been proven.
+
+**Likely preflight/configuration issue, not yet proven:** Current tests create a fresh `CODEX_HOME` inside `tmp_path` and copy only opt-in test `auth.json`; they do not configure the Windows native sandbox backend. OpenAI Codex configuration documents `windows.sandbox="elevated"` (Windows sandbox implementation), separately from the bounded `--sandbox workspace-write` filesystem permission mode. Public native Windows Codex reports describe identical `CreateProcess ... blocked by policy` on an isolated home without this selector, though Store/MSIX PowerShell launch restrictions are another possibility. These are hypotheses pending a controlled A/B run, not an established diagnosis of this exact machine.
+
+**Required next diagnostics (no security bypass):**
+1. In the **existing test-only CODEX_HOME**, establish executable/CLI version and effective native Windows sandbox backend. Perform a non-model sandbox smoke probe for a harmless `cmd.exe /c echo` and then an isolated read-only PowerShell probe; compare with/without the explicit `-c 'windows.sandbox="elevated"'` override, retaining bounded workspace-write and all Windows security controls. If the CLI syntax differs, inspect its `sandbox --help`; do not fall back to `danger-full-access`.
+2. Examine project-hook activation only inside the synthetic project: verify Codex recognizes project `.codex/hooks.json`, project trust rules, that the `python -m agentcontract.integrations.codex.hooks` command is executable in the sandbox and the injected `AGENTCONTRACT_SESSION_DIR` reaches the handler. Separate direct hook smoke tests from Codex-dispatched hook tests; do not manufacture trace evidence.
+3. Investigate the warning about temporary `CODEX_HOME` helper aliases. If the actual sandbox requires a CODEX_HOME outside Windows TEMP, create a per-test disposable directory under a dedicated `%LOCALAPPDATA%/AgentContract/` subtree with rigorous `try/finally` cleanup; never alter the personal home.
+4. Make preflight failure clearly distinguish Windows policy rejection/hook not loaded from a product ALLOW/DENY protocol failure. Do not treat `res.returncode==0`, an agent final message, protected checksum stability, or absence of a session as successful Guard evidence.
+5. Only after harmless shell and genuine session hook preflight pass, rerun isolated ALLOW/Completed and DENY/Blocked E2E with the dedicated test credentials; capture sanitized Codex JSONL and linked Guard trace. No token/auth contents in reports.
+
+**Scope boundary:** Do not relax `--sandbox workspace-write`, switch to `danger-full-access`/`--dangerously-bypass-approvals-and-sandbox`, copy personal `~/.codex/auth.json`, modify global Codex trust/config, or merge product to `main`. TASK-012 remains sole active task. Review decision is BLOCKED pending safe Windows environment + hook-dispatch preflight evidence; no TASK-013.
