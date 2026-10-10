@@ -15,9 +15,9 @@
 - Task: **TASK-012 — Codex CLI PreToolUse Output Protocol Compatibility**
 - Task file: `.agent/tasks/TASK-012.md`
 - Work branch: `task/TASK-012-codex-pretooluse-compat`
-- Status: **BLOCKED**
+- Status: **CHANGES_REQUESTED**
 - Owner: Execution agent
-- Main-agent review: Round 8 BLOCKED (real Codex launch succeeds; Windows native tool process rejected by policy, missing project hook traces)
+- Main-agent review: Round 9 CHANGES_REQUESTED (user requires easy project-only normal Codex; no global ACL/config/process impacts)
 - Previous accepted milestone: TASK-011 / M6
 
 ## Main-agent checkpoint
@@ -139,3 +139,11 @@ On a new session:
 - DENY `deny_proj/.agentcontract/sessions` absent: installed `.codex/hooks.json` is not evidence that hook was called; no Guard BLOCK trace/runtime rejection evidence. File integrity alone is not acceptance.
 - Round 8 main-agent verdict: **BLOCKED pending bounded Windows sandbox tool execution + authentic project-hook dispatch preflight**. Investigate explicit test-only `windows.sandbox=elevated`, WindowsApps pwsh restrictions, temp CODEX_HOME helper warning and trust, without changing personal global config or sandbox restrictions.
 - No product merge, TASK-012 acceptance, or TASK-013.
+
+## M7 round 9 user-directed product guarantee (2026-10-10)
+
+- Existing Windows account, Python and Codex are mandatory baseline; no VM/dedicated account/admin shell or interruption to other active sessions as prerequisites.
+- AgentContract-owned integration, default tests and uninstall may mutate only named project; no global Codex auth/config/trust/plugins, profile ACLs, global shared runtimes or other processes.
+- Windows elevated sandbox ACL changes despite isolated CODEX_HOME: no automatic provisioning, no unsafe mode fallback. Explicitly report upstream environment blocked.
+- Offline no-login safe doctor/smoke is required; actual Codex online ALLOW/DENY is separate optional QA and currently UNVERIFIED.
+- Round 9 CHANGES_REQUESTED for minimal safe UX and regression hardening. No main product merge or TASK-013.
