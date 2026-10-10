@@ -4,7 +4,7 @@
 **Milestone:** M7 — Codex Runtime Protocol Compatibility  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-012-codex-pretooluse-compat`  
-**Main-agent review:** CHANGES_REQUESTED — round 10
+**Main-agent review:** CHANGES_REQUESTED — round 11
 
 ## Objective
 
@@ -326,3 +326,24 @@ Safe next step: user saves active Codex work, exits Desktop/VSCode integration/o
 **Online acceptance:** Missing real Codex ALLOW/Completed and DENY/Blocked evidence remains UNVERIFIED. Keep online tests opt-in, normal offline smoke no special login or VM/admin, and never initiate `windows.sandbox=elevated` / ACL changes, alter global configuration, or terminate unrelated Codex sessions. Refine skip/error classification; an actual hook missing its trace with no independently proven upstream fault must FAIL/INCONCLUSIVE rather than SKIP.
 
 **Disposition:** Fix only the above diagnosability/accuracy issues on TASK-012, run Windows Python 3.12.9 full suite, record exact results, report live E2E separately; push branch, no merge to main or TASK-013. Direct usability smoke can be used provisionally but is **not** the acceptance gate.
+
+
+### Round 11 main-agent review — 2026-10-10
+
+**Verdict:** CHANGES_REQUESTED — two evidence/verification blockers; M7 not accepted.
+**Implementation reviewed:** `75abc98a8838869cc4038c168bded3cce3342134` (executor reported; GitHub source reviewed on branch).
+**Reviewed branch report HEAD:** `cf9507189715358f22329cf8fffad92f404b8235`.
+**Evidence scope:** GitHub static code and tests + Executor Report, no independent Windows test execution or actual Codex CLI live ALLOW/DENY; GitHub combined statuses not reported. Executor reports Python 3.12.9 **377 passed / 2 skipped**, not independently rerun.
+
+**Round 10 progress confirmed:**
+- `FATAL_UPSTREAM_ENV_ERROR_PATTERNS` and `NONFATAL_UPSTREAM_WARNING_PATTERNS` are separated, and temp PATH alias warnings are no longer fatal/auto-skip; an offline warning+success regression was added.
+- Offline doctor now requires registered `SessionStart` and `PreToolUse` handlers, validates Python -m module/event form, and executes their real handler commands through child subprocesses with project-local `AGENTCONTRACT_SESSION_DIR`. No Codex process, LLM call, elevated Windows sandbox, or global config changes are required for this default smoke.
+- Disposal failure reporting and limited user Codex home snapshots were added, with regressions for decoy handlers, mismatched event names, cleanup failures and detectable global config mutations. These are useful; they do NOT establish that Codex itself loaded/obeyed the hooks.
+
+**BLOCKER 1 — ALLOW wire-format doctor false positive:** In `src/agentcontract/integrations/codex/cli.py` `doctor_hooks`, `allow_json={}` initially; malformed nonempty stdout is converted to `{}` on JSON exception, and the predicate `returncode == 0 and (not allow_json or permissionDecision != "deny")` accepts both garbage and e.g. structured `{"hookSpecificOutput":{"permissionDecision":"allow"}}`. The central TASK-012 regression is **exactly that ALLOW/no input rewrite must emit empty stdout**, not merely "not deny." Require `res_allow.returncode == 0` and `res_allow.stdout.strip() == ""` exactly. Fail any nonempty stdout, parse errors or unexpected payload. Add deterministic regressions that monkeypatch/fixture the registered subprocess ALLOW output to `junk` and structured ALLOW JSON and assert doctor fails, while empty stdout passes. Do not weaken production policy.
+
+**BLOCKER 2 — overbroad global home integrity assertion:** Doctor snapshots only top-level directory names plus 3 specific file hashes and tests `post_entries - entries_before`; deletion of an unrelated top-level file, or in-place change to another preexisting entry (e.g. global settings file or other plugin config), escapes detection but the doctor still prints `[PASS] User global ~/.codex observed untouched (tracked files and entries identical before/after)` and its summary says "isolated." Also read failures when hashing tracked files are silently ignored. Either implement a precise, bounded read-only snapshot of all relevant entries including deleted entries and bytes of in-scope tracked files with explicit "unverified" on unreadable paths, OR narrow wording to accurately state the check only detects additions and changes to 3 selected known files; never claim entire Codex home untouched. Preferred minimal change: compare `entries_before != entries_after` (both added and deleted), label the verified file set as tracked-only, fail/mark inconclusive on read failure, add deleted-entry and untracked-file mutation negatives. Avoid recursively reading personal secrets or hashing huge session trees; emphasize scope limits.
+
+**Gate:** No real Codex ALLOW/Completed + DENY/Blocked execution evidence yet. Default doctor is safe enough for *provisional* offline trial in a throwaway project once user pulls code, but it is not M7 acceptance. Run full Windows Python 3.12.9 suite and report separately; offline passes do not close live gate. Maintain normal Windows/Codex account, no VM, no global Codex ACL/credentials/process mutations, no sandbox bypass.
+
+**Disposition:** Continue TASK-012 in same branch for the two narrowly scoped test-integrity repairs; no merge to main, no TASK-013. After correcting, request new review; only then provide final standard user-facing acceptance commands.
