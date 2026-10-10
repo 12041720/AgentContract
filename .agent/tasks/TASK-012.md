@@ -104,8 +104,10 @@ Conversely, when SpecGuard denies a tool call, the structured denial JSON (`perm
 - Default offline workflow and unit/integration test suite are fully verified and passing (383 passed, 2 skipped).
 - Real online Codex CLI tests remain an opt-in acceptance check (`SKIPPED` when dedicated test credentials absent). If upstream Codex CLI runtime encounters native Windows sandbox policy blocks (`rejected: blocked by policy` / `os error 32`), it is safely flagged as `UPSTREAM_ENV_BLOCKED: ... LIVE E2E UNVERIFIED`. AgentContract does not attempt unsafe elevated sandbox setup, unrestricted mode, or global ACL mutations.
 
-**Commit SHA:**
-- Implementation commit: pending commit for Round 12
+**Commit SHA & Handoff Verification:**
+- Confirmed review round: Round 11 main-agent review (2026-10-10)
+- Remote synchronization commit: `8c27d769f6502c549413ac22d1efe66a486f94f2`
+- Implementation commit: `9b3538f4a9861e38097dd2880eeed0608220eab9`
 
 **Questions/blockers for main-agent review:**
 - None. Both Round 11 blockers are resolved, negative regressions added, and full test suite passes with 383 passed / 2 skipped on Python 3.12.9. Ready for main-agent review.
