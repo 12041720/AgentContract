@@ -913,3 +913,16 @@ Important M6 safety observation: sandbox setup attempted granting read ACEs to n
 **Verdict CHANGES_REQUESTED**, implementation `1df5f263`, report HEAD `8bc5b370`. Offline doctor/project-scope smoke and nonintrusive test intent improved; executor reports Windows Python 3.12.9 373 passed / 2 skipped; no independent rerun, CI statuses or live E2E verification.
 
 Blockers: (1) nonfatal `could not create PATH aliases / Refusing to create helper binaries under temporary dir` warning is classified as UPSTREAM_ENV_BLOCKED, making both real E2E tests skip before checking results; (2) doctor only directly calls `run_hook` in process, so even marker-bearing non-executable hook commands can be misreported as installed/operational; (3) doctor asserts proven global Codex untouched/no ACL changes/no process kills without instrumenting those facts, and silent cleanup errors may be reported as PASS. Require severity-aware detection, actual safe subprocess command validation or honest in-process-only labelling, and bounded truthful integrity/cleanup reporting. Keep zero global side effects and no sandbox escalation. M7 still UNVERIFIED. Details in TASK-012 Round 10.
+
+
+---
+
+## 2026-10-10 — TASK-012 round 11 review
+
+**Verdict:** CHANGES_REQUESTED. Reviewed implementation/report `75abc98a` / `cf950718`; executor reports Windows Python 3.12.9 **377 passed, 2 skipped**, online Codex real E2E still UNVERIFIED; no independent rerun/CI.
+
+Round 10 improvements landed: fatal vs nonfatal warnings, direct subprocess execution of actual registered hook, cleanup diagnostics and partial global state snapshots. Two further accuracy blockers:
+1. Offline doctor incorrectly accepts garbage or structured nonempty ALLOW stdout; it must require empty stdout exactly, since this is the original TASK-012 bug. Add negative tests.
+2. Doctor compares only *new* Codex home entries and 3 hashes; deletions, changes to other existing entries and unreadable hash errors can slip through while claiming "global ~/.codex observed untouched." Compare both sides of entry set and narrow read-only snapshot claims, with failures/inconclusive coverage, avoiding full recursive personal-data reads.
+
+Do not broaden task or change Windows sandbox/global Codex configs, ACLs, process state; leave live E2E separately UNVERIFIED and no product merge/TASK-013. Full detail in task Round 11.
