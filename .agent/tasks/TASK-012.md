@@ -1,10 +1,10 @@
 # TASK-012 — Codex CLI PreToolUse Output Protocol Compatibility
 
-**Status:** CHANGES_REQUESTED  
+**Status:** BLOCKED  
 **Milestone:** M7 — Codex Runtime Protocol Compatibility  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-012-codex-pretooluse-compat`  
-**Main-agent review:** CHANGES_REQUESTED — round 5
+**Main-agent review:** BLOCKED — round 6
 
 ## Objective
 
@@ -203,3 +203,23 @@ Keep patch tightly scoped to test safety, evidence correlation, and report accur
 **E2E gate:** M7 requires one trustworthy isolated opt-in Codex CLI ALLOW/Completed and one DENY/Blocked run; ordinary offline pytest is allowed to skip them, but these skips cannot close the task. No personal `~/.codex/auth.json` copy, unrestricted sandbox, global config mutation, or broad machine cleanup. If dedicated test auth is unavailable, stop claiming `fully verified` and treat online acceptance as an explicit blocker requiring a scoped decision, not another test-count increase.
 
 **Disposition:** CHANGES_REQUESTED; TASK-012 remains the sole active task. No product merge to `main` and no TASK-013.
+
+
+### Round 6 review — 2026-10-10
+
+**Verdict:** BLOCKED — live E2E acceptance prerequisite unavailable; not ACCEPTED  
+**Verified implementation commit:** `c7f8bdceb70d6a1eb0a0561a90a10fb080bd89c6` (GitHub fetch succeeded)  
+**Reviewed report/branch HEAD:** `4a26d4351063640c44fa435d6f9afa36662b68cf`  
+**Review scope:** GitHub static review of source, diff and report; not an independent Windows/Codex CLI run. GitHub reported no combined-status checks.
+
+**Static review progress:** The test helper now scans unquoted redirections, uses workspace-sensitive absolute path matching, and includes negative regression scenarios for quoted redirection and foreign workspace paths. ALLOW test requires terminal completed/success status (and checks exit code when provided). DENY test no longer treats AgentContract's own BLOCKED stderr as sufficient proof; it analyzes Codex JSONL items separately from Guard trace, and asks for a distinct runtime failed/blocked event or diagnostic. Production wire-format fix remains unchanged: empty stdout on ALLOW/no input rewrite, structured JSON on DENY.
+
+**Executor-reported verification:** Local Python 3.12.9 `python -m pytest` **362 passed, 2 skipped, 0 failures**. Both online real Codex CLI E2E tests were deliberately **SKIPPED** because no independently provisioned opt-in test authentication was available in `AGENTCONTRACT_TEST_CODEX_AUTH_JSON` or `CODEX_TEST_AUTH_JSON`. They are **UNVERIFIED**; no live hook acceptance claim is authorized. The main agent has not independently rerun these tests.
+
+**Blocking prerequisite:** Provision a dedicated *test-only* Codex credential within an isolated test environment, without copying user `~/.codex/auth.json` or altering user-global configuration. Then run and preserve authentic, sanitized evidence for both: (a) ALLOW with a completed probe tool action and matching Guard ALLOW, and (b) DENY for an actual protected-file write attempt with matching Guard BLOCK, demonstrably Codex-side hook rejection, no successful mutating tool execution, and unchanged file bytes. `--sandbox workspace-write` and isolated `CODEX_HOME` are mandatory.
+
+**Evidence caution for eventual validation:** A generic Codex JSONL `failed` status could represent a normal command failure rather than a hook rejection. Require proof tying the runtime denial *specifically to PreToolUse* for the blocked call, not merely any failed command or model summary. A missing runtime signal must be treated as inconclusive, not passed. When the first real online run exposes the actual Codex JSONL protocol, adjust the tests only if genuine runtime evidence establishes it.
+
+**Scope decision:** Do not weaken or waive the real online acceptance criterion; do not merge product/test changes to main or activate TASK-013. This task is **BLOCKED**, pending dedicated opt-in test credentials / authentic live evidence. No further offline-only rewrite cycle is requested in the meantime.
+
+**Unblock action for execution agent:** Await availability of dedicated test authentication; then execute only the two existing isolated E2E scenarios, report sanitized Codex JSONL + trace correlation, record exact pass/fail/skip and reachable commit SHA, and resubmit for main-agent review. Do not reveal authentication contents in the report or chat.
