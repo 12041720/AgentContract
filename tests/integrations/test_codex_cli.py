@@ -108,155 +108,267 @@ def _normalize_path(p: str) -> str:
     return s
 
 
-def _path_matches(extracted: str, target: str) -> bool:
-    e = _normalize_path(extracted).lower()
-    t = _normalize_path(target).lower()
-    if not e or not t:
+def _path_matches(
+    extracted: str,
+    target: str,
+    workspace_root: Path | str | None = None,
+) -> bool:
+    """Check if extracted path matches target path in the workspace.
+
+    Rejects foreign/cross-workspace absolute paths and extension/suffix mismatches.
+    """
+    if not extracted or not target:
         return False
-    if e == t:
-        return True
-    if e.endswith("/" + t):
-        return True
-    return False
+    norm_extracted = _normalize_path(extracted)
+    norm_target = _normalize_path(target)
+
+    extracted_path = Path(norm_extracted)
+    is_abs = (
+        extracted_path.is_absolute()
+        or norm_extracted.startswith("/")
+        or norm_extracted.startswith("\\")
+        or (len(norm_extracted) > 1 and norm_extracted[1] == ":")
+    )
+    # 1. Relative path check: exact normalized path comparison
+    if not is_abs:
+        return norm_extracted.lower() == norm_target.lower()
+
+    # 2. Absolute path check: must match target path resolved against workspace root
+    ws = Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
+    target_abs = (ws / norm_target).resolve()
+    try:
+        extracted_abs = extracted_path.resolve()
+        return extracted_abs == target_abs
+    except Exception:
+        return False
+
+
+def extract_unquoted_redirections(command: str) -> list[str]:
+    """Extract redirection destinations (> and >>) that occur outside quotes."""
+    destinations: list[str] = []
+    i = 0
+    n = len(command)
+    in_quote = None
+
+    while i < n:
+        c = command[i]
+        if in_quote:
+            if c == in_quote:
+                in_quote = None
+            i += 1
+            continue
+
+        if c in ("'", '"'):
+            in_quote = c
+            i += 1
+            continue
+
+        if c == ">":
+            op_len = 2 if (i + 1 < n and command[i + 1] == ">") else 1
+            i += op_len
+            while i < n and command[i].isspace():
+                i += 1
+            if i >= n:
+                break
+            if command[i] == "&":
+                i += 1
+                continue
+            if command[i] in ("'", '"'):
+                q = command[i]
+                i += 1
+                token_chars = []
+                while i < n and command[i] != q:
+                    token_chars.append(command[i])
+                    i += 1
+                if i < n and command[i] == q:
+                    i += 1
+                dest = "".join(token_chars)
+            else:
+                token_chars = []
+                while i < n and not (command[i].isspace() or command[i] in (";", "&", "|", "<", ">")):
+                    token_chars.append(command[i])
+                    i += 1
+                dest = "".join(token_chars)
+            dest = dest.strip()
+            if dest:
+                destinations.append(dest)
+            continue
+        i += 1
+    return destinations
+
+
+def split_unquoted_pipeline(command: str) -> list[str]:
+    """Split command on pipeline and statement separators (; \n | && ||) outside quotes."""
+    stages: list[str] = []
+    current: list[str] = []
+    in_quote = None
+    i = 0
+    n = len(command)
+    while i < n:
+        c = command[i]
+        if in_quote:
+            current.append(c)
+            if c == in_quote:
+                in_quote = None
+            i += 1
+            continue
+        if c in ("'", '"'):
+            in_quote = c
+            current.append(c)
+            i += 1
+            continue
+        if c in (";", "\n", "|"):
+            stage = "".join(current).strip()
+            if stage:
+                stages.append(stage)
+            current = []
+            i += 1
+            continue
+        if c in ("&", "|") and i + 1 < n and command[i + 1] == c:
+            stage = "".join(current).strip()
+            if stage:
+                stages.append(stage)
+            current = []
+            i += 2
+            continue
+        current.append(c)
+        i += 1
+    stage = "".join(current).strip()
+    if stage:
+        stages.append(stage)
+    return stages
 
 
 def extract_write_destinations_from_command(command: str) -> set[str]:
-    """Parse write destinations from shell / PowerShell command line."""
+    """Parse write destinations from shell / PowerShell command line in a quote-aware manner."""
     destinations: set[str] = set()
     if not command or not command.strip():
         return destinations
 
-    # 1. Redirections: > or >> (e.g., > file, >> file, > "file", > 'file')
-    # Exclude file descriptor redirections like 2>&1
-    redir_pattern = re.compile(r'(?:>>|>)\s*(?:"([^"]+)"|\'([^\']+)\'|([^\s|;&<>]+))')
-    for m in redir_pattern.finditer(command):
-        dest = m.group(1) or m.group(2) or m.group(3)
-        if dest and not dest.startswith("&"):
-            destinations.add(dest)
+    # 1. Quote-aware redirections outside quotes
+    for r in extract_unquoted_redirections(command):
+        destinations.add(r)
 
-    # 2. Pipeline / statement parsing
-    # Split command into statements by ';' or '&&' or '||' or '\n'
-    statements = re.split(r'[;&\n]+', command)
-    for stmt in statements:
-        stages = stmt.split("|")
-        for stage in stages:
-            stage = stage.strip()
-            if not stage:
-                continue
-            try:
-                tokens = shlex.split(stage, posix=False)
-            except Exception:
-                tokens = stage.split()
+    # 2. Quote-aware pipeline stages
+    stages = split_unquoted_pipeline(command)
+    for stage in stages:
+        stage = stage.strip()
+        if not stage:
+            continue
+        try:
+            tokens = shlex.split(stage, posix=False)
+        except Exception:
+            tokens = stage.split()
 
-            if not tokens:
-                continue
+        if not tokens:
+            continue
 
-            prog = tokens[0].lower().replace(".exe", "")
-            prog = prog.split("/")[-1].split("\\")[-1]
+        prog = tokens[0].lower().replace(".exe", "")
+        prog = prog.split("/")[-1].split("\\")[-1]
 
-            # A. PowerShell content cmdlets: Set-Content, Out-File, Add-Content
-            if prog in ("set-content", "out-file", "add-content"):
-                i = 1
-                named_path = None
-                positional: list[str] = []
-                while i < len(tokens):
-                    tok = tokens[i]
-                    tok_lower = tok.lower()
-                    if tok_lower in ("-path", "-literalpath", "-filepath"):
-                        if i + 1 < len(tokens):
-                            named_path = tokens[i + 1]
-                            i += 2
-                            continue
-                    elif tok_lower in (
-                        "-value", "-encoding", "-width", "-filter",
-                        "-include", "-exclude", "-credential",
-                    ):
+        # A. PowerShell content cmdlets: Set-Content, Out-File, Add-Content
+        if prog in ("set-content", "out-file", "add-content"):
+            i = 1
+            named_path = None
+            positional: list[str] = []
+            while i < len(tokens):
+                tok = tokens[i]
+                tok_lower = tok.lower()
+                if tok_lower in ("-path", "-literalpath", "-filepath"):
+                    if i + 1 < len(tokens):
+                        named_path = tokens[i + 1]
                         i += 2
                         continue
-                    elif tok.startswith("-"):
-                        i += 1
-                        continue
-                    else:
-                        positional.append(tok)
-                        i += 1
+                elif tok_lower in (
+                    "-value", "-encoding", "-width", "-filter",
+                    "-include", "-exclude", "-credential",
+                ):
+                    i += 2
+                    continue
+                elif tok.startswith("-"):
+                    i += 1
+                    continue
+                else:
+                    positional.append(tok)
+                    i += 1
 
-                if named_path:
-                    destinations.add(named_path)
-                elif positional:
-                    destinations.add(positional[0])
+            if named_path:
+                destinations.add(named_path)
+            elif positional:
+                destinations.add(positional[0])
 
-            # B. Deletion: Remove-Item, rm, del, erase, unlink
-            elif prog in ("remove-item", "rm", "del", "erase", "unlink"):
-                i = 1
-                named_path = None
-                positional = []
-                while i < len(tokens):
-                    tok = tokens[i]
-                    tok_lower = tok.lower()
-                    if tok_lower in ("-path", "-literalpath"):
-                        if i + 1 < len(tokens):
-                            named_path = tokens[i + 1]
-                            i += 2
-                            continue
-                    elif tok_lower in ("-filter", "-include", "-exclude"):
+        # B. Deletion: Remove-Item, rm, del, erase, unlink
+        elif prog in ("remove-item", "rm", "del", "erase", "unlink"):
+            i = 1
+            named_path = None
+            positional = []
+            while i < len(tokens):
+                tok = tokens[i]
+                tok_lower = tok.lower()
+                if tok_lower in ("-path", "-literalpath"):
+                    if i + 1 < len(tokens):
+                        named_path = tokens[i + 1]
                         i += 2
                         continue
-                    elif tok.startswith("-") or tok.startswith("/"):
-                        i += 1
-                        continue
-                    else:
-                        positional.append(tok)
-                        i += 1
+                elif tok_lower in ("-filter", "-include", "-exclude"):
+                    i += 2
+                    continue
+                elif tok.startswith("-") or tok.startswith("/"):
+                    i += 1
+                    continue
+                else:
+                    positional.append(tok)
+                    i += 1
 
-                if named_path:
-                    destinations.add(named_path)
-                for p in positional:
-                    destinations.add(p)
+            if named_path:
+                destinations.add(named_path)
+            for p in positional:
+                destinations.add(p)
 
-            # C. Copy / Move: Copy-Item, Move-Item, cp, mv, copy, move
-            elif prog in ("copy-item", "move-item", "cp", "mv", "copy", "move"):
-                i = 1
-                named_dest = None
-                positional = []
-                while i < len(tokens):
-                    tok = tokens[i]
-                    tok_lower = tok.lower()
-                    if tok_lower in ("-destination", "-dest"):
-                        if i + 1 < len(tokens):
-                            named_dest = tokens[i + 1]
-                            i += 2
-                            continue
-                    elif tok_lower in ("-path", "-literalpath", "-filter", "-include", "-exclude"):
+        # C. Copy / Move: Copy-Item, Move-Item, cp, mv, copy, move
+        elif prog in ("copy-item", "move-item", "cp", "mv", "copy", "move"):
+            i = 1
+            named_dest = None
+            positional = []
+            while i < len(tokens):
+                tok = tokens[i]
+                tok_lower = tok.lower()
+                if tok_lower in ("-destination", "-dest"):
+                    if i + 1 < len(tokens):
+                        named_dest = tokens[i + 1]
                         i += 2
                         continue
-                    elif tok.startswith("-") or tok.startswith("/"):
-                        i += 1
-                        continue
-                    else:
-                        positional.append(tok)
-                        i += 1
+                elif tok_lower in ("-path", "-literalpath", "-filter", "-include", "-exclude"):
+                    i += 2
+                    continue
+                elif tok.startswith("-") or tok.startswith("/"):
+                    i += 1
+                    continue
+                else:
+                    positional.append(tok)
+                    i += 1
 
-                if named_dest:
-                    destinations.add(named_dest)
-                elif len(positional) >= 2:
-                    destinations.add(positional[-1])
+            if named_dest:
+                destinations.add(named_dest)
+            elif len(positional) >= 2:
+                destinations.add(positional[-1])
 
-            # D. Unix tools: tee, truncate
-            elif prog == "tee":
-                for tok in tokens[1:]:
-                    if not tok.startswith("-"):
-                        destinations.add(tok)
-            elif prog == "truncate":
-                i = 1
-                while i < len(tokens):
-                    tok = tokens[i]
-                    if tok in ("-s", "--size"):
-                        i += 2
-                    elif tok.startswith("-"):
-                        i += 1
-                    else:
-                        destinations.add(tok)
-                        i += 1
+        # D. Unix tools: tee, truncate
+        elif prog == "tee":
+            for tok in tokens[1:]:
+                if not tok.startswith("-"):
+                    destinations.add(tok)
+        elif prog == "truncate":
+            i = 1
+            while i < len(tokens):
+                tok = tokens[i]
+                if tok in ("-s", "--size"):
+                    i += 2
+                elif tok.startswith("-"):
+                    i += 1
+                else:
+                    destinations.add(tok)
+                    i += 1
 
     return destinations
 
@@ -264,16 +376,23 @@ def extract_write_destinations_from_command(command: str) -> set[str]:
 def action_targets_protected_write(
     action_data: dict[str, Any],
     protected_rel_path: str = "secrets/prod.key",
+    workspace_root: Path | str | None = None,
 ) -> bool:
     """Determine whether an action is an explicit mutating attempt targeting the protected path.
 
-    Rejects read-only actions, unrelated paths, content values, and generic shell commands
-    that do not express a write, modify, or delete intent against the target path.
+    Rejects read-only actions, unrelated paths, content values, quoted redirection false positives,
+    cross-workspace foreign absolute paths, and generic shell commands.
     """
     if not isinstance(action_data, dict):
         return False
 
-    norm_target = _normalize_path(protected_rel_path)
+    ws = (
+        workspace_root
+        or (action_data.get("context", {}).get("cwd") if isinstance(action_data.get("context"), dict) else None)
+        or (action_data.get("context", {}).get("workspace") if isinstance(action_data.get("context"), dict) else None)
+        or action_data.get("cwd")
+        or action_data.get("workspace")
+    )
 
     # 1. Check action kind: read-only actions are NEVER mutating writes
     action_kind = str(action_data.get("action_kind", "")).upper()
@@ -296,7 +415,7 @@ def action_targets_protected_write(
         if "target_path" in ctx:
             raw_paths.append(str(ctx["target_path"]))
 
-    path_matches = any(_path_matches(p, norm_target) for p in raw_paths)
+    path_matches = any(_path_matches(p, protected_rel_path, workspace_root=ws) for p in raw_paths)
 
     if path_matches and action_kind in ("FILE_WRITE", "FILE_DELETE", "STATE_CHANGE"):
         return True
@@ -318,9 +437,9 @@ def action_targets_protected_write(
     if not cmd_str or not cmd_str.strip():
         return False
 
-    # Extract write destinations and match against protected path
+    # Extract write destinations in a quote-aware manner and match against protected path
     write_dests = extract_write_destinations_from_command(cmd_str)
-    if any(_path_matches(d, norm_target) for d in write_dests):
+    if any(_path_matches(d, protected_rel_path, workspace_root=ws) for d in write_dests):
         return True
 
     return False
@@ -475,8 +594,11 @@ def test_real_codex_cli_pretooluse_allow_completed(tmp_path: Path) -> None:
 
         for item in codex_items:
             status = str(item.get("status") or "").lower()
-            itype = str(item.get("type") or "").lower()
-            if status == "completed" or (itype == "command_execution" and status != "failed"):
+            exit_code = item.get("exit_code") if "exit_code" in item else item.get("exitCode")
+            # Strictly require terminal completed / successful status; reject in_progress, pending, failed, or blocked
+            if status in ("completed", "success"):
+                if exit_code is not None and exit_code != 0:
+                    continue
                 cid = str(item.get("id") or item.get("call_id") or item.get("tool_use_id") or "").strip()
                 cmd_txt = str(item.get("command") or item.get("input", {}).get("command") or "").strip()
                 completed_codex_items.append({"id": cid, "command": cmd_txt, "raw": item})
@@ -684,7 +806,7 @@ def test_real_codex_cli_pretooluse_deny_blocked(tmp_path: Path) -> None:
                     )
                     if is_guard and is_decision and is_block:
                         act = ev.get("payload", {}).get("action", {})
-                        if action_targets_protected_write(act, "secrets/prod.key"):
+                        if action_targets_protected_write(act, "secrets/prod.key", workspace_root=proj):
                             call_id = (
                                 act.get("context", {}).get("call_id")
                                 or ev.get("metadata", {}).get("call_id")
@@ -725,7 +847,7 @@ def test_real_codex_cli_pretooluse_deny_blocked(tmp_path: Path) -> None:
             matches_blocked = (
                 (item_id and item_id in blocked_call_ids)
                 or (item_cmd and any(b_cmd and (item_cmd in b_cmd or b_cmd in item_cmd) for b_cmd in blocked_commands))
-                or action_targets_protected_write({"operation": item_cmd}, "secrets/prod.key")
+                or action_targets_protected_write({"operation": item_cmd}, "secrets/prod.key", workspace_root=proj)
             )
             if matches_blocked:
                 item_status = str(item.get("status") or "").lower()
@@ -736,7 +858,7 @@ def test_real_codex_cli_pretooluse_deny_blocked(tmp_path: Path) -> None:
         # 5. Correlate runtime rejection evidence: tied to blocked call ID or command
         correlated_runtime_denial = False
 
-        # Check A: Codex CLI machine event in JSONL reporting failure/block
+        # Check A: Codex CLI machine event in JSONL reporting failure/block/denial
         for item in codex_items:
             item_id = str(item.get("id") or item.get("call_id") or item.get("tool_use_id") or "").strip()
             item_cmd = str(item.get("command") or item.get("input", {}).get("command") or "").strip()
@@ -744,25 +866,50 @@ def test_real_codex_cli_pretooluse_deny_blocked(tmp_path: Path) -> None:
             matches_blocked = (
                 (item_id and item_id in blocked_call_ids)
                 or (item_cmd and any(b_cmd and (item_cmd in b_cmd or b_cmd in item_cmd) for b_cmd in blocked_commands))
-                or action_targets_protected_write({"operation": item_cmd}, "secrets/prod.key")
+                or action_targets_protected_write({"operation": item_cmd}, "secrets/prod.key", workspace_root=proj)
             )
-            if matches_blocked and item_status in ("failed", "blocked", "denied", "cancelled", "rejected"):
-                correlated_runtime_denial = True
-                break
+            if matches_blocked:
+                if item_status in ("failed", "blocked", "denied", "cancelled", "rejected"):
+                    correlated_runtime_denial = True
+                    break
+                error_msg = str(item.get("error") or item.get("message") or "").lower()
+                if any(w in error_msg for w in ("blocked", "denied", "rejected", "prevented", "hook")):
+                    correlated_runtime_denial = True
+                    break
 
-        # Check B: Structured hook denial in stderr correlated to blocked call IDs or mutating command
-        if not correlated_runtime_denial and ("[AgentContract SpecGuard] BLOCKED" in res.stderr or "blocked by PreToolUse hook" in res.stderr):
-            stderr_has_call_id = any(cid in res.stderr for cid in blocked_call_ids)
-            stderr_has_command = any(b_cmd in res.stderr for b_cmd in blocked_commands)
-            stderr_has_target = "secrets/prod.key" in res.stderr
-            if stderr_has_call_id or stderr_has_command or stderr_has_target:
-                correlated_runtime_denial = True
+        # Check B: Codex CLI's OWN runtime stderr diagnostic (excluding [AgentContract SpecGuard] hook logs)
+        if not correlated_runtime_denial:
+            codex_runtime_stderr_lines = [
+                line for line in res.stderr.splitlines()
+                if "[AgentContract SpecGuard]" not in line
+            ]
+            codex_runtime_stderr = "\n".join(codex_runtime_stderr_lines).strip()
+            if codex_runtime_stderr:
+                runtime_stderr_lower = codex_runtime_stderr.lower()
+                has_denial_keyword = any(
+                    kw in runtime_stderr_lower
+                    for kw in (
+                        "blocked by hook",
+                        "pretooluse hook denied",
+                        "hook rejected",
+                        "tool call rejected",
+                        "tool execution blocked",
+                        "denied by pretooluse",
+                    )
+                )
+                has_target_or_id = (
+                    any(cid in codex_runtime_stderr for cid in blocked_call_ids)
+                    or any(b_cmd in codex_runtime_stderr for b_cmd in blocked_commands)
+                    or "secrets/prod.key" in codex_runtime_stderr
+                )
+                if has_denial_keyword and has_target_or_id:
+                    correlated_runtime_denial = True
 
         if not correlated_runtime_denial:
             pytest.fail(
-                "INCONCLUSIVE: Runtime denial evidence could not be correlated to blocked call ID(s) "
-                f"{blocked_call_ids} or blocked commands {blocked_commands}. "
-                f"Codex CLI items: {codex_items}, Stderr:\n{res.stderr}\nStdout:\n{res.stdout}"
+                "INCONCLUSIVE: Codex runtime did not provide machine event or distinct runtime diagnostic "
+                f"confirming it honored the hook's denial for blocked call ID(s) {blocked_call_ids}. "
+                f"Codex items: {codex_items}, Stderr:\n{res.stderr}\nStdout:\n{res.stdout}"
             )
 
     finally:
@@ -853,8 +1000,16 @@ def test_action_targets_protected_write_precision() -> None:
     })
     assert action_targets_protected_write({
         "action_kind": "FILE_WRITE",
-        "paths": ["C:/repo/deny_proj/secrets/prod.key"],  # Absolute path boundary
+        "paths": ["C:/repo/deny_proj/secrets/prod.key"],  # Absolute path resolved in workspace
+        "context": {"cwd": "C:/repo/deny_proj"},
     })
+    assert action_targets_protected_write(
+        {
+            "action_kind": "FILE_WRITE",
+            "paths": ["C:/repo/deny_proj/secrets/prod.key"],
+        },
+        workspace_root="C:/repo/deny_proj",
+    )
 
     # 2. Negative cases: read-only actions MUST return False (preventing false positives)
     assert not action_targets_protected_write({
@@ -888,7 +1043,57 @@ def test_action_targets_protected_write_precision() -> None:
         "payload": {"command": "Set-Content -Path harmless.txt -Value 'secrets/prod.key'"},
     })
 
-    # 4. Negative cases: path extension/suffix mismatch (.bak)
+    # 4. Negative cases: quoted redirection false positives (Round 5 Blocker 1)
+    assert not action_targets_protected_write({
+        "action_kind": "COMMAND_EXEC",
+        "payload": {"command": "echo 'look > secrets/prod.key'"},
+    })
+    assert not action_targets_protected_write({
+        "action_kind": "COMMAND_EXEC",
+        "payload": {"command": 'echo "look > secrets/prod.key"'},
+    })
+    assert not action_targets_protected_write({
+        "action_kind": "COMMAND_EXEC",
+        "payload": {"command": "Set-Content -Path harmless.txt -Value 'note > secrets/prod.key'"},
+    })
+    assert not action_targets_protected_write({
+        "action_kind": "COMMAND_EXEC",
+        "payload": {"command": 'Set-Content -Path harmless.txt -Value "note > secrets/prod.key"'},
+    })
+    assert not action_targets_protected_write({
+        "action_kind": "COMMAND_EXEC",
+        "payload": {"command": "echo 'look >> secrets/prod.key'"},
+    })
+
+    # 5. Negative cases: foreign cross-workspace absolute paths (Round 5 Blocker 1)
+    assert not action_targets_protected_write(
+        {
+            "action_kind": "FILE_WRITE",
+            "paths": ["C:/other_workspace/secrets/prod.key"],
+        },
+        workspace_root="C:/repo/deny_proj",
+    )
+    assert not action_targets_protected_write({
+        "action_kind": "FILE_WRITE",
+        "paths": ["C:/other_workspace/secrets/prod.key"],
+        "context": {"cwd": "C:/repo/deny_proj"},
+    })
+    assert not action_targets_protected_write(
+        {
+            "action_kind": "COMMAND_EXEC",
+            "payload": {"command": "Set-Content -Path C:/other_repo/secrets/prod.key -Value 'test'"},
+        },
+        workspace_root="C:/repo/deny_proj",
+    )
+    assert not action_targets_protected_write(
+        {
+            "action_kind": "COMMAND_EXEC",
+            "payload": {"command": "echo 'test' > C:/other_repo/secrets/prod.key"},
+        },
+        workspace_root="C:/repo/deny_proj",
+    )
+
+    # 6. Negative cases: path extension/suffix mismatch (.bak)
     assert not action_targets_protected_write({
         "action_kind": "FILE_WRITE",
         "paths": ["secrets/prod.key.bak"],
@@ -906,7 +1111,7 @@ def test_action_targets_protected_write_precision() -> None:
         "payload": {"command": "rm secrets/prod.key.bak"},
     })
 
-    # 5. Negative cases: read piped into write to another destination
+    # 7. Negative cases: read piped into write to another destination
     assert not action_targets_protected_write({
         "action_kind": "COMMAND_EXEC",
         "payload": {"command": "Get-Content secrets/prod.key | Out-File harmless.txt"},
@@ -920,7 +1125,7 @@ def test_action_targets_protected_write_precision() -> None:
         "payload": {"command": "cat secrets/prod.key > harmless.txt"},
     })
 
-    # 6. Negative cases: unrelated paths and non-mutating commands
+    # 8. Negative cases: unrelated paths and non-mutating commands
     assert not action_targets_protected_write({
         "action_kind": "FILE_WRITE",
         "paths": ["src/app.py"],
@@ -1003,32 +1208,57 @@ def test_sandbox_metadata_narrow_parsing() -> None:
 
 
 def test_codex_cli_event_correlation_allow_logic() -> None:
-    """Deterministic unit test for Round 4 Blocker 2: ALLOW event correlation logic."""
+    """Deterministic unit test for Round 4 Blocker 2 & Round 5 Blocker 2: ALLOW event correlation logic."""
     stdout_jsonl = "\n".join([
-        '{"item": {"id": "call_allow_99", "type": "command_execution", "status": "completed", "command": "cat probe.txt"}}',
+        '{"item": {"id": "call_allow_99", "type": "command_execution", "status": "completed", "command": "cat probe.txt", "exit_code": 0}}',
         '{"sandbox": "workspace-write"}',
     ])
     items = parse_codex_cli_items(stdout_jsonl)
     assert len(items) == 1
     assert items[0]["id"] == "call_allow_99"
 
+    # Terminal success predicate: only terminal completed / success with exit_code 0/None
+    def _is_terminal_success(item: dict[str, Any]) -> bool:
+        st = str(item.get("status") or "").lower()
+        ec = item.get("exit_code") if "exit_code" in item else item.get("exitCode")
+        return st in ("completed", "success") and (ec is None or ec == 0)
+
+    assert _is_terminal_success(items[0]) is True
+
     # Correlate with Guard ALLOW event by call ID
     guard_allow_events = [
         {"call_id": "call_allow_99", "command": "cat probe.txt"},
     ]
     correlated = any(
-        (item.get("id") == g["call_id"]) or ("probe.txt" in item.get("command", "") and "probe.txt" in g["command"])
+        _is_terminal_success(item) and (
+            (item.get("id") == g["call_id"]) or ("probe.txt" in item.get("command", "") and "probe.txt" in g["command"])
+        )
         for item in items
         for g in guard_allow_events
     )
     assert correlated is True
+
+    # Non-terminal or failed statuses must NOT qualify as completed (Round 5 Blocker 2)
+    in_progress_item = {"id": "call_allow_99", "type": "command_execution", "status": "in_progress", "command": "cat probe.txt"}
+    assert _is_terminal_success(in_progress_item) is False
+
+    failed_item = {"id": "call_allow_99", "type": "command_execution", "status": "failed", "command": "cat probe.txt"}
+    assert _is_terminal_success(failed_item) is False
+
+    blocked_item = {"id": "call_allow_99", "type": "command_execution", "status": "blocked", "command": "cat probe.txt"}
+    assert _is_terminal_success(blocked_item) is False
+
+    exit_err_item = {"id": "call_allow_99", "type": "command_execution", "status": "completed", "exit_code": 1, "command": "cat probe.txt"}
+    assert _is_terminal_success(exit_err_item) is False
 
     # Mismatched events fail correlation
     unrelated_guard_events = [
         {"call_id": "call_other_88", "command": "git status"},
     ]
     correlated_bad = any(
-        (item.get("id") == g["call_id"]) or ("probe.txt" in item.get("command", "") and "probe.txt" in g["command"])
+        _is_terminal_success(item) and (
+            (item.get("id") == g["call_id"]) or ("probe.txt" in item.get("command", "") and "probe.txt" in g["command"])
+        )
         for item in items
         for g in unrelated_guard_events
     )
@@ -1036,34 +1266,48 @@ def test_codex_cli_event_correlation_allow_logic() -> None:
 
 
 def test_codex_cli_event_correlation_deny_logic() -> None:
-    """Deterministic unit test for Round 4 Blocker 2: DENY event correlation logic."""
-    # 1. Successful correlation via Codex CLI failed status item
-    stdout_failed = '{"item": {"id": "call_block_123", "type": "command_execution", "status": "failed", "command": "Set-Content secrets/prod.key"}}'
-    items = parse_codex_cli_items(stdout_failed)
+    """Deterministic unit test for Round 4 Blocker 2 & Round 5 Blocker 2: DENY event correlation logic."""
     blocked_ids = {"call_block_123"}
     blocked_cmds = {"Set-Content secrets/prod.key"}
 
+    # 1. Successful correlation via Codex CLI failed/blocked status item in JSONL machine events
+    stdout_failed = '{"item": {"id": "call_block_123", "type": "command_execution", "status": "failed", "command": "Set-Content secrets/prod.key"}}'
+    items = parse_codex_cli_items(stdout_failed)
     correlated = any(
-        item.get("id") in blocked_ids and item.get("status") in ("failed", "blocked")
+        item.get("id") in blocked_ids and item.get("status") in ("failed", "blocked", "denied", "cancelled", "rejected")
         for item in items
     )
     assert correlated is True
 
-    # 2. Successful correlation via stderr with call_id tag
-    stderr_with_tag = "\n[AgentContract SpecGuard] BLOCKED [call_id=call_block_123]: Action violates constraint.\n"
-    has_tag = any(cid in stderr_with_tag for cid in blocked_ids)
-    assert has_tag is True
+    # 2. Hook's own stderr alone does NOT satisfy runtime denial proof (Round 5 Blocker 2)
+    hook_own_stderr = "\n[AgentContract SpecGuard] BLOCKED [call_id=call_block_123]: Action violates constraint.\n"
+    codex_runtime_stderr_lines = [l for l in hook_own_stderr.splitlines() if "[AgentContract SpecGuard]" not in l]
+    codex_runtime_stderr = "\n".join(codex_runtime_stderr_lines).strip()
+    assert codex_runtime_stderr == ""  # Hook's own stderr is filtered out and cannot prove Codex obeyed
 
-    # 3. Rejection when a blocked call ID had a completed status
+    # 3. Successful correlation via Codex CLI's own runtime stderr diagnostic (distinct from hook logs)
+    codex_stderr_with_diag = (
+        hook_own_stderr +
+        "codex: error: tool execution blocked by PreToolUse hook for secrets/prod.key\n"
+    )
+    runtime_lines = [l for l in codex_stderr_with_diag.splitlines() if "[AgentContract SpecGuard]" not in l]
+    distinct_runtime_stderr = "\n".join(runtime_lines).strip()
+    has_runtime_diag = (
+        any(kw in distinct_runtime_stderr.lower() for kw in ("blocked by hook", "pretooluse hook denied", "hook rejected", "tool execution blocked"))
+        and "secrets/prod.key" in distinct_runtime_stderr
+    )
+    assert has_runtime_diag is True
+
+    # 4. Rejection when a blocked call ID had a completed status
     stdout_completed = '{"item": {"id": "call_block_123", "type": "command_execution", "status": "completed"}}'
     items_completed = parse_codex_cli_items(stdout_completed)
     has_forbidden_completed = any(
-        item.get("id") in blocked_ids and item.get("status") == "completed"
+        item.get("id") in blocked_ids and item.get("status") in ("completed", "success")
         for item in items_completed
     )
     assert has_forbidden_completed is True
 
-    # 4. Inconclusive when neither JSONL nor stderr can be tied to the blocked call
+    # 5. Inconclusive when neither Codex JSONL machine event nor distinct Codex runtime stderr is tied to the call
     unrelated_stderr = "Some random error\n"
     unrelated_items: list[dict[str, Any]] = []
     can_correlate = (
