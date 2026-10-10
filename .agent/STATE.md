@@ -15,9 +15,9 @@
 - Task: **TASK-012 — Codex CLI PreToolUse Output Protocol Compatibility**
 - Task file: `.agent/tasks/TASK-012.md`
 - Work branch: `task/TASK-012-codex-pretooluse-compat`
-- Status: **CHANGES_REQUESTED**
+- Status: **BLOCKED**
 - Owner: Execution agent
-- Main-agent review: Round 11 CHANGES_REQUESTED (doctor ALLOW stdout false-positive; Codex-home integrity snapshot overclaims)
+- Main-agent review: Round 12 BLOCKED (offline fixes pass code review; real Codex ALLOW/DENY E2E unverified)
 - Previous accepted milestone: TASK-011 / M6
 
 ## Main-agent checkpoint
@@ -161,3 +161,10 @@ On a new session:
 - Nonfatal PATH warning no longer treated as blocker, doctor now calls actual configured SessionStart/PreToolUse via safe offline subprocess, and cleanup errors are visible.
 - Round 11 CHANGES_REQUESTED: doctor currently accepts garbage or structured nonempty ALLOW stdout, contradicting required empty-wire-format; global Codex home snapshot observes only additions + three files and may falsely claim entire home unchanged after deletion or other changes.
 - Fix two narrow evidence issues, maintain normal Windows existing Codex account/project isolation; no product merge/TASK-013.
+
+## M7 round 12 checkpoint (2026-10-10)
+
+- Verified executor received Round 11 instructions via task branch at `8c27d769` and reviewed code commit `9b3538f4` plus latest Executor Report. Reported offline full suite 383 passed, 2 skipped; not independently rerun.
+- Offline Doctor registered-hook subprocess wire format now rejects junk/structured ALLOW stdout; global Codex home snapshot detects top-level additions/deletions and tracked file edits/read errors, and truthfully limits inspection scope.
+- Main-agent offline code review PASS; product task overall **BLOCKED** because real Codex CLI ALLOW/Completed + DENY/Blocked with linked Guard traces has not been established; Windows native Codex tool policy and CUA ACL refresh upstream failures remain. No main product merge/TASK-013.
+- User may run offline local pytest and temporary project install/doctor/status/audit/uninstall without invoking native sandbox/elevated Windows setup. Do not modify global Codex config/auth/ACL/processes.

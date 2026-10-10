@@ -926,3 +926,10 @@ Round 10 improvements landed: fatal vs nonfatal warnings, direct subprocess exec
 2. Doctor compares only *new* Codex home entries and 3 hashes; deletions, changes to other existing entries and unreadable hash errors can slip through while claiming "global ~/.codex observed untouched." Compare both sides of entry set and narrow read-only snapshot claims, with failures/inconclusive coverage, avoiding full recursive personal-data reads.
 
 Do not broaden task or change Windows sandbox/global Codex configs, ACLs, process state; leave live E2E separately UNVERIFIED and no product merge/TASK-013. Full detail in task Round 11.
+
+---
+
+
+## 2026-10-10 — TASK-012 round 12
+
+**Offline code review: PASS; task status: BLOCKED, live E2E still UNVERIFIED.** Reviewed `9b3538f4` implementation and `e0e91b02` report, including verified executor handoff from Round 11. Doctor now uses registered hook subprocess and rejects nonempty ALLOW stdout; global Codex home checks both added/deleted entries and tracks three config-file hashes with explicit scope and read errors. Negative regressions present. Executor reports Python 3.12.9 **383 passed / 2 skipped**; results not independently reproduced and online real Codex ALLOW/DENY both skipped. Authorize safe offline local smoke only, not production ACCEPTED. Windows Codex native sandbox/ACL upstream bug remains, so no special account/VM/global repairs/process kills, unsafe bypass or main merge. Details and user testing steps in Round 12 task review.

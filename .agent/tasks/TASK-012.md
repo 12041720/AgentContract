@@ -1,10 +1,10 @@
 # TASK-012 — Codex CLI PreToolUse Output Protocol Compatibility
 
-**Status:** CHANGES_REQUESTED  
+**Status:** BLOCKED  
 **Milestone:** M7 — Codex Runtime Protocol Compatibility  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-012-codex-pretooluse-compat`  
-**Main-agent review:** CHANGES_REQUESTED — round 11
+**Main-agent review:** BLOCKED — round 12 (offline code PASS; live Codex E2E unverified)
 
 ## Objective
 
@@ -348,3 +348,25 @@ Safe next step: user saves active Codex work, exits Desktop/VSCode integration/o
 **Gate:** No real Codex ALLOW/Completed + DENY/Blocked execution evidence yet. Default doctor is safe enough for *provisional* offline trial in a throwaway project once user pulls code, but it is not M7 acceptance. Run full Windows Python 3.12.9 suite and report separately; offline passes do not close live gate. Maintain normal Windows/Codex account, no VM, no global Codex ACL/credentials/process mutations, no sandbox bypass.
 
 **Disposition:** Continue TASK-012 in same branch for the two narrowly scoped test-integrity repairs; no merge to main, no TASK-013. After correcting, request new review; only then provide final standard user-facing acceptance commands.
+
+
+### Round 12 main-agent review — 2026-10-10
+
+**Disposition:** Offline code review PASS; overall TASK-012 **BLOCKED** pending *genuine* native Codex CLI ALLOW/Completed and DENY/Blocked E2E. Not ACCEPTED or merged. Product code unchanged by reviewer.
+
+**Reviewed implementation:** `9b3538f4a9861e38097dd2880eeed0608220eab9`; Executor Report updated in `e0e91b0259c1f6f79339c92b249f5955ea624e4c`. Executor confirmed reading Round 11 at `8c27d769f6502c549413ac22d1efe66a486f94f2`, satisfying remote-to-local handoff documentation. Executor reports Python 3.12.9 `383 passed, 2 skipped`; no independent Windows run/CI check was observed.
+
+**Round 11 fixes inspected and approved for offline trial:**
+1. Doctor starts actual project-registered AgentContract Python hook subprocess and requires ALLOW subprocess exit status 0 with no non-whitespace stdout; denies junk and structured nonempty ALLOW responses. Negative regressions added. Note code checks `stdout.strip() == ""` (whitespace-only stdout normalizes to empty); Codex runtime must still be verified separately.
+2. Global Codex home integrity snapshot now detects **added and deleted top-level entries**, hashes existing `config.toml`, `hooks.json`, `auth.json`, fails on tracked file read/list errors, and explicitly acknowledges untracked contents/system ACLs/Desktop state are not monitored. Negative regressions cover deletions/mutations/read failure.
+3. Offline doctor logs project-scope direct hook execution and cleanup without invoking Windows native Codex sandbox/ACL repair or killing other sessions. Full suite reported 383 passes, 2 opt-in Codex live tests skipped. This is executor evidence, not independent proof of real Codex runtime.
+
+**User-facing safe local validation (recommended NOW):**
+- On clean/known worktree, update task branch safely; never force-reset or switch over uncommitted changes.
+- Run `python -m pytest -k "not real_codex_cli_pretooluse" -q` (offline regardless of leftover auth env vars).
+- On a brand-new uniquely named empty test project under Windows TEMP, with repository `src` on this process's `PYTHONPATH`, run `python -m agentcontract.cli codex install --project <TEMP_PROJECT>`, `doctor`, `status`, `audit`, `uninstall`; assert doctor exit code 0, no project hook file after uninstall. Remove only disposable test directory; no global Codex files.
+- The offline doctor tests **registered Python hook subprocess and Guard trace/wire format**, NOT whether Codex CLI dispatches hooks.
+
+**Still blocked:** Actual Codex 0.162.0 Windows runtime failed harmless `Get-Content probe.txt` with `CreateProcess ... rejected: blocked by policy`, and Windows native elevated sandbox setup separately failed global CUA `node_repl.exe` ACL refresh with `os error 32`. We cannot declare Codex runtime enforcement or safe native Windows sandbox integration complete. Do not trigger sandbox provisioning, force-kill other Codex sessions, modify global ACLs/auth/trust/config, or use `danger-full-access` to make acceptance pass. Only opt-in to online real E2E when standard Codex environment already supports bounded tool execution without unsafe side effects, then require both true ALLOW+DENY linked trace/runtime proof. External blocker does not invalidate the offline fixes.
+
+**Next:** Ask user to run the safe offline local validation and send sanitized results. No task code changes requested now. Main-agent will reconsider acceptance/integration after genuine live E2E evidence or an explicitly approved scope/acceptance revision; do not start TASK-013.
