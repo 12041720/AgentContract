@@ -861,3 +861,15 @@ Remaining blockers: `action_targets_protected_write` still allows shell command 
 Positive: separate Codex JSONL from AgentContract trace, improved shell destination extraction, call-tag stderr. Executor reports 362 passed/2 skipped on Windows Python 3.12.9. Real Codex CLI ALLOW/DENY online tests both SKIPPED/UNVERIFIED. No GitHub CI checks; independent clone blocked by DNS.
 
 Blocking: redirection regex counts `>` inside a quoted string as a write to `secrets/prod.key`; path matcher accepts unrelated absolute workspaces with same suffix. ALLOW parser counts any non-`failed` `command_execution` (including in-progress) as completed; DENY relies on hook's own stderr as though that proved Codex runtime honored the block. Executor Report SHA `0876d8c...` is not a reachable GitHub commit (422); remote HEAD is `274117815...`. Fix these and obtain dedicated, sandboxed, correlated real Codex E2E proof before acceptance. Details in `.agent/tasks/TASK-012.md`. No merge or next task.
+
+---
+
+## 2026-10-10 — TASK-012 sixth review: BLOCKED on E2E acceptance
+
+**Implementation commit:** `c7f8bdceb70d6a1eb0a0561a90a10fb080bd89c6` (reachable)  
+**Reviewed report HEAD:** `4a26d4351063640c44fa435d6f9afa36662b68cf`  
+**Verdict:** BLOCKED, not ACCEPTED.
+
+Static improvements address quoted redirection, workspace-aware path comparison, ALLOW terminal-success filtering, and independent Codex-side runtime signal checking for DENY. Executor reports Python 3.12.9 362 passed / 2 skipped (zero failures). **Both required real Codex CLI E2E scenarios skipped** because dedicated test-only credentials were unavailable; no independent runtime run or GitHub CI status. Cannot conclude Codex honored PreToolUse output. A generic failed command item is not necessarily hook rejection; authentic runtime evidence must distinguish these.
+
+Mark TASK-012 BLOCKED pending dedicated test auth and isolated ALLOW/Completed + DENY/Blocked evidence. Preserve protected bytes; no personal auth copying, sandbox bypass, global config mutation, product merge, or next task. Full review in task document.
