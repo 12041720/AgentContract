@@ -539,6 +539,146 @@ def check_upstream_environment_failure(
     return None
 
 
+def inspect_e2e_hook_dispatch(sessions_dir: Path | None) -> dict[str, Any]:
+    """Inspect whether AgentContract hooks were actually dispatched and traces recorded."""
+    if sessions_dir is None or not sessions_dir.is_dir():
+        return {
+            "invoked": False,
+            "status": "NOT INVOKED / UNVERIFIED",
+            "detail": f"Sessions directory '{sessions_dir}' was not created by Codex CLI.",
+            "sessions_count": 0,
+            "events_count": 0,
+            "verdicts": [],
+        }
+
+    total_events = 0
+    verdicts: list[str] = []
+    sessions_count = 0
+    for sdir in sessions_dir.iterdir():
+        if sdir.is_dir():
+            sessions_count += 1
+            trace_file = sdir / "trace.json"
+            if trace_file.is_file():
+                try:
+                    tdata = json.loads(trace_file.read_text(encoding="utf-8"))
+                    events = tdata.get("events", [])
+                    total_events += len(events)
+                    for ev in events:
+                        if (
+                            str(ev.get("actor")).upper() == "GUARD"
+                            and str(ev.get("event_kind")).upper() == "GUARD_DECISION"
+                        ):
+                            v = ev.get("metadata", {}).get("verdict") or ev.get("payload", {}).get("decision")
+                            if v:
+                                verdicts.append(str(v).upper())
+                except Exception:
+                    pass
+
+    if total_events > 0 or verdicts:
+        return {
+            "invoked": True,
+            "status": "INVOKED",
+            "detail": f"Observed {sessions_count} session(s) with {total_events} trace events (guard verdicts: {verdicts}).",
+            "sessions_count": sessions_count,
+            "events_count": total_events,
+            "verdicts": verdicts,
+        }
+    return {
+        "invoked": False,
+        "status": "EMPTY / UNVERIFIED",
+        "detail": f"Sessions directory exists ({sessions_count} sessions) but no trace events recorded.",
+        "sessions_count": sessions_count,
+        "events_count": 0,
+        "verdicts": [],
+    }
+
+
+def format_e2e_diagnostics(
+    res: subprocess.CompletedProcess[str],
+    sessions_dir: Path | None,
+    scenario: str,
+    upstream_error: str | None = None,
+) -> str:
+    """Produce comprehensive structured diagnostics separating:
+    (a) Codex-native execution policy / shell blocker,
+    (b) AgentContract hook dispatch / trace evidence,
+    (c) Codex runtime enforcement (ALLOW/DENY).
+    """
+    stdout = res.stdout or ""
+    stderr = res.stderr or ""
+    combined = stdout + "\n" + stderr
+
+    # (a) Codex Native Execution Policy
+    policy_status = "NOT DETECTED"
+    policy_detail = "No external native process or sandbox policy failure detected."
+    target_shell = None
+
+    shell_match = re.search(r"(?:C:[\\/][^\r\n]*?\\(?:pwsh|powershell|cmd)\.exe)", combined, re.IGNORECASE)
+    if shell_match:
+        target_shell = shell_match.group(0).strip()
+    elif "pwsh.exe" in combined:
+        target_shell = "pwsh.exe"
+    elif "powershell.exe" in combined:
+        target_shell = "powershell.exe"
+
+    for pattern in FATAL_UPSTREAM_ENV_ERROR_PATTERNS:
+        m = re.search(pattern, combined, re.IGNORECASE)
+        if m:
+            policy_status = "BLOCKED"
+            policy_detail = f"Native tool process creation blocked by Windows policy: '{m.group(0).strip()}'"
+            break
+
+    if policy_status == "NOT DETECTED" and upstream_error:
+        policy_status = "BLOCKED"
+        policy_detail = upstream_error
+
+    if target_shell:
+        policy_detail += f" (target shell: {target_shell})"
+
+    # (b) AgentContract Hook Dispatch
+    hook_info = inspect_e2e_hook_dispatch(sessions_dir)
+    hook_status = hook_info["status"]
+    hook_detail = hook_info["detail"]
+
+    # (c) Codex Runtime Enforcement
+    if policy_status == "BLOCKED":
+        enforce_status = "UNVERIFIED"
+        if scenario.upper() == "DENY":
+            enforce_detail = (
+                "Upstream native policy prevented command execution before spawn. "
+                "Protected file remaining unchanged is an environmental side-effect and does NOT constitute Guard DENY proof. "
+                "LIVE E2E UNVERIFIED."
+            )
+        else:
+            enforce_detail = (
+                "Upstream native policy prevented command execution before spawn. "
+                "Probe file content was not read. LIVE E2E UNVERIFIED."
+            )
+    else:
+        if scenario.upper() == "ALLOW":
+            enforce_status = "COMPLETED" if "Completed" in combined else "PENDING"
+            enforce_detail = f"ALLOW scenario runtime status: exit_code={res.returncode}"
+        else:
+            enforce_status = "BLOCKED" if "Blocked" in combined else "PENDING"
+            enforce_detail = f"DENY scenario runtime status: exit_code={res.returncode}"
+
+    warnings = get_upstream_environment_warnings(res)
+    warn_text = f"\n  (d) Upstream Diagnostics Warnings: {warnings}" if warnings else ""
+
+    return (
+        f"\n  (a) Codex Native Execution Policy:\n"
+        f"      Status: {policy_status}\n"
+        f"      Detail: {policy_detail}\n"
+        f"  (b) AgentContract Hook Dispatch:\n"
+        f"      Status: {hook_status}\n"
+        f"      Detail: {hook_detail}\n"
+        f"  (c) Codex Runtime Enforcement ({scenario.upper()}):\n"
+        f"      Status: {enforce_status}\n"
+        f"      Detail: {enforce_detail}"
+        f"{warn_text}"
+    )
+
+
 def test_real_codex_cli_pretooluse_allow_completed(tmp_path: Path) -> None:
     """Requirement 3: Verify real Codex CLI execution with AgentContract hooks on ALLOW.
 
@@ -607,6 +747,8 @@ def test_real_codex_cli_pretooluse_allow_completed(tmp_path: Path) -> None:
             cmd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             shell=True,
             cwd=str(proj),
             env=iso_env,
@@ -621,6 +763,8 @@ def test_real_codex_cli_pretooluse_allow_completed(tmp_path: Path) -> None:
                 cmd,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 shell=True,
                 cwd=str(proj),
                 env=iso_env,
@@ -635,9 +779,10 @@ def test_real_codex_cli_pretooluse_allow_completed(tmp_path: Path) -> None:
 
         upstream_err = check_upstream_environment_failure(res, sessions_dir=sessions_dir)
         if upstream_err:
+            diag = format_e2e_diagnostics(res, sessions_dir=sessions_dir, scenario="ALLOW", upstream_error=upstream_err)
             pytest.skip(
-                f"UPSTREAM_ENV_BLOCKED: {upstream_err}. "
-                "AgentContract zero-interference policy strictly prohibits configuring elevated sandbox, "
+                f"UPSTREAM_ENV_BLOCKED:{diag}\n"
+                "  AgentContract zero-interference policy strictly prohibits configuring elevated sandbox, "
                 "modifying global ACLs, or killing other processes. LIVE E2E UNVERIFIED."
             )
 
@@ -648,8 +793,9 @@ def test_real_codex_cli_pretooluse_allow_completed(tmp_path: Path) -> None:
         if probe_content not in combined_output:
             upstream_err = check_upstream_environment_failure(res, sessions_dir=sessions_dir)
             if upstream_err:
+                diag = format_e2e_diagnostics(res, sessions_dir=sessions_dir, scenario="ALLOW", upstream_error=upstream_err)
                 pytest.skip(
-                    f"UPSTREAM_ENV_BLOCKED: {upstream_err}. LIVE E2E UNVERIFIED."
+                    f"UPSTREAM_ENV_BLOCKED:{diag}\n  LIVE E2E UNVERIFIED."
                 )
         assert probe_content in combined_output
 
@@ -701,8 +847,9 @@ def test_real_codex_cli_pretooluse_allow_completed(tmp_path: Path) -> None:
         if not sessions_dir.is_dir():
             upstream_err = check_upstream_environment_failure(res, sessions_dir=sessions_dir)
             if upstream_err:
+                diag = format_e2e_diagnostics(res, sessions_dir=sessions_dir, scenario="ALLOW", upstream_error=upstream_err)
                 pytest.skip(
-                    f"UPSTREAM_ENV_BLOCKED: {upstream_err}. LIVE E2E UNVERIFIED."
+                    f"UPSTREAM_ENV_BLOCKED:{diag}\n  LIVE E2E UNVERIFIED."
                 )
             pytest.fail(
                 "Codex CLI did not create sessions directory and no PreToolUse hook was invoked, "
@@ -849,6 +996,8 @@ def test_real_codex_cli_pretooluse_deny_blocked(tmp_path: Path) -> None:
             cmd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             shell=True,
             cwd=str(proj),
             env=iso_env,
@@ -863,6 +1012,8 @@ def test_real_codex_cli_pretooluse_deny_blocked(tmp_path: Path) -> None:
                 cmd,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 shell=True,
                 cwd=str(proj),
                 env=iso_env,
@@ -877,9 +1028,10 @@ def test_real_codex_cli_pretooluse_deny_blocked(tmp_path: Path) -> None:
 
         upstream_err = check_upstream_environment_failure(res, sessions_dir=sessions_dir)
         if upstream_err:
+            diag = format_e2e_diagnostics(res, sessions_dir=sessions_dir, scenario="DENY", upstream_error=upstream_err)
             pytest.skip(
-                f"UPSTREAM_ENV_BLOCKED: {upstream_err}. "
-                "AgentContract zero-interference policy strictly prohibits configuring elevated sandbox, "
+                f"UPSTREAM_ENV_BLOCKED:{diag}\n"
+                "  AgentContract zero-interference policy strictly prohibits configuring elevated sandbox, "
                 "modifying global ACLs, or killing other processes. LIVE E2E UNVERIFIED."
             )
 
@@ -896,8 +1048,9 @@ def test_real_codex_cli_pretooluse_deny_blocked(tmp_path: Path) -> None:
         if not sessions_dir.is_dir():
             upstream_err = check_upstream_environment_failure(res, sessions_dir=sessions_dir)
             if upstream_err:
+                diag = format_e2e_diagnostics(res, sessions_dir=sessions_dir, scenario="DENY", upstream_error=upstream_err)
                 pytest.skip(
-                    f"UPSTREAM_ENV_BLOCKED: {upstream_err}. LIVE E2E UNVERIFIED."
+                    f"UPSTREAM_ENV_BLOCKED:{diag}\n  LIVE E2E UNVERIFIED."
                 )
             pytest.fail(
                 "Codex CLI did not create sessions directory and no PreToolUse hook was invoked, "
@@ -1546,6 +1699,127 @@ def test_check_upstream_environment_failure_clean_run(tmp_path: Path) -> None:
     sessions_dir.mkdir()
     err = check_upstream_environment_failure(res, sessions_dir=sessions_dir)
     assert err is None
+
+
+def test_real_codex_cli_subprocess_calls_use_utf8_encoding() -> None:
+    """Regression test: verify all online E2E subprocess.run calls specify encoding='utf-8' and errors='replace'.
+
+    Guarantees that both initial and retry branches in ALLOW and DENY tests never fall back
+    to locale-dependent defaults (e.g. CP936/GBK on Chinese Windows).
+    """
+    import ast
+
+    cli_test_file = Path(__file__)
+    tree = ast.parse(cli_test_file.read_text(encoding="utf-8"))
+
+    target_functions = {
+        "test_real_codex_cli_pretooluse_allow_completed",
+        "test_real_codex_cli_pretooluse_deny_blocked",
+    }
+
+    subprocess_calls_checked = 0
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name in target_functions:
+            for subnode in ast.walk(node):
+                if isinstance(subnode, ast.Call):
+                    # Check if call is subprocess.run
+                    func = subnode.func
+                    is_subproc_run = (
+                        (isinstance(func, ast.Attribute) and func.attr == "run" and isinstance(func.value, ast.Name) and func.value.id == "subprocess")
+                    )
+                    if is_subproc_run:
+                        keywords = {kw.arg: kw.value for kw in subnode.keywords}
+                        assert "encoding" in keywords, f"subprocess.run in {node.name} line {subnode.lineno} missing encoding keyword"
+                        assert isinstance(keywords["encoding"], ast.Constant) and keywords["encoding"].value == "utf-8", (
+                            f"subprocess.run in {node.name} line {subnode.lineno} encoding must be 'utf-8'"
+                        )
+                        assert "errors" in keywords, f"subprocess.run in {node.name} line {subnode.lineno} missing errors keyword"
+                        assert isinstance(keywords["errors"], ast.Constant) and keywords["errors"].value == "replace", (
+                            f"subprocess.run in {node.name} line {subnode.lineno} errors must be 'replace'"
+                        )
+                        subprocess_calls_checked += 1
+
+    assert subprocess_calls_checked >= 4, f"Expected to verify at least 4 subprocess.run calls, found {subprocess_calls_checked}"
+
+
+def test_subprocess_utf8_decode_handles_non_gbk_bytes() -> None:
+    """Regression test: verify subprocess.run with encoding='utf-8' and errors='replace'
+    safely handles multi-byte UTF-8 sequences containing byte 0x9d (such as curly quotes) and emoji,
+    preventing Windows GBK UnicodeDecodeError.
+    """
+    # Byte sequence b"\xe2\x80\x9d" contains 0x9d (right double quote in UTF-8),
+    # which fails with UnicodeDecodeError in CP936/GBK if decoded without UTF-8.
+    code = (
+        "import sys\n"
+        "sys.stdout.buffer.write('thread.started: “hello” 🛡️\\n'.encode('utf-8'))\n"
+        "sys.stderr.buffer.write('warning: byte \\x9d in stream\\n'.encode('utf-8'))\n"
+    )
+    res = subprocess.run(
+        ["python", "-c", code],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    assert res.returncode == 0
+    assert "“hello”" in res.stdout
+    assert "🛡️" in res.stdout
+    assert "warning:" in res.stderr
+
+
+def test_format_e2e_diagnostics_separates_policy_hook_and_enforcement() -> None:
+    """Regression test for Round 13: diagnostic separates native policy, hook dispatch, and enforcement."""
+    stderr = (
+        "codex_core::tools::router: exec_command failed: "
+        r"CreateProcess C:\Program Files\WindowsApps\Microsoft.PowerShell_7.6.6.0_x64__8wekyb3d8bbwe\pwsh.exe rejected: blocked by policy"
+    )
+    res = subprocess.CompletedProcess(args=["codex"], returncode=0, stdout="", stderr=stderr)
+
+    diag = format_e2e_diagnostics(res, sessions_dir=None, scenario="DENY")
+
+    assert "(a) Codex Native Execution Policy:" in diag
+    assert "Status: BLOCKED" in diag
+    assert "pwsh.exe" in diag
+
+    assert "(b) AgentContract Hook Dispatch:" in diag
+    assert "Status: NOT INVOKED / UNVERIFIED" in diag
+
+    assert "(c) Codex Runtime Enforcement (DENY):" in diag
+    assert "Status: UNVERIFIED" in diag
+    assert "Protected file remaining unchanged is an environmental side-effect and does NOT constitute Guard DENY proof" in diag
+
+
+def test_format_e2e_diagnostics_reports_hook_invoked_when_trace_present(tmp_path: Path) -> None:
+    """Regression test: diagnostic accurately reports hook dispatch when session traces are present."""
+    sessions_dir = tmp_path / "sessions"
+    s1 = sessions_dir / "sess_001"
+    s1.mkdir(parents=True)
+    trace_data = {
+        "events": [
+            {
+                "actor": "GUARD",
+                "event_kind": "GUARD_DECISION",
+                "metadata": {"verdict": "BLOCK"},
+            }
+        ]
+    }
+    (s1 / "trace.json").write_text(json.dumps(trace_data), encoding="utf-8")
+
+    stderr = "exec_command failed: CreateProcess rejected: blocked by policy"
+    res = subprocess.CompletedProcess(args=["codex"], returncode=1, stdout="", stderr=stderr)
+
+    diag = format_e2e_diagnostics(res, sessions_dir=sessions_dir, scenario="DENY")
+
+    assert "(a) Codex Native Execution Policy:" in diag
+    assert "Status: BLOCKED" in diag
+
+    assert "(b) AgentContract Hook Dispatch:" in diag
+    assert "Status: INVOKED" in diag
+    assert "BLOCK" in diag
+
+    assert "(c) Codex Runtime Enforcement (DENY):" in diag
+    assert "Status: UNVERIFIED" in diag
+
 
 
 

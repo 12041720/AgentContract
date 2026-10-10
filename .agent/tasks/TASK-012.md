@@ -64,53 +64,54 @@ Conversely, when SpecGuard denies a tool call, the structured denial JSON (`perm
 - Aligned `PreToolUse` output protocol with Codex CLI (v0.162.0+):
   - Updated `PreToolUseOutput` model in `src/agentcontract/integrations/codex/models.py` to support `updatedInput: Mapping[str, Any] | None = None`.
   - Updated `to_hook_response_dict()` so that when `permissionDecision == HookDecision.ALLOW` without `updatedInput`, an empty dictionary `{}` is returned (exits 0 with empty stdout). When `updatedInput` is provided on ALLOW, it is included in the structured dictionary.
-  - Kept the structured denial dictionary with `permissionDecision="deny"` and `permissionDecisionReason` intact on DENY branches, ensuring all constraints and fail-closed protections remain fully enforced.
-- Addressed all Round 11 Main Agent Review blockers in Round 12:
-  1. **Blocker 1 — Strict Doctor PreToolUse ALLOW Child Subprocess Wire-Format Check**:
-     - Updated `doctor_hooks()` in `src/agentcontract/integrations/codex/cli.py` to strictly enforce that the PreToolUse ALLOW child subprocess exits with code 0 (`res_allow.returncode == 0`) AND returns completely empty stdout (`res_allow.stdout.strip() == ""`).
-     - Any non-empty stdout (including garbage strings, parse errors, or non-empty structured ALLOW JSON such as `{"hookSpecificOutput": {"permissionDecision": "allow"}}`) is rejected as a protocol violation (`[FAIL] PreToolUse ALLOW protocol violation: expected exit code 0 with completely empty stdout (no input rewrite), but received nonempty stdout`) and causes doctor to return exit code 1.
-     - Updated doctor section 4 output to `[PASS] ALLOW wire-format: exit code 0 with completely empty stdout (no input rewrite)`.
-     - Added deterministic regression tests in `tests/integrations/test_codex_isolation.py`:
-       - `test_doctor_hooks_rejects_allow_garbage_stdout`: verifies junk stdout from ALLOW subprocess fails doctor with exit code 1.
-       - `test_doctor_hooks_rejects_allow_structured_json_stdout`: verifies non-empty structured JSON from ALLOW subprocess fails doctor with exit code 1.
-  2. **Blocker 2 — Precise Global Codex Directory Snapshot & Scoped Integrity Verification**:
-     - Enhanced before/after snapshot of user global `~/.codex` (`user_codex_home`):
-       - Lists top-level directory entries before and after the smoke test and verifies both additions (`added_entries = post_entries - user_codex_entries_before`) and deletions (`deleted_entries = user_codex_entries_before - post_entries`). Deletions fail doctor with exit code 1.
-       - Clearly scopes content hashing to `TRACKED_GLOBAL_FILES = ("config.toml", "hooks.json", "auth.json")`.
-       - Handled read/listing errors: baseline or post-smoke read/hash failures (`Exception` / `OSError`) are captured in error lists and fail doctor with exit code 1 instead of silently passing.
-       - Narrowed doctor output claims to accurately reflect the verified scope: `[PASS] User global ~/.codex observed untouched (top-level entries identical; tracked files {tracked_list} verified unchanged)`.
-       - Explicitly labeled unmonitored boundaries: `[NOT OBSERVED] External system ACLs, unmanaged background processes, untracked subdirectory contents, and Desktop GUI state not monitored`.
-     - Added regression tests in `tests/integrations/test_codex_isolation.py`:
-       - `test_doctor_hooks_detects_user_codex_entry_deletion`: verifies deletion of a top-level file in `~/.codex` fails doctor with exit code 1.
-       - `test_doctor_hooks_detects_user_codex_tracked_file_mutation`: verifies in-place modification of tracked config files fails doctor with exit code 1.
-       - `test_doctor_hooks_fails_on_user_codex_read_failure`: verifies read failure when hashing tracked files fails doctor with exit code 1.
-       - `test_doctor_hooks_untracked_file_mutation_does_not_falsely_claim_verified`: verifies in-place mutation of untracked files does not cause doctor to claim all files were verified, properly reporting scope limited to tracked files and noting untracked contents as NOT OBSERVED.
+  - Kept structured denial dictionary with `permissionDecision="deny"` and `permissionDecisionReason` intact on DENY branches, ensuring all constraints and fail-closed protections remain fully enforced.
+- Addressed all items from Round 13 Review:
+  1. **UTF-8 Output Encoding & Decode Robustness in Online E2E Subprocesses**:
+     - Updated all four `subprocess.run` invocations across `test_real_codex_cli_pretooluse_allow_completed` and `test_real_codex_cli_pretooluse_deny_blocked` (both initial attempts and retry branches) to explicitly specify `encoding="utf-8"` and `errors="replace"`.
+     - Updated `doctor_hooks()` child subprocess invocations (`res_start`, `res_allow`, `res_block`) in `src/agentcontract/integrations/codex/cli.py` to specify `encoding="utf-8", errors="replace"`.
+     - Added deterministic regression tests:
+       - `test_real_codex_cli_subprocess_calls_use_utf8_encoding`: AST inspection verifying all online E2E subprocess calls pass `encoding="utf-8"` and `errors="replace"`.
+       - `test_subprocess_utf8_decode_handles_non_gbk_bytes`: verifies handling multi-byte UTF-8 sequences containing byte `0x9d` (e.g. curly quotes, emoji) without raising `UnicodeDecodeError` or emitting unhandled reader thread warnings on Windows CP936/GBK.
+  2. **Three-Way Structured Diagnostics**:
+     - Implemented `inspect_e2e_hook_dispatch(sessions_dir)` and `format_e2e_diagnostics(res, sessions_dir, scenario, upstream_error)` in `tests/integrations/test_codex_cli.py`.
+     - Explicitly reports across three independent axes:
+       - `(a) Codex Native Execution Policy`: reports whether Windows execution policy blocked process launch (extracting matched pattern and target shell binary such as `pwsh.exe`);
+       - `(b) AgentContract Hook Dispatch`: scans `sessions_dir` and `trace.json` to report whether hooks were actually dispatched, how many sessions were created, and what verdicts were issued;
+       - `(c) Codex Runtime Enforcement`: reports whether tool execution / hook rejection was observed, explicitly noting that when upstream policy blocks command spawn before process creation, the protected file remaining unchanged is an environmental side effect and does NOT constitute Guard DENY proof (`LIVE E2E UNVERIFIED`).
+     - Added regression tests:
+       - `test_format_e2e_diagnostics_separates_policy_hook_and_enforcement`
+       - `test_format_e2e_diagnostics_reports_hook_invoked_when_trace_present`
+  3. **Read-Only Diagnostic on WindowsApps pwsh.exe Resolution and Isolated CODEX_HOME**:
+     - Root cause of `pwsh.exe` selection: Microsoft Store PowerShell 7.6.6 is registered in system `PATH` (`C:\Program Files\WindowsApps\Microsoft.PowerShell_7.6.6.0_x64__8wekyb3d8bbwe\pwsh.exe`). Codex CLI's internal Rust router (`powershell.rs`) searches `PATH` for `pwsh.exe` first before falling back to `powershell.exe`.
+     - Root cause of `CreateProcess rejected: blocked by policy`: Binaries in `WindowsApps` are MSIX packages requiring package identity / AppExecutionAlias activation; direct `CreateProcess` from non-packaged or restricted sandboxed processes is blocked by Windows execution policy.
+     - Root cause of difference between user's real `~/.codex` and isolated `CODEX_HOME`:
+       The user's real `~/.codex` contains `cap_sid` (pre-provisioned AppContainer Capability SIDs) and `.sandbox-bin` (`codex-command-runner.exe`). In contrast, isolated `CODEX_HOME` is brand new and unprovisioned. Attempting native elevated sandbox setup triggers user-profile ACE modifications and fails with `os error 32` sharing violation on `node_repl.exe`.
+     - Confirmed that no safe project-level hook configuration can override Codex CLI's hardcoded internal shell discovery in Rust. Therefore, maintaining the honest `UPSTREAM_ENV_BLOCKED` and `LIVE E2E UNVERIFIED` status without unsafe sandbox elevation or ACL mutations is the only contract-compliant posture.
 
 **Files changed:**
 - `src/agentcontract/integrations/codex/cli.py`
-- `tests/integrations/test_codex_isolation.py`
+- `tests/integrations/test_codex_cli.py`
 - `.agent/tasks/TASK-012.md`
 
 **Tests/checks run and results:**
-- `python -m pytest tests/integrations/test_codex_isolation.py` (27 passed in 20.74s, 0 failures)
-- `python -m pytest tests/integrations/test_codex_cli.py` (13 passed, 2 skipped in 0.75s, 0 failures)
-- Full test suite on Python 3.12.9: `python -m pytest` (**383 passed, 2 skipped in 30.37s, 0 failures**).
-- Real Codex CLI online E2E tests: both `test_real_codex_cli_pretooluse_allow_completed` and `test_real_codex_cli_pretooluse_deny_blocked` safely skip when dedicated isolated test credentials (`AGENTCONTRACT_TEST_CODEX_AUTH_JSON` / `CODEX_TEST_AUTH_JSON`) are absent from the environment.
-- Nonfatal Codex warnings (`Refusing to create helper binaries under temporary dir` and `could not create PATH aliases`) do not cause E2E tests to prematurely skip as blockers.
+- `python -m pytest tests/integrations/test_codex_cli.py` (17 passed, 2 skipped in 1.08s, 0 failures)
+- `python -m pytest tests/integrations/test_codex_isolation.py` (27 passed in 20.58s, 0 failures)
+- Full test suite on Python 3.12.9: `python -m pytest` (**387 passed, 2 skipped in 32.11s, 0 failures**).
+- Real online Codex CLI tests: safely skip with comprehensive 3-way diagnostics when test credentials are absent or when upstream Windows execution policy blocks process creation.
 - Zero repository root pollution: `Path(".agentcontract").exists() == False`.
 - User personal `~/.codex` completely untouched.
 
 **Known limitations / E2E Acceptance Status:**
-- Default offline workflow and unit/integration test suite are fully verified and passing (383 passed, 2 skipped).
+- Default offline workflow and unit/integration test suite are fully verified and passing (387 passed, 2 skipped).
 - Real online Codex CLI tests remain an opt-in acceptance check (`SKIPPED` when dedicated test credentials absent). If upstream Codex CLI runtime encounters native Windows sandbox policy blocks (`rejected: blocked by policy` / `os error 32`), it is safely flagged as `UPSTREAM_ENV_BLOCKED: ... LIVE E2E UNVERIFIED`. AgentContract does not attempt unsafe elevated sandbox setup, unrestricted mode, or global ACL mutations.
 
 **Commit SHA & Handoff Verification:**
-- Confirmed review round: Round 11 main-agent review (2026-10-10)
-- Remote synchronization commit: `8c27d769f6502c549413ac22d1efe66a486f94f2`
-- Implementation commit: `9b3538f4a9861e38097dd2880eeed0608220eab9`
+- Confirmed review round: Round 13 main-agent review (2026-10-10)
+- Remote synchronization commit: `a5c17997931c360be1db2687c7161bcf76a8d875`
+- Implementation commit: pending commit for Round 13
 
 **Questions/blockers for main-agent review:**
-- None. Both Round 11 blockers are resolved, negative regressions added, and full test suite passes with 383 passed / 2 skipped on Python 3.12.9. Ready for main-agent review.
+- None. Offline suite has 387 passes, UTF-8 decode issues resolved, 3-way diagnostics implemented, and read-only investigation of WindowsApps pwsh.exe completed. Ready for main-agent review.
 
 ---
 
