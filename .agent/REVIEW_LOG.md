@@ -954,3 +954,10 @@ User-run `codex-cli 0.162.0`, Python 3.12.9, `pytest -k real_codex_cli_pretoolus
 
 **CHANGES_REQUESTED (diagnostic evidence only); native Codex E2E still BLOCKED/UNVERIFIED.** Reviewed `616b7640` with Executor Report HEAD `a7ce471f`; report says Windows Python 3.12.9 **387 passed/2 skipped**, not independently run. UTF-8 decode now explicit on four online E2E subprocess calls including retries, and three offline doctor commands; regression cases added. Two diagnostic false positives: (1) `format_e2e_diagnostics` infers true `COMPLETED/BLOCKED` from plain substring anywhere in arbitrary stdout/stderr; needs machine-event+Guard correlation or status UNVERIFIED. (2) `inspect_e2e_hook_dispatch` reports INVOKED when any lifecycle trace event exists, even USER_MESSAGE without PreToolUse GUARD_DECISION; must label lifecycle-only separately and require guard evidence for PreToolUse. Root-cause claims about MSIX shell policy/isolated CODEX_HOME lack presented read-only evidence: qualify as hypotheses. No unsafe Windows sandbox workarounds or repeated user live E2E until meaningful safe compatibility change. Keep main unchanged, no TASK-013. Full instructions in TASK-012 Round 14.
 
+---
+
+
+## 2026-10-10 — TASK-012 round 15 review
+
+**CHANGES_REQUESTED, narrow remaining diagnostic false-positive.** Reviewed `9b101dab` and report at `2832a66f`; executor reports Python 3.12.9 **391 passed/2 skipped**, not independently reproduced. Fixes separating plain prose from machine JSONL status and lifecycle-only traces from Guard PreToolUse are present. But `format_e2e_diagnostics` currently marks `ENFORCED` when ANY completed/blocked `item` coexists with ANY Guard ALLOW/BLOCK, even different call IDs, and tests use identity-less fixtures; it also accepts non-tool item statuses. Require same-call, tool-type provenance and Codex-origin denial, or conservatively label partial evidence UNVERIFIED. Add negative mismatched-call and agent_message tests. Real Codex online E2E still UPSTREAM_ENV_BLOCKED / UNVERIFIED; no user rerun/unsafe sandbox fixes requested. Round 15 full criteria in TASK-012.
+

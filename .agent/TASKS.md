@@ -102,3 +102,5 @@ M7 round 13 (2026-10-10): Real user opt-in Windows Codex 0.162.0 E2E: 2 skipped,
 
 M7 round 14 (2026-10-10): CHANGES_REQUESTED narrowly for evidence accuracy. UTF-8 process decode fix landed (agent reports 387 passed/2 skipped), but three-way diagnostics may falsely claim Codex runtime enforcement via "Completed"/"Blocked" prose and PreToolUse hook invocation from unrelated lifecycle trace events. Root-cause WindowsApps/MSIX claims require evidence or uncertainty labels. Native live E2E still BLOCKED/UNVERIFIED, no main merge/TASK-013. See Round 14 TASK-012.
 
+M7 round 15 (2026-10-10): CHANGES_REQUESTED for single diagnostic false-positive: `format_e2e_diagnostics` reports ENFORCED from unrelated tool machine event and Guard verdict, without same-call identity; `agent_message` can count as completed tool. Require genuine per-call/tool evidence or conservative UNVERIFIED, negative tests. Executor reports 391 passed/2 skipped; native Codex real E2E still UPSTREAM_ENV_BLOCKED, no rerun/merge/TASK-013. See task Round 15.
+

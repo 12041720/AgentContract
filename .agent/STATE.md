@@ -17,7 +17,7 @@
 - Work branch: `task/TASK-012-codex-pretooluse-compat`
 - Status: **CHANGES_REQUESTED**
 - Owner: Execution agent
-- Main-agent review: Round 14 CHANGES_REQUESTED (UTF-8 fix approved; diagnostic false-positive; live E2E remains BLOCKED/UNVERIFIED)
+- Main-agent review: Round 15 CHANGES_REQUESTED (machine/Guard evidence not correlated per-call; live E2E still blocked)
 - Previous accepted milestone: TASK-011 / M6
 
 ## Main-agent checkpoint
@@ -188,4 +188,11 @@ On a new session:
 - Three-way diagnostics currently incorrectly infer runtime enforcement from plain "Completed"/"Blocked" strings and declare PreToolUse hook INVOKED merely from unrelated lifecycle trace events. Round 14 CHANGES_REQUESTED requires precise machine-event/Guard evidence and honest unverified labels.
 - Shell selection and Microsoft Store/MSIX root cause asserted without captured evidence; treat as hypothesis. Previous independently user-run 383-offline-PASS still stands.
 - Genuine native Codex Windows ALLOW/Completed and DENY/Blocked remains BLOCKED/UNVERIFIED due CreateProcess policy; no global ACL/config/process/security changes, product merge, TASK-013, or gratuitous E2E reruns.
+
+## M7 round 15 checkpoint (2026-10-10)
+
+- Reviewed implementation `9b101dab86748c247aed6b4ba43f39f3b02b4a60`, report head `2832a66f954e5b736cc808d61a33c8cba258876e`; executor confirms Round 14 task synced at `6902ba33`. Executor reports Windows Python 3.12.9 full suite 391 passed / 2 skipped; no independent rerun.
+- Lifecycle-only vs PreToolUse GUARD_DECISION correctly separated, plaintext Completed/Blocked no longer considered runtime evidence, shell/MSIX cause cautiously called hypothesis.
+- Diagnostic `ENFORCED` remains falsely possible if an unrelated completed/failed JSONL item coexists with an unrelated Guard verdict, or an agent_message item has status completed. Round 15 CHANGES_REQUESTED: correlate same tool/call with matching Guard and runtime result, or mark partial evidence UNVERIFIED. Tests must cover mismatch.
+- Previous local user-run offline PASS still valid. Native Codex 0.162.0 Windows tool process remains UPSTREAM_ENV_BLOCKED/UNVERIFIED; no redundant reruns, unsafe sandbox provisioning, global config/ACL/process changes, product merge or TASK-013.
 

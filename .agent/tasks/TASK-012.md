@@ -4,7 +4,7 @@
 **Milestone:** M7 — Codex Runtime Protocol Compatibility  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-012-codex-pretooluse-compat`  
-**Main-agent review:** CHANGES_REQUESTED — round 14 (diagnostic false positives; live E2E still blocked)
+**Main-agent review:** CHANGES_REQUESTED — round 15 (cross-call diagnosis false-positive; live E2E blocked)
 
 ## Objective
 
@@ -407,4 +407,21 @@ This is first-hand user-run offline evidence closing the round-12 **offline** ga
 **Evidence-claim correction (non-code):** The Executor Report asserts confirmed root causes about Microsoft Store `pwsh.exe` direct CreateProcess/MSIX identity, Codex Rust shell resolution, and `cap_sid` differences between actual profile and isolated `CODEX_HOME`, but the report supplies no captured read-only command output or upstream code references proving causal mechanism. The WindowsApps path was observed in the user's error, so it is an important hypothesis, **not a verified root cause**. Qualify those as hypotheses unless evidence can be provided read-only. Do not imply the isolated test identity can be repaired safely by touching user-global Codex runtime/ACL. No auto elevation, restricted sandbox bypass, global config/auth change, process kills, or VM/dedicated account requirement.
 
 **Scope and test expectation:** Fix just the two meaningful diagnostic false positives and report claims; maintain offline previously verified **383-pass** gate and rerun the current full offline suite. Keep authenticated real Codex CLI tests opt-in. If native Codex sandbox continues to block harmless CreateProcess, report `UPSTREAM_ENV_BLOCKED` with hook/runtime enforcement independently `UNVERIFIED`, and **do not re-ask the user to rerun the same known-blocked test** until a safe actionable native compatibility change has been identified. Record new implementation SHA, review round and regression evidence in Executor Report and push task branch. Do not merge main.
+
+
+### Round 15 main-agent review — 2026-10-10
+
+**Verdict: CHANGES_REQUESTED (one narrowly scoped evidence-correlation false-positive); LIVE Codex ALLOW/DENY remains UPSTREAM_ENV_BLOCKED / UNVERIFIED.** The earlier Round 14 claims about general prose and lifecycle-only events have been addressed, and no modifications are needed to core AgentContract hook enforcement.
+
+**Reviewed implementation:** `9b101dab86748c247aed6b4ba43f39f3b02b4a60`; executor report branch HEAD `2832a66f954e5b736cc808d61a33c8cba258876e`. Executor confirmed reading Round 14 at `6902ba338d9338d51e143b785b4286acafe5c591`, satisfying handoff. Executor reports Python 3.12.9 `391 passed / 2 skipped`; no independent Windows/online successful Codex run.
+
+**Improvements accepted:** `inspect_e2e_hook_dispatch()` now distinguishes only lifecycle trace activity (`PRETOOLUSE_UNVERIFIED`) from one or more GUARD_DECISION events (`PRETOOLUSE_INVOKED`). Diagnostic `format_e2e_diagnostics()` no longer treats ordinary stdout/stderr substring `Completed` / `Blocked` as runtime proof, and WindowsApps/MSIX explanations are correctly qualified as hypotheses. Four new offline regressions cover these behaviors. Strict older real-E2E assertions that independently correlate calls remain intact.
+
+**BLOCKER — diagnostic `ENFORCED` can be falsely inferred from unrelated machine events and Guard traces.** In `tests/integrations/test_codex_cli.py`, `format_e2e_diagnostics` computes `has_completed_tool_item = any(item.status=="completed"...)` and `has_allow_guard = "ALLOW" in hook_info.guard_verdicts` separately, without comparing the SAME call_id, target command, session or tool identity. Analogously DENY combines arbitrary blocked machine item or generic stderr phrase with *any* unrelated Guard BLOCK trace. Its positive test fixtures only use `{"item":{"status":"completed","exit_code":0}}` and a `GUARD_DECISION` with no call id/command, which cannot justify the label `ENFORCED`. Additionally `parse_codex_cli_items` returns any `item` dictionary, so `agent_message` with status `completed` can be miscounted as a **tool** item. A failed unrelated tool and a BLOCK for a different call can falsely pass diagnostic, or ordinary echo-stderr may pass if no proper provenance checked.
+
+**Minimum repair:** either (preferred) make diagnostic ENFORCED require explicit identity correlation (call_id first; narrowly grounded command/target fallback when IDs truly unavailable) between **tool-type** Codex JSONL item and `GUARD_DECISION.payload.action.context.call_id` or equivalent, validating expected ALLOW success or DENY rejection for the *same attempted tool*; and for DENY only accept provenance-distinct Codex runtime denial tied to that tool, excluding hook's own stderr; OR conservatively rename partial evidence status to `PARTIAL_EVIDENCE / UNVERIFIED` and reserve ENFORCED for the already-stricter full test assertions. Do not infer ENFORCED from 2 independent existential booleans. Add negative regressions for mismatched call ids, completed `agent_message` masquerading as a tool, unrelated blocked item + Guard BLOCK, and positive same-call correlation. Keep tests deterministic/offline and no actual Codex invocation needed.
+
+**No new runtime testing requested:** Previous user native Codex CLI 0.162.0 ALLOW Get-Content and DENY Set-Content both were blocked at CreateProcess by Windows policy. The online gate is still unverified, so do NOT request a rerun merely for new diagnostics; do not create dedicated Windows user/VM, configure elevated sandbox, change user-global ACLs/auth/config/shell PATH, kill Codex processes, or enable unrestricted bypass.
+
+**Executor:** Apply only this helper-level diagnostic hardening to the TASK-012 branch, run local Python 3.12.9 offline suite, update Executor Report with actual SHA and test evidence, push. Preserve offline doctor verified from user log (383 passed, 2 excluded; later executor reports 391 passed, 2 skipped). No merge to main or TASK-013.
 
