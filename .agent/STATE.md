@@ -17,7 +17,7 @@
 - Work branch: `task/TASK-012-codex-pretooluse-compat`
 - Status: **CHANGES_REQUESTED**
 - Owner: Execution agent
-- Main-agent review: Round 9 CHANGES_REQUESTED (user requires easy project-only normal Codex; no global ACL/config/process impacts)
+- Main-agent review: Round 10 CHANGES_REQUESTED (nonfatal Codex warning misclassified; doctor in-process hook false-positive; unverified global-integrity PASS claims)
 - Previous accepted milestone: TASK-011 / M6
 
 ## Main-agent checkpoint
@@ -147,3 +147,10 @@ On a new session:
 - Windows elevated sandbox ACL changes despite isolated CODEX_HOME: no automatic provisioning, no unsafe mode fallback. Explicitly report upstream environment blocked.
 - Offline no-login safe doctor/smoke is required; actual Codex online ALLOW/DENY is separate optional QA and currently UNVERIFIED.
 - Round 9 CHANGES_REQUESTED for minimal safe UX and regression hardening. No main product merge or TASK-013.
+
+## M7 round 10 checkpoint (2026-10-10)
+
+- Reviewed reachable implementation `1df5f26325d968e0111fb1f9cf7b2263b544a0b3`, branch report `8bc5b3700391c9f987195000f125e8e3d2d7414b`; offline executor Windows Python 3.12.9 373 passed / 2 skipped; no CI or independent runtime evidence.
+- New project-local offline `agentcontract codex doctor` improves UX, but its direct in-process `run_hook` cannot establish actual project hook command dispatch or Codex acceptance. Doctor may PASS if hook command contains marker but is not executable, and overclaims integrity without evidence.
+- Live E2E helper erroneously treats a known nonfatal temp CODEX_HOME PATH-alias warning as fatal upstream block and may skip genuine tests. Must separate warnings from actual tool/sandbox failures.
+- Round 10 CHANGES_REQUESTED; enforce truthful status/cleanup and simple safe offline test, no unsafe sandbox setup, no main product merge/TASK-013; real Codex E2E still UNVERIFIED.
