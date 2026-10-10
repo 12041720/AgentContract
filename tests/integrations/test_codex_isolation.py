@@ -12,6 +12,7 @@ import pytest
 from agentcontract.cli import main
 from agentcontract.integrations.codex.cli import (
     audit_hooks,
+    doctor_hooks,
     install_hooks,
     status_hooks,
     uninstall_hooks,
@@ -501,4 +502,157 @@ def test_environment_integrity_guard_resilience(tmp_path: Path) -> None:
 
     assert teardown_executed is True, "Integrity check must execute on test failure"
     assert caught_mutation is True, "Integrity check must catch in-place mutations"
+
+
+def test_doctor_hooks_on_installed_project(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test doctor_hooks on an installed project: verifies all 5 diagnostic categories and clean disposable smoke session."""
+    proj = tmp_path / "doctor_installed_proj"
+    proj.mkdir()
+
+    # 1. Install hooks
+    ret_install = install_hooks(project_dir=proj)
+    assert ret_install == 0
+
+    # 2. Run doctor
+    ret_doctor = doctor_hooks(project_dir=proj)
+    assert ret_doctor == 0
+
+    captured = capsys.readouterr()
+    assert "AgentContract Codex Doctor Report" in captured.out
+    assert "[PASS] Project boundary containment verified" in captured.out
+    assert "[PASS] hooks.json syntax and schema valid" in captured.out
+    assert "[PASS] SessionStart hook executed successfully" in captured.out
+    assert "[PASS] PreToolUse hook invoked and processed inputs" in captured.out
+    assert "[PASS] Compliant action evaluated -> SpecGuard ALLOW recorded" in captured.out
+    assert "[PASS] Forbidden action evaluated -> SpecGuard BLOCK recorded" in captured.out
+    assert "[PASS] Authentic trace events recorded in session store" in captured.out
+    assert "[PASS] ALLOW wire-format: clean exit without blocking" in captured.out
+    assert "[PASS] BLOCK wire-format: structured JSON denial" in captured.out
+    assert "[PASS] User global ~/.codex completely untouched" in captured.out
+    assert "[PASS] Zero elevated sandbox or global ACL modification required" in captured.out
+    assert "Upstream Environment Advisory" in captured.out
+
+    # 3. Verify disposable smoke session was completely cleaned up
+    sessions_dir = proj / ".agentcontract" / "sessions"
+    if sessions_dir.exists():
+        remaining = list(sessions_dir.iterdir())
+        assert not remaining, f"Disposable smoke sessions leaked into project: {remaining}"
+
+
+def test_doctor_hooks_on_uninstalled_project(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test doctor_hooks on an uninstalled project: fails gracefully with informative instructions."""
+    proj = tmp_path / "doctor_uninstalled_proj"
+    proj.mkdir()
+
+    ret = doctor_hooks(project_dir=proj)
+    assert ret == 1
+
+    captured = capsys.readouterr()
+    assert "AgentContract Codex Doctor Report" in captured.out
+    assert "[FAIL] Project hooks file" in captured.out
+    assert "hooks.json' not found" in captured.out
+    assert "To install hooks locally:" in captured.out
+    assert "agentcontract codex install --project" in captured.out
+
+
+def test_doctor_hooks_via_cli_main(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test 'agentcontract codex doctor --project <dir>' CLI routing."""
+    proj = tmp_path / "cli_doctor_proj"
+    proj.mkdir()
+
+    ret_inst = main(["codex", "install", "--project", str(proj)])
+    assert ret_inst == 0
+
+    ret_doc = main(["codex", "doctor", "--project", str(proj)])
+    assert ret_doc == 0
+
+    captured = capsys.readouterr()
+    assert "AgentContract Codex Doctor Report" in captured.out
+    assert "AgentContract Codex hooks are healthy, validated, and isolated" in captured.out
+
+
+def test_doctor_hooks_preserves_foreign_hooks(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test that doctor_hooks recognizes and preserves foreign hook entries."""
+    proj = tmp_path / "foreign_doc_proj"
+    codex_dir = proj / ".codex"
+    codex_dir.mkdir(parents=True)
+    hooks_file = codex_dir / "hooks.json"
+
+    foreign_cfg = {
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": "Bash",
+                    "hooks": [{"type": "command", "command": "node scripts/linter.js"}],
+                }
+            ]
+        }
+    }
+    hooks_file.write_text(json.dumps(foreign_cfg, indent=2), encoding="utf-8")
+
+    # Install merges AgentContract
+    ret_install = install_hooks(project_dir=proj)
+    assert ret_install == 0
+
+    # Doctor verifies both AgentContract and foreign hooks
+    ret_doc = doctor_hooks(project_dir=proj)
+    assert ret_doc == 0
+
+    captured = capsys.readouterr()
+    assert "[PASS] Foreign configuration preserved (1 foreign handler(s))" in captured.out
+
+    # Verify foreign command is still intact in file
+    data = json.loads(hooks_file.read_text(encoding="utf-8"))
+    commands = [
+        h["command"]
+        for entry in data["hooks"]["PreToolUse"]
+        for h in entry.get("hooks", [])
+    ]
+    assert "node scripts/linter.js" in commands
+
+
+def test_zero_cross_project_interference_and_no_acl_mutations(tmp_path: Path) -> None:
+    """Product usability & zero-interference regression test:
+    Verify install, status, doctor, audit, uninstall cycles:
+    - Never touch personal ~/.codex or global CODEX_HOME
+    - Never configure elevated sandbox
+    - Never invoke process kill or ACL mutations
+    - Retain project boundary containment
+    """
+    import hashlib
+
+    real_codex = Path.home() / ".codex"
+    existed_before = real_codex.exists()
+    entries_before = set(real_codex.iterdir()) if existed_before else set()
+
+    def _hash_file(p: Path) -> str | None:
+        try:
+            return hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None
+        except OSError:
+            return None
+
+    tracked = ["config.toml", "hooks.json", "auth.json"]
+    hashes_before = {f: _hash_file(real_codex / f) for f in tracked} if existed_before else {}
+
+    proj = tmp_path / "zero_interference_proj"
+    proj.mkdir()
+
+    # Run full lifecycle: install -> status -> doctor -> audit -> uninstall
+    assert install_hooks(project_dir=proj) == 0
+    assert status_hooks(project_dir=proj) == 0
+    assert doctor_hooks(project_dir=proj) == 0
+    assert audit_hooks(project_dir=proj) == 0
+    assert uninstall_hooks(project_dir=proj) == 0
+
+    # Assert real ~/.codex is completely identical
+    if existed_before:
+        assert real_codex.exists()
+        entries_after = set(real_codex.iterdir())
+        assert entries_after == entries_before, f"New entries added to ~/.codex: {entries_after - entries_before}"
+        for f, pre_h in hashes_before.items():
+            if pre_h is not None:
+                assert _hash_file(real_codex / f) == pre_h, f"~/.codex/{f} was mutated!"
+    else:
+        assert not real_codex.exists(), "~/.codex was unexpectedly created!"
+
 

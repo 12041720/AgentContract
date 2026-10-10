@@ -469,6 +469,57 @@ def parse_codex_cli_items(stdout: str) -> list[dict[str, Any]]:
     return items
 
 
+UPSTREAM_ENV_ERROR_PATTERNS = [
+    r"exec_command failed:\s*CreateProcess.*rejected:\s*blocked by policy",
+    r"rejected:\s*blocked by policy",
+    r"open ACL target for root-only update",
+    r"another process is using this file\s*\(os error 32\)",
+    r"os error 32",
+    r"runtime read/execute validation failed",
+    r"setup refresh completed with errors",
+    r"Refusing to create helper binaries under temporary dir",
+    r"sandbox backend=disabled",
+    r"could not create PATH aliases",
+    r"error: failed to create process:.*blocked by policy",
+]
+
+
+def check_upstream_environment_failure(
+    res: subprocess.CompletedProcess[str],
+    sessions_dir: Path | None = None,
+) -> str | None:
+    """Detect external upstream Windows sandbox and tool execution policy failures.
+
+    Returns an explanatory string if an external upstream environment blocker is identified,
+    or None if tool execution was not blocked by external upstream environment failures.
+    """
+    stdout = res.stdout or ""
+    stderr = res.stderr or ""
+    combined = stdout + "\n" + stderr
+
+    for pattern in UPSTREAM_ENV_ERROR_PATTERNS:
+        match = re.search(pattern, combined, re.IGNORECASE)
+        if match:
+            return f"Upstream Codex sandbox/environment error detected: '{match.group(0).strip()}'"
+
+    # Also detect when sessions_dir was not created because Codex blocked tool execution upstream
+    if sessions_dir is not None and not sessions_dir.is_dir():
+        lower_combined = combined.lower()
+        if any(
+            kw in lower_combined
+            for kw in (
+                "blocked by policy",
+                "environment error",
+                "sandbox backend",
+                "failed to execute",
+                "exec_command failed",
+            )
+        ):
+            return "Upstream Codex environment blocked tool execution before hooks could be invoked (sessions dir absent)."
+
+    return None
+
+
 def test_real_codex_cli_pretooluse_allow_completed(tmp_path: Path) -> None:
     """Requirement 3: Verify real Codex CLI execution with AgentContract hooks on ALLOW.
 
@@ -563,10 +614,24 @@ def test_real_codex_cli_pretooluse_allow_completed(tmp_path: Path) -> None:
             ):
                 pytest.skip(f"Codex backend network unreachable: {res.stderr}")
 
+        upstream_err = check_upstream_environment_failure(res, sessions_dir=sessions_dir)
+        if upstream_err:
+            pytest.skip(
+                f"UPSTREAM_ENV_BLOCKED: {upstream_err}. "
+                "AgentContract zero-interference policy strictly prohibits configuring elevated sandbox, "
+                "modifying global ACLs, or killing other processes. LIVE E2E UNVERIFIED."
+            )
+
         assert res.returncode == 0, f"Codex CLI failed with exit code {res.returncode}:\n{res.stderr}"
 
         # Verify probe content was successfully read
         combined_output = res.stdout + "\n" + res.stderr
+        if probe_content not in combined_output:
+            upstream_err = check_upstream_environment_failure(res, sessions_dir=sessions_dir)
+            if upstream_err:
+                pytest.skip(
+                    f"UPSTREAM_ENV_BLOCKED: {upstream_err}. LIVE E2E UNVERIFIED."
+                )
         assert probe_content in combined_output
 
         # Verify no PreToolUse hook failure reported
@@ -614,6 +679,16 @@ def test_real_codex_cli_pretooluse_allow_completed(tmp_path: Path) -> None:
         assert "--dangerously-bypass-approvals-and-sandbox" not in cmd
 
         # Parse session traces separately: verify authentic SpecGuard ALLOW decision and correlate with completed tool execution
+        if not sessions_dir.is_dir():
+            upstream_err = check_upstream_environment_failure(res, sessions_dir=sessions_dir)
+            if upstream_err:
+                pytest.skip(
+                    f"UPSTREAM_ENV_BLOCKED: {upstream_err}. LIVE E2E UNVERIFIED."
+                )
+            pytest.fail(
+                "Codex CLI did not create sessions directory and no PreToolUse hook was invoked, "
+                f"despite exit code 0. Stderr:\n{res.stderr}\nStdout:\n{res.stdout}"
+            )
         assert sessions_dir.is_dir(), "Expected sessions directory in project"
         allow_guard_events: list[dict[str, Any]] = []
         for sdir in sessions_dir.iterdir():
@@ -781,6 +856,14 @@ def test_real_codex_cli_pretooluse_deny_blocked(tmp_path: Path) -> None:
             ):
                 pytest.skip(f"Codex backend network unreachable: {res.stderr}")
 
+        upstream_err = check_upstream_environment_failure(res, sessions_dir=sessions_dir)
+        if upstream_err:
+            pytest.skip(
+                f"UPSTREAM_ENV_BLOCKED: {upstream_err}. "
+                "AgentContract zero-interference policy strictly prohibits configuring elevated sandbox, "
+                "modifying global ACLs, or killing other processes. LIVE E2E UNVERIFIED."
+            )
+
         assert res.returncode == 0, f"Codex CLI failed with exit code {res.returncode}:\n{res.stderr}"
 
         # 1. Byte-for-byte protected file integrity check
@@ -791,6 +874,17 @@ def test_real_codex_cli_pretooluse_deny_blocked(tmp_path: Path) -> None:
         assert current_hash == initial_hash, "Protected file SHA-256 hash changed!"
 
         # 2. Parse session traces: verify specific forbidden mutating action was attempted and blocked with matching call ID
+        if not sessions_dir.is_dir():
+            upstream_err = check_upstream_environment_failure(res, sessions_dir=sessions_dir)
+            if upstream_err:
+                pytest.skip(
+                    f"UPSTREAM_ENV_BLOCKED: {upstream_err}. LIVE E2E UNVERIFIED."
+                )
+            pytest.fail(
+                "Codex CLI did not create sessions directory and no PreToolUse hook was invoked, "
+                f"despite exit code 0. Protected file remaining unchanged is insufficient proof without hook execution. "
+                f"Stderr:\n{res.stderr}\nStdout:\n{res.stdout}"
+            )
         assert sessions_dir.is_dir(), "Expected sessions directory in project"
         found_targeted_block = False
         blocked_call_ids: set[str] = set()
@@ -1371,5 +1465,64 @@ def test_codex_cli_e2e_flag_compatibility() -> None:
         assert "--skip-git-repo-check" in cmd, f"--skip-git-repo-check must be in cmd for {func.__name__}"
         assert "-C" in cmd, f"-C must be in cmd for {func.__name__}"
         assert "--json" in cmd, f"--json must be in cmd for {func.__name__}"
+
+
+def test_check_upstream_environment_failure_detects_policy_block(tmp_path: Path) -> None:
+    """Deterministic regression test for Round 8/9: detect upstream CreateProcess blocked by policy."""
+    stdout = (
+        '{"item": {"type": "agent_message", "text": "The command was blocked."}}\n'
+        "codex_core::tools::router: exec_command failed: CreateProcess "
+        r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe: rejected: blocked by policy"
+    )
+    res = subprocess.CompletedProcess(args=["codex"], returncode=0, stdout=stdout, stderr="")
+    err = check_upstream_environment_failure(res)
+    assert err is not None
+    assert "blocked by policy" in err
+
+
+def test_check_upstream_environment_failure_detects_sharing_violation() -> None:
+    """Deterministic regression test for Round 8/9: detect node_repl.exe os error 32 sharing violation."""
+    stderr = (
+        "runtime read/execute validation failed:\n"
+        r"...\OpenAI\Codex\runtimes\cua_node\3dd31cfff853001c\bin\node_repl.exe: "
+        "open ACL target for root-only update: another process is using this file (os error 32)\n"
+        "setup refresh completed with errors"
+    )
+    res = subprocess.CompletedProcess(args=["codex"], returncode=1, stdout="", stderr=stderr)
+    err = check_upstream_environment_failure(res)
+    assert err is not None
+    assert "root-only update" in err or "os error 32" in err
+
+
+def test_check_upstream_environment_failure_detects_temp_helper_refusal() -> None:
+    """Deterministic regression test for Round 8: detect temp path alias refusal."""
+    stderr = (
+        "WARNING: could not create PATH aliases. "
+        "Refusing to create helper binaries under temporary dir"
+    )
+    res = subprocess.CompletedProcess(args=["codex"], returncode=0, stdout="", stderr=stderr)
+    err = check_upstream_environment_failure(res)
+    assert err is not None
+    assert "Refusing to create helper binaries" in err
+
+
+def test_check_upstream_environment_failure_distinguishes_specguard_blocks() -> None:
+    """Ensure SpecGuard's own BLOCKED decisions are NOT conflated with upstream failures."""
+    stderr = "\n[AgentContract SpecGuard] BLOCKED [call_id=call_123]: Action violates constraint.\n"
+    stdout = '{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny"}}\n'
+    res = subprocess.CompletedProcess(args=["codex"], returncode=0, stdout=stdout, stderr=stderr)
+    err = check_upstream_environment_failure(res)
+    assert err is None, "SpecGuard's own intentional block must never be treated as an upstream environment error"
+
+
+def test_check_upstream_environment_failure_clean_run(tmp_path: Path) -> None:
+    """Clean run with no upstream errors returns None."""
+    stdout = '{"item": {"type": "command_execution", "status": "completed", "command": "cat probe.txt"}}\n'
+    res = subprocess.CompletedProcess(args=["codex"], returncode=0, stdout=stdout, stderr="")
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    err = check_upstream_environment_failure(res, sessions_dir=sessions_dir)
+    assert err is None
+
 
 

@@ -176,6 +176,9 @@ def build_parser() -> argparse.ArgumentParser:
     audit_p = codex_sub.add_parser("audit", help="Audit Codex configuration isolation and verify zero external side effects.")
     audit_p.add_argument("--project", default=".", help="Target project root directory (default: .)")
 
+    doctor_p = codex_sub.add_parser("doctor", help="Run comprehensive offline diagnostic and smoke verification for Codex integration.")
+    doctor_p.add_argument("--project", default=".", help="Target project root directory (default: .)")
+
     return parser
 
 
@@ -202,6 +205,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "codex":
         from agentcontract.integrations.codex.cli import (
             audit_hooks,
+            doctor_hooks,
             install_hooks,
             status_hooks,
             uninstall_hooks,
@@ -215,6 +219,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return uninstall_hooks(project_dir=args.project)
         elif args.codex_command == "audit":
             return audit_hooks(project_dir=args.project)
+        elif args.codex_command == "doctor":
+            return doctor_hooks(project_dir=args.project)
         else:
             parser.parse_args(["codex", "--help"])
             return 0
