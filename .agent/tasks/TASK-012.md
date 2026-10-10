@@ -1,10 +1,10 @@
 # TASK-012 — Codex CLI PreToolUse Output Protocol Compatibility
 
-**Status:** BLOCKED  
+**Status:** CHANGES_REQUESTED  
 **Milestone:** M7 — Codex Runtime Protocol Compatibility  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-012-codex-pretooluse-compat`  
-**Main-agent review:** BLOCKED — round 8
+**Main-agent review:** CHANGES_REQUESTED — round 9
 
 ## Objective
 
@@ -291,3 +291,18 @@ Upstream matching bug reports (Oct 7–9, 2026): https://github.com/openai/codex
 **Isolation/safety concern:** The same test HOME logs `granting read ACE` for unrelated real user directories (`.pi`, `.slock`, `.qoder`, etc.). This is an ACL-changing side effect of elevated Windows sandbox setup on the *normal user profile* despite use of a separate `CODEX_HOME`, conflicting with the project's zero unrelated side-effects goal. Do not repeat elevated initialization on the normal profile or reset/take ownership of global ACLs. Do not forcibly kill other Codex processes or delete/rename the CUA runtime. Prefer a disposable Windows VM or dedicated OS user/profile for sandbox preflight, and close relevant sessions normally first. `BLOCKED` remains correct; project ALLOW/DENY is neither vindicated nor disproven by this external Windows helper failure.
 
 Safe next step: user saves active Codex work, exits Desktop/VSCode integration/other CLI normally, runs read-only process inspection for `node_repl.exe` and associated parents (no global kill); if still blocked, treat as upstream environmental blocker pending fixed Codex build or separate test OS profile. Resume authenticated bounded real E2E only after clean shell and hook dispatch work in an isolated environment. Preserve sanitized logs; never alter user-global Codex auth/config or weaken sandbox.
+
+### Round 9 main-agent scope reset — 2026-10-10
+
+**Verdict: CHANGES_REQUESTED.** User rejects VM, separate Windows login, restarting/stopping unrelated Codex, or invasive Windows sandbox preparation as prerequisites. Round 8 recommendations of these as normal workflow are **superseded**. Real Codex ALLOW/DENY E2E remains UNVERIFIED, not accepted.
+
+**Mandatory product contract:**
+1. Normal installation and use on the existing Windows account, Python 3.12.9, and ordinary Codex CLI/Desktop. No VM, separate Windows identity, new Codex identity, admin shell, stopping other active Codex sessions, or test-only authentication as a normal user requirement.
+2. Install/status/uninstall are idempotent, reversible and limited to the explicitly selected project. Preserve foreign hooks and all other Codex workspaces. Never modify personal ~/.codex, global CODEX_HOME, authentication, approval/trust, plugins, shell profile, PATH, shared runtimes, user-profile ACLs or unrelated processes. Do not terminate codex/node_repl or run ACL reset/takeown.
+3. Never automatically configure or invoke Windows native sandbox elevated/unelevated provisioning, bypass sandbox, or use danger-full-access as a workaround. The observed sandbox helper touches unrelated real-profile ACEs even with isolated CODEX_HOME. AgentContract can guarantee its own actions, NOT internal side effects of a particular upstream Codex build; if those would breach this contract, report UPSTREAM_ENV_BLOCKED without trying risky recovery.
+4. Deliver one simple default, offline, no-login/no-network/no-LLM-cost/no-ACL/no-other-workspace doctor or smoke workflow. Distinguish installed hooks, actually invoked hooks, Guard decisions, and runtime enforcement; absent trace or Codex CreateProcess blocked-by-policy must not pass.
+5. Keep real Codex ALLOW/Completed plus DENY/Blocked as a separate optional opt-in acceptance gate. Allow dedicated test-only auth only in explicit QA; skip safely on upstream sandbox problems and accurately label LIVE E2E UNVERIFIED. No machine-wide cleanup or interference. Add regression checks proving no global mutations or unsafe flag fallback.
+
+**Executor action:** On same TASK-012 branch, audit integration and test launcher for Windows sandbox side effects and global mutations. Implement nonintrusive default smoke/doctor plus project-local isolation regressions, safe preflight that does not trigger unsafe provisioning, and concise user instructions. Keep production SpecGuard ALLOW/DENY semantics. Run Python 3.12.9 offline suite, report exact results and remaining external E2E blocker; commit/push. No product merge or TASK-013.
+
+**Scope note:** A separate VM/OS account may be useful for upstream maintainer investigation but MUST NOT be an AgentContract requirement or recommended normal-user workaround.
