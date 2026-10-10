@@ -271,3 +271,23 @@ The `WARNING: ... could not create PATH aliases ... Refusing to create helper bi
 5. Only after harmless shell and genuine session hook preflight pass, rerun isolated ALLOW/Completed and DENY/Blocked E2E with the dedicated test credentials; capture sanitized Codex JSONL and linked Guard trace. No token/auth contents in reports.
 
 **Scope boundary:** Do not relax `--sandbox workspace-write`, switch to `danger-full-access`/`--dangerously-bypass-approvals-and-sandbox`, copy personal `~/.codex/auth.json`, modify global Codex trust/config, or merge product to `main`. TASK-012 remains sole active task. Review decision is BLOCKED pending safe Windows environment + hook-dispatch preflight evidence; no TASK-013.
+
+
+#### Round 8 diagnostic addendum — 2026-10-10 (Windows sandbox underlying cause isolated)
+
+User-provided test-only CODEX_HOME sandbox log identifies the **fatal** issue precisely:
+
+```
+runtime read/execute validation failed:
+...\OpenAI\Codex\runtimes\cua_node\3dd31cfff853001c\bin\node_repl.exe:
+open ACL target for root-only update: another process is using this file (os error 32)
+setup refresh completed with errors
+```
+
+`codex doctor --json` reports `sandbox.helpers=ok` only for readable configuration; its details include `sandbox backend=disabled`, not a successful elevated Windows sandbox run. `codex-cli 0.162.0`. Both `codex -c 'windows.sandbox="elevated"' sandbox -- cmd /d /c echo ...` and read-only pwsh smoke fail before starting a child process. Running processes observed: multiple Codex, `codex-computer-use-swift`, Windows sandbox service and 6 `node_repl`; **actual blocking handle holder not yet identified**. A separate user-profile read-ACE sharing violation is logged as nonfatal.
+
+Upstream matching bug reports (Oct 7–9, 2026): https://github.com/openai/codex/issues/52389 and https://github.com/openai/codex/issues/52501 describe `cua_node\3dd31cfff853001c\bin\node_repl.exe` sharing violations during root-only ACL update. Some reports reproduce after restarting; do not assume a reboot alone fixes it.
+
+**Isolation/safety concern:** The same test HOME logs `granting read ACE` for unrelated real user directories (`.pi`, `.slock`, `.qoder`, etc.). This is an ACL-changing side effect of elevated Windows sandbox setup on the *normal user profile* despite use of a separate `CODEX_HOME`, conflicting with the project's zero unrelated side-effects goal. Do not repeat elevated initialization on the normal profile or reset/take ownership of global ACLs. Do not forcibly kill other Codex processes or delete/rename the CUA runtime. Prefer a disposable Windows VM or dedicated OS user/profile for sandbox preflight, and close relevant sessions normally first. `BLOCKED` remains correct; project ALLOW/DENY is neither vindicated nor disproven by this external Windows helper failure.
+
+Safe next step: user saves active Codex work, exits Desktop/VSCode integration/other CLI normally, runs read-only process inspection for `node_repl.exe` and associated parents (no global kill); if still blocked, treat as upstream environmental blocker pending fixed Codex build or separate test OS profile. Resume authenticated bounded real E2E only after clean shell and hook dispatch work in an isolated environment. Preserve sanitized logs; never alter user-global Codex auth/config or weaken sandbox.
