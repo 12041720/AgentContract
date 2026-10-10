@@ -15,9 +15,9 @@
 - Task: **TASK-012 — Codex CLI PreToolUse Output Protocol Compatibility**
 - Task file: `.agent/tasks/TASK-012.md`
 - Work branch: `task/TASK-012-codex-pretooluse-compat`
-- Status: **CHANGES_REQUESTED**
+- Status: **BLOCKED**
 - Owner: Execution agent
-- Main-agent review: Round 5 CHANGES_REQUESTED (quoted-redirection false positive; premature ALLOW completion; runtime DENY unproven; E2E skipped)
+- Main-agent review: Round 6 BLOCKED (static remediation reviewed; two required live Codex CLI tests skipped for missing independent test credentials)
 - Previous accepted milestone: TASK-011 / M6
 
 ## Main-agent checkpoint
@@ -118,3 +118,10 @@ On a new session:
 - Round 5 CHANGES_REQUESTED: quoted `>` is mistaken for a redirection, path matching ignores workspace roots, ALLOW completion accepts non-terminal states, and hook stderr is not proof Codex runtime honored the DENY.
 - Executor reports Python 3.12.9 362 passed / 2 skipped, 0 failures. Both required isolated online Codex CLI tests still skipped for missing opt-in test credentials; no independent run, CI checks, or real E2E proof.
 - M7 remains UNVERIFIED; TASK-012 only active task, no product merge or TASK-013.
+
+## M7 round 6 checkpoint (2026-10-10)
+
+- Reviewed reachable code commit `c7f8bdceb70d6a1eb0a0561a90a10fb080bd89c6` at task report HEAD `4a26d4351063640c44fa435d6f9afa36662b68cf`.
+- Static remediation of quoted redirect matching, workspace-bound path comparisons, terminal-success ALLOW and separate runtime DENY evidence appears directionally correct, but **is not real Codex CLI proof**.
+- Executor reports 362 passed / 2 skipped (zero failed) on Python 3.12.9; both opt-in online E2E tests SKIPPED due to missing independent test credentials. No independent rerun or CI status.
+- Main agent verdict: TASK-012 BLOCKED pending dedicated test-only Codex auth and actual bounded, isolated ALLOW/Completed + DENY/Blocked evidence; no acceptance, merge, or TASK-013. Generic failure status is not proof of hook denial.
