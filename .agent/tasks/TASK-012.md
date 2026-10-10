@@ -65,55 +65,52 @@ Conversely, when SpecGuard denies a tool call, the structured denial JSON (`perm
   - Updated `PreToolUseOutput` model in `src/agentcontract/integrations/codex/models.py` to support `updatedInput: Mapping[str, Any] | None = None`.
   - Updated `to_hook_response_dict()` so that when `permissionDecision == HookDecision.ALLOW` without `updatedInput`, an empty dictionary `{}` is returned (exits 0 with empty stdout). When `updatedInput` is provided on ALLOW, it is included in the structured dictionary.
   - Kept the structured denial dictionary with `permissionDecision="deny"` and `permissionDecisionReason` intact on DENY branches, ensuring all constraints and fail-closed protections remain fully enforced.
-- Addressed all Round 5 Main Agent review blockers (quoted redirection false positive fix, workspace-aware path matching, strict terminal completed ALLOW status, independent Codex runtime DENY proof).
-- Addressed Round 7 Main Agent review (removed incompatible `--approve-for-me`, retained `--sandbox workspace-write` and isolated `CODEX_HOME`, added AST flag compatibility regression tests).
-- Addressed Round 9 Main Agent Scope Reset and `AGENTS.md` Product Usability & Zero Cross-Project Interference contract:
-  1. **Default Offline Zero-Interference Doctor Workflow (`agentcontract codex doctor`)**:
-     - Implemented `doctor_hooks(project_dir: str | Path = ".") -> int` in `src/agentcontract/integrations/codex/cli.py` and registered `codex doctor` in `src/agentcontract/cli.py`.
-     - Validates project boundary containment (`.codex` strictly within project root; rejects system roots, user home, and global `CODEX_HOME` escapes).
-     - Validates hook registration syntax and schema; distinguishes AgentContract handlers and preserves all foreign configurations.
-     - Runs a 100% offline, zero-network, zero-auth, zero-LLM smoke test using a temporary disposable session (`smoke_<id>`):
-       - Verifies `SessionStart` hook execution.
-       - Verifies `PreToolUse` ALLOW on compliant actions (harmless read) with exit code 0 / empty response wire-format.
-       - Verifies `PreToolUse` BLOCK on non-compliant actions (forbidden write under hard constraint) with structured JSON denial (`permissionDecision: "deny"`).
-       - Verifies authentic `GUARD_DECISION` events with `verdict == "ALLOW"` and `verdict == "BLOCK"` recorded in session trace store.
-       - Cleans up disposable smoke session directory and lock file completely in `try ... finally`.
-     - Prints structured report clearly distinguishing installed hooks, invoked hooks, Guard decisions, runtime wire-format enforcement, and environment isolation.
-     - Includes upstream environment advisory noting that AgentContract will not force elevated sandboxes, modify Windows ACLs, or terminate external processes.
-  2. **Upstream Environment Preflight & Failure Differentiation**:
-     - Added `UPSTREAM_ENV_ERROR_PATTERNS` and `check_upstream_environment_failure(res, sessions_dir)` in `tests/integrations/test_codex_cli.py`.
-     - Distinguishes upstream Windows execution policy / sandbox issues (e.g. `CreateProcess ... rejected: blocked by policy`, `node_repl.exe os error 32` sharing violation during root-only ACL update, `Refusing to create helper binaries under temporary dir`) from AgentContract verification or SpecGuard failures.
-     - In both real Codex CLI E2E tests (`test_real_codex_cli_pretooluse_allow_completed` and `test_real_codex_cli_pretooluse_deny_blocked`), checks for upstream environment blockers immediately after execution and skips safely as `UPSTREAM_ENV_BLOCKED: ... LIVE E2E UNVERIFIED` without attempting unsafe recovery.
-     - Enforces that absent session store or unexecuted hooks are clearly diagnosed rather than falsely passed.
-     - Strictly maintains `--sandbox workspace-write` and forbids `--dangerously-bypass-approvals-and-sandbox` or `danger-full-access`.
-  3. **Zero Cross-Project Interference Regressions**:
-     - Added unit regression tests in `tests/integrations/test_codex_cli.py` verifying that `check_upstream_environment_failure` detects policy blocks, sharing violations, and temporary directory alias refusals, while never conflating SpecGuard's own intentional `BLOCKED` decisions with upstream errors.
-     - Added regression tests in `tests/integrations/test_codex_isolation.py` verifying `doctor_hooks` on installed projects, uninstalled projects, CLI routing, foreign hook preservation, and zero side effects (user `~/.codex` untouched, 0 ACL modifications, 0 process kills).
+- Addressed all Round 10 Main Agent Review blockers in Round 11:
+  1. **Blocker 1 — Distinguish Codex Nonfatal Warnings from Fatal Upstream Failures**:
+     - Separated `FATAL_UPSTREAM_ENV_ERROR_PATTERNS` from `NONFATAL_UPSTREAM_WARNING_PATTERNS` in `tests/integrations/test_codex_cli.py`.
+     - Removed nonfatal warnings (`Refusing to create helper binaries under temporary dir` and `could not create PATH aliases`) from the fatal decision in `check_upstream_environment_failure()`.
+     - Added `get_upstream_environment_warnings(res)` to capture nonfatal warnings as diagnostics without skipping tests prematurely.
+     - Updated regression tests: `test_check_upstream_environment_warning_not_fatal` verifies that nonfatal warnings combined with exit code 0 and tool-completed JSONL output yield `err is None` (not blocked) while warnings are captured in diagnostics. Fatal `CreateProcess ... rejected: blocked by policy` and `os error 32` remain identified as fatal upstream errors.
+  2. **Blocker 2 — Doctor Strict Registered Command Validation & Child Subprocess Execution**:
+     - Added `_validate_agentcontract_command(command, expected_event)` and `_extract_agentcontract_commands(hooks_map)` in `src/agentcontract/integrations/codex/cli.py`. Strictly rejects non-python executables (decoys like `echo`), broken syntax, missing `-m`, incorrect module names, and mismatched event arguments (e.g. `SessionStart` registered under `PreToolUse`).
+     - Updated `doctor_hooks()` to validate all registered commands across all events, strictly requiring handlers for `SessionStart` and `PreToolUse`.
+     - Replaced in-process `run_hook()` in doctor smoke test with real child subprocess execution: executes the registered `SessionStart` and `PreToolUse` commands via `subprocess.run(shlex.split(cmd, posix=False))` with fabricated offline payloads and project-local `AGENTCONTRACT_SESSION_DIR`.
+     - Verified runtime wire-format and trace emission via subprocess: ALLOW exits 0 with empty stdout; BLOCK exits 0 with structured JSON denial (`permissionDecision: "deny"`) and SpecGuard stderr message; session store records authentic `GUARD_DECISION` ALLOW and BLOCK events.
+     - Added negative regression tests in `tests/integrations/test_codex_isolation.py`:
+       - `test_doctor_hooks_rejects_wrapper_decoy_handler`: confirms decoy handler like `echo agentcontract.integrations.codex.hooks PreToolUse` fails doctor with exit code 1.
+       - `test_doctor_hooks_rejects_mismatched_event_command`: confirms mismatched event argument fails doctor with exit code 1.
+  3. **Blocker 3 — Verified Integrity Snapshots & Visible Disposal Failure Reporting**:
+     - Implemented read-only before/after snapshot of user global `~/.codex` (`user_codex_home` existence, directory listing, and SHA-256 hashes of tracked configuration files `config.toml`, `hooks.json`, `auth.json`) inside `doctor_hooks()`. Verifies no files were added, deleted, or modified, outputting `[PASS] User global ~/.codex observed untouched`.
+     - Clarified diagnostic scope: doctor reports `[PASS] AgentContract doctor executed zero elevated sandbox, ACL, or process termination commands` and labels external runtime memory/system state as `[NOT OBSERVED] External system ACLs, unmanaged background processes, and Desktop GUI state not monitored`.
+     - Made disposable smoke session cleanup failures visible: in `finally:`, doctor verifies that `smoke_session_dir` and `smoke_lock_file` are deleted and no longer exist on disk. If deletion fails or resources remain on disk, doctor records `cleanup_errors`, prints `[FAIL] Smoke session cleanup failed ... Smoke resources leaked on disk`, and returns exit code 1.
+     - Added regression tests in `tests/integrations/test_codex_isolation.py`:
+       - `test_doctor_hooks_fails_when_smoke_cleanup_fails`: verifies doctor fails (code 1) when directory deletion fails and reports cleanup failure.
+       - `test_doctor_hooks_detects_user_codex_mutation`: verifies doctor fails (code 1) if `~/.codex` is modified during execution.
 
 **Files changed:**
-- `src/agentcontract/cli.py`
 - `src/agentcontract/integrations/codex/cli.py`
 - `tests/integrations/test_codex_cli.py`
 - `tests/integrations/test_codex_isolation.py`
 - `.agent/tasks/TASK-012.md`
 
 **Tests/checks run and results:**
-- `python -m pytest tests/integrations/test_codex_isolation.py tests/integrations/test_codex_cli.py -v` (30 passed, 2 skipped, 0 failures)
-- Full test suite on Python 3.12.9: `python -m pytest` (**373 passed, 2 skipped in 13.84s, 0 failures**).
+- `python -m pytest tests/integrations/test_codex_isolation.py` (21 passed in 13.18s, 0 failures)
+- `python -m pytest tests/integrations/test_codex_cli.py` (13 passed, 2 skipped in 0.75s, 0 failures)
+- Full test suite on Python 3.12.9: `python -m pytest` (**377 passed, 2 skipped in 23.82s, 0 failures**).
 - Real Codex CLI online E2E tests: both `test_real_codex_cli_pretooluse_allow_completed` and `test_real_codex_cli_pretooluse_deny_blocked` safely skip when dedicated isolated test credentials (`AGENTCONTRACT_TEST_CODEX_AUTH_JSON` / `CODEX_TEST_AUTH_JSON`) are absent from the environment.
-- If run in an environment with Windows sandbox execution policy restrictions, tests safely report `UPSTREAM_ENV_BLOCKED: ... LIVE E2E UNVERIFIED` without mutating user profile ACLs or killing processes.
+- Nonfatal Codex warnings (`Refusing to create helper binaries under temporary dir` and `could not create PATH aliases`) do not cause E2E tests to prematurely skip as blockers.
 - Zero repository root pollution: `Path(".agentcontract").exists() == False`.
 - User personal `~/.codex` completely untouched.
 
 **Known limitations / E2E Acceptance Status:**
-- Default offline workflow is fully verified and passing (373 tests).
+- Default offline workflow is fully verified and passing (377 tests).
 - Real online Codex CLI tests remain an opt-in acceptance check (`SKIPPED` when dedicated test credentials absent). If upstream Codex CLI runtime encounters native Windows sandbox policy blocks (`rejected: blocked by policy` / `os error 32`), it is safely flagged as `UPSTREAM_ENV_BLOCKED: ... LIVE E2E UNVERIFIED`. AgentContract does not attempt unsafe elevated sandbox setup, unrestricted mode, or global ACL mutations.
 
 **Commit SHA:**
-- Implementation commit: `1df5f26325d968e0111fb1f9cf7b2263b544a0b3`
+- Implementation commit: pending commit in this turn
 
 **Questions/blockers for main-agent review:**
-- None. Default offline doctor workflow, project isolation, and upstream preflight differentiation are complete and verified with 373 passing tests. Ready for main-agent review.
+- None. All 3 Round 10 blockers are resolved, negative regressions added, and full test suite passes with 377 passed / 2 skipped on Python 3.12.9. Ready for main-agent review.
 
 ---
 

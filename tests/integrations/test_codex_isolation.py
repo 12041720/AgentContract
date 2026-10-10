@@ -520,16 +520,18 @@ def test_doctor_hooks_on_installed_project(tmp_path: Path, capsys: pytest.Captur
     captured = capsys.readouterr()
     assert "AgentContract Codex Doctor Report" in captured.out
     assert "[PASS] Project boundary containment verified" in captured.out
-    assert "[PASS] hooks.json syntax and schema valid" in captured.out
-    assert "[PASS] SessionStart hook executed successfully" in captured.out
-    assert "[PASS] PreToolUse hook invoked and processed inputs" in captured.out
+    assert "[PASS] hooks.json syntax, schema, and command handlers valid" in captured.out
+    assert "[PASS] SessionStart hook executed successfully via subprocess" in captured.out
+    assert "[PASS] PreToolUse hook invoked and processed inputs via subprocess" in captured.out
     assert "[PASS] Compliant action evaluated -> SpecGuard ALLOW recorded" in captured.out
     assert "[PASS] Forbidden action evaluated -> SpecGuard BLOCK recorded" in captured.out
     assert "[PASS] Authentic trace events recorded in session store" in captured.out
     assert "[PASS] ALLOW wire-format: clean exit without blocking" in captured.out
     assert "[PASS] BLOCK wire-format: structured JSON denial" in captured.out
-    assert "[PASS] User global ~/.codex completely untouched" in captured.out
-    assert "[PASS] Zero elevated sandbox or global ACL modification required" in captured.out
+    assert "[PASS] User global ~/.codex observed untouched" in captured.out
+    assert "[PASS] AgentContract doctor executed zero elevated sandbox, ACL, or process termination commands" in captured.out
+    assert "[PASS] Disposable smoke session resources cleaned up completely" in captured.out
+    assert "[NOT OBSERVED] External system ACLs, unmanaged background processes, and Desktop GUI state not monitored" in captured.out
     assert "Upstream Environment Advisory" in captured.out
 
     # 3. Verify disposable smoke session was completely cleaned up
@@ -654,5 +656,142 @@ def test_zero_cross_project_interference_and_no_acl_mutations(tmp_path: Path) ->
                 assert _hash_file(real_codex / f) == pre_h, f"~/.codex/{f} was mutated!"
     else:
         assert not real_codex.exists(), "~/.codex was unexpectedly created!"
+
+
+def test_doctor_hooks_rejects_wrapper_decoy_handler(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Round 10/11 regression: decoy handler like 'echo agentcontract.integrations.codex.hooks PreToolUse' must fail doctor."""
+    proj = tmp_path / "decoy_proj"
+    codex_dir = proj / ".codex"
+    codex_dir.mkdir(parents=True)
+    hooks_file = codex_dir / "hooks.json"
+
+    decoy_cfg = {
+        "hooks": {
+            "SessionStart": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "python -m agentcontract.integrations.codex.hooks SessionStart",
+                        }
+                    ]
+                }
+            ],
+            "PreToolUse": [
+                {
+                    "matcher": ".*",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "echo agentcontract.integrations.codex.hooks PreToolUse",
+                        }
+                    ],
+                }
+            ],
+        }
+    }
+    hooks_file.write_text(json.dumps(decoy_cfg, indent=2), encoding="utf-8")
+
+    ret = doctor_hooks(project_dir=proj)
+    assert ret == 1
+    captured = capsys.readouterr()
+    assert "[FAIL] Invalid AgentContract hook command registered under 'PreToolUse'" in captured.out
+    assert "not a recognizable Python interpreter" in captured.out
+
+
+def test_doctor_hooks_rejects_mismatched_event_command(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Round 10/11 regression: command with mismatched event argument under PreToolUse must fail doctor."""
+    proj = tmp_path / "mismatched_proj"
+    codex_dir = proj / ".codex"
+    codex_dir.mkdir(parents=True)
+    hooks_file = codex_dir / "hooks.json"
+
+    mismatched_cfg = {
+        "hooks": {
+            "SessionStart": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "python -m agentcontract.integrations.codex.hooks SessionStart",
+                        }
+                    ]
+                }
+            ],
+            "PreToolUse": [
+                {
+                    "matcher": ".*",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "python -m agentcontract.integrations.codex.hooks SessionStart",
+                        }
+                    ],
+                }
+            ],
+        }
+    }
+    hooks_file.write_text(json.dumps(mismatched_cfg, indent=2), encoding="utf-8")
+
+    ret = doctor_hooks(project_dir=proj)
+    assert ret == 1
+    captured = capsys.readouterr()
+    assert "[FAIL] Invalid AgentContract hook command registered under 'PreToolUse'" in captured.out
+    assert "Mismatched hook event argument" in captured.out
+
+
+def test_doctor_hooks_fails_when_smoke_cleanup_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Round 10/11 regression: cleanup failures during smoke session must be visible and fail doctor."""
+    proj = tmp_path / "cleanup_fail_proj"
+    proj.mkdir()
+    install_hooks(project_dir=proj)
+
+    real_rmtree = shutil.rmtree
+
+    def failing_rmtree(path, *args, **kwargs):
+        raise PermissionError(f"Simulated access denied deleting {path}")
+
+    monkeypatch.setattr(shutil, "rmtree", failing_rmtree)
+
+    ret = doctor_hooks(project_dir=proj)
+    assert ret == 1
+    captured = capsys.readouterr()
+    assert "[FAIL] Smoke session cleanup failed" in captured.out
+    assert "Smoke resources leaked on disk" in captured.out
+
+    monkeypatch.undo()
+    sessions_dir = proj / ".agentcontract" / "sessions"
+    if sessions_dir.exists():
+        real_rmtree(sessions_dir, ignore_errors=True)
+
+
+def test_doctor_hooks_detects_user_codex_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Round 10/11 regression: any mutation to user ~/.codex during doctor run must be detected and fail."""
+    mock_codex_home = tmp_path / "mock_user_codex"
+    mock_codex_home.mkdir()
+    (mock_codex_home / "config.toml").write_text("model = 'gpt-5'\n", encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(mock_codex_home))
+
+    proj = tmp_path / "codex_mut_proj"
+    proj.mkdir()
+    install_hooks(project_dir=proj)
+
+    real_run = subprocess.run
+
+    def mutating_run(*args, **kwargs):
+        (mock_codex_home / "leaked_file.txt").write_text("leak", encoding="utf-8")
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", mutating_run)
+
+    ret = doctor_hooks(project_dir=proj)
+    assert ret == 1
+    captured = capsys.readouterr()
+    assert "[FAIL] User global ~/.codex had new entries created" in captured.out
+
 
 

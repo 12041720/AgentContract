@@ -469,19 +469,36 @@ def parse_codex_cli_items(stdout: str) -> list[dict[str, Any]]:
     return items
 
 
-UPSTREAM_ENV_ERROR_PATTERNS = [
+FATAL_UPSTREAM_ENV_ERROR_PATTERNS = [
     r"exec_command failed:\s*CreateProcess.*rejected:\s*blocked by policy",
     r"rejected:\s*blocked by policy",
     r"open ACL target for root-only update",
     r"another process is using this file\s*\(os error 32\)",
-    r"os error 32",
     r"runtime read/execute validation failed",
     r"setup refresh completed with errors",
-    r"Refusing to create helper binaries under temporary dir",
-    r"sandbox backend=disabled",
-    r"could not create PATH aliases",
     r"error: failed to create process:.*blocked by policy",
 ]
+
+NONFATAL_UPSTREAM_WARNING_PATTERNS = [
+    r"Refusing to create helper binaries under temporary dir",
+    r"could not create PATH aliases",
+]
+
+# Retain backward compatibility
+UPSTREAM_ENV_ERROR_PATTERNS = FATAL_UPSTREAM_ENV_ERROR_PATTERNS
+
+
+def get_upstream_environment_warnings(res: subprocess.CompletedProcess[str]) -> list[str]:
+    """Extract nonfatal diagnostic warnings from Codex execution."""
+    stdout = res.stdout or ""
+    stderr = res.stderr or ""
+    combined = stdout + "\n" + stderr
+    warnings = []
+    for pattern in NONFATAL_UPSTREAM_WARNING_PATTERNS:
+        match = re.search(pattern, combined, re.IGNORECASE)
+        if match:
+            warnings.append(match.group(0).strip())
+    return warnings
 
 
 def check_upstream_environment_failure(
@@ -490,29 +507,31 @@ def check_upstream_environment_failure(
 ) -> str | None:
     """Detect external upstream Windows sandbox and tool execution policy failures.
 
-    Returns an explanatory string if an external upstream environment blocker is identified,
+    Distinguishes fatal upstream failures (e.g., CreateProcess blocked by policy, os error 32)
+    from nonfatal Codex warnings (e.g., PATH alias creation refusal).
+
+    Returns an explanatory string if a fatal external upstream environment blocker is identified,
     or None if tool execution was not blocked by external upstream environment failures.
     """
     stdout = res.stdout or ""
     stderr = res.stderr or ""
     combined = stdout + "\n" + stderr
 
-    for pattern in UPSTREAM_ENV_ERROR_PATTERNS:
+    # 1. Fatal upstream sandbox / runtime failures
+    for pattern in FATAL_UPSTREAM_ENV_ERROR_PATTERNS:
         match = re.search(pattern, combined, re.IGNORECASE)
         if match:
             return f"Upstream Codex sandbox/environment error detected: '{match.group(0).strip()}'"
 
-    # Also detect when sessions_dir was not created because Codex blocked tool execution upstream
+    # 2. Detect missing sessions_dir caused by upstream policy blocking tool execution
     if sessions_dir is not None and not sessions_dir.is_dir():
         lower_combined = combined.lower()
         if any(
             kw in lower_combined
             for kw in (
                 "blocked by policy",
-                "environment error",
-                "sandbox backend",
-                "failed to execute",
                 "exec_command failed",
+                "failed to create process",
             )
         ):
             return "Upstream Codex environment blocked tool execution before hooks could be invoked (sessions dir absent)."
@@ -1494,16 +1513,20 @@ def test_check_upstream_environment_failure_detects_sharing_violation() -> None:
     assert "root-only update" in err or "os error 32" in err
 
 
-def test_check_upstream_environment_failure_detects_temp_helper_refusal() -> None:
-    """Deterministic regression test for Round 8: detect temp path alias refusal."""
+def test_check_upstream_environment_warning_not_fatal() -> None:
+    """Deterministic regression test for Round 10/11: nonfatal PATH alias warning does NOT trigger UPSTREAM_ENV_BLOCKED."""
     stderr = (
         "WARNING: could not create PATH aliases. "
-        "Refusing to create helper binaries under temporary dir"
+        "Refusing to create helper binaries under temporary dir\n"
     )
-    res = subprocess.CompletedProcess(args=["codex"], returncode=0, stdout="", stderr=stderr)
+    stdout = '{"item": {"type": "command_execution", "status": "completed", "command": "Get-Content probe.txt"}}\n'
+    res = subprocess.CompletedProcess(args=["codex"], returncode=0, stdout=stdout, stderr=stderr)
     err = check_upstream_environment_failure(res)
-    assert err is not None
-    assert "Refusing to create helper binaries" in err
+    assert err is None, "Nonfatal PATH alias warning must never be treated as an upstream fatal blocker"
+    warnings = get_upstream_environment_warnings(res)
+    assert len(warnings) > 0
+    assert any("Refusing to create helper binaries" in w for w in warnings)
+    assert any("could not create PATH aliases" in w for w in warnings)
 
 
 def test_check_upstream_environment_failure_distinguishes_specguard_blocks() -> None:

@@ -1,16 +1,21 @@
 """CLI management commands for Codex lifecycle hooks."""
 
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
+import subprocess
 import sys
 import tomllib
 from typing import Any
 import uuid
 
 from agentcontract.integrations.codex.state import CodexSessionStore
+
+LIFECYCLE_EVENTS = ("SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop")
 
 HOOKS_TEMPLATE: dict[str, Any] = {
   "hooks": {
@@ -208,6 +213,73 @@ def _is_agentcontract_hook_entry(entry: Any) -> bool:
     elif _is_agentcontract_handler(entry):
         return True
     return False
+
+
+def _validate_agentcontract_command(command: str, expected_event: str | None = None) -> tuple[bool, str]:
+    """Strictly validate that a registered hook command correctly targets the AgentContract handler.
+
+    Rejects wrapper decoys (e.g. echo, cat), broken syntax, missing -m flag, or mismatched event arguments.
+    """
+    if not isinstance(command, str) or not command.strip():
+        return False, "Hook command is empty or not a string."
+
+    try:
+        tokens = shlex.split(command, posix=False)
+    except Exception as err:
+        return False, f"Failed to parse hook command with shlex: {err}"
+
+    if len(tokens) < 3:
+        return False, f"Hook command has too few arguments ({len(tokens)}): '{command}'"
+
+    # 1. Executable check: must be a Python interpreter
+    exe_path = tokens[0].strip("\"'")
+    exe_name = Path(exe_path).name.lower()
+    exe_base = exe_name[:-4] if exe_name.endswith(".exe") else exe_name
+    valid_pythons = {"python", "python3", "python3.12", "python3.11", "py"}
+    if exe_base not in valid_pythons and not exe_base.startswith("python"):
+        return False, f"Command executable '{tokens[0]}' is not a recognizable Python interpreter (expected 'python' or 'python3')."
+
+    # 2. Module check: must invoke -m agentcontract.integrations.codex.hooks
+    if "-m" not in tokens:
+        return False, "Command does not invoke AgentContract hooks via '-m' flag."
+    m_idx = tokens.index("-m")
+    if m_idx + 1 >= len(tokens):
+        return False, "Missing module name after '-m' flag."
+    mod_name = tokens[m_idx + 1]
+    if mod_name != AGENTCONTRACT_HOOK_MARKER:
+        return False, f"Command invokes unexpected module '{mod_name}' instead of '{AGENTCONTRACT_HOOK_MARKER}'."
+
+    # 3. Event argument check
+    if expected_event is not None:
+        if m_idx + 2 >= len(tokens):
+            return False, f"Missing event argument in command (expected '{expected_event}')."
+        event_arg = tokens[m_idx + 2]
+        if event_arg.lower() != expected_event.lower():
+            return False, f"Mismatched hook event argument: command specifies '{event_arg}', expected '{expected_event}'."
+
+    return True, ""
+
+
+def _extract_agentcontract_commands(hooks_map: dict[str, Any]) -> dict[str, list[str]]:
+    """Extract all AgentContract hook command strings grouped by event name."""
+    result: dict[str, list[str]] = {ev: [] for ev in LIFECYCLE_EVENTS}
+    for event, entries in hooks_map.items():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if isinstance(entry, dict):
+                if "hooks" in entry and isinstance(entry["hooks"], list):
+                    for h in entry["hooks"]:
+                        if isinstance(h, dict) and _is_agentcontract_handler(h):
+                            cmd = h.get("command", "")
+                            if isinstance(cmd, str):
+                                result.setdefault(event, []).append(cmd)
+                elif _is_agentcontract_handler(entry):
+                    cmd = entry.get("command", "")
+                    if isinstance(cmd, str):
+                        result.setdefault(event, []).append(cmd)
+    return result
+
 
 
 def _validate_hooks_json_structure(data: Any, file_path: Path) -> tuple[bool, str]:
@@ -815,13 +887,53 @@ def doctor_hooks(project_dir: str | Path = ".") -> int:
         print("=" * 60)
         return 1
 
+    # Extract and validate all registered AgentContract commands
+    ac_cmds = _extract_agentcontract_commands(hooks_map)
+    for event_name, cmds in ac_cmds.items():
+        for cmd in cmds:
+            ok_cmd, cmd_err = _validate_agentcontract_command(cmd, expected_event=event_name)
+            if not ok_cmd:
+                print("\n1. Configuration & Containment:")
+                print(f"  [FAIL] Invalid AgentContract hook command registered under '{event_name}': '{cmd}' ({cmd_err})")
+                print("=" * 60)
+                return 1
+
+    # Require registered commands for SessionStart and PreToolUse
+    if not ac_cmds.get("SessionStart"):
+        print("\n1. Configuration & Containment:")
+        print("  [FAIL] Missing required AgentContract handler for 'SessionStart'")
+        print("=" * 60)
+        return 1
+    if not ac_cmds.get("PreToolUse"):
+        print("\n1. Configuration & Containment:")
+        print("  [FAIL] Missing required AgentContract handler for 'PreToolUse'")
+        print("=" * 60)
+        return 1
+
+    session_start_cmd = ac_cmds["SessionStart"][0]
+    pre_tool_cmd = ac_cmds["PreToolUse"][0]
+
     print("\n1. Configuration & Containment:")
     print("  [PASS] Project boundary containment verified (.codex strictly within project root)")
-    print(f"  [PASS] hooks.json syntax and schema valid ({ac_handlers} AgentContract handler(s))")
+    print(f"  [PASS] hooks.json syntax, schema, and command handlers valid ({ac_handlers} AgentContract handler(s))")
     if foreign_handlers > 0:
         print(f"  [PASS] Foreign configuration preserved ({foreign_handlers} foreign handler(s))")
     else:
         print("  [PASS] Clean project-only hook configuration (no foreign handlers)")
+
+    # Snapshot user global ~/.codex before smoke test to detect any leaks or mutations
+    user_codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+    user_codex_existed_before = user_codex_home.exists()
+    user_codex_entries_before = set(user_codex_home.iterdir()) if user_codex_existed_before else set()
+    user_codex_hashes_before: dict[str, str | None] = {}
+    if user_codex_existed_before:
+        for f_name in ("config.toml", "hooks.json", "auth.json"):
+            target_f = user_codex_home / f_name
+            if target_f.is_file():
+                try:
+                    user_codex_hashes_before[f_name] = hashlib.sha256(target_f.read_bytes()).hexdigest()
+                except OSError:
+                    pass
 
     # 2. Offline Smoke Test (SessionStart, PreToolUse ALLOW, PreToolUse BLOCK)
     from agentcontract.constraints.models import (
@@ -832,31 +944,46 @@ def doctor_hooks(project_dir: str | Path = ".") -> int:
         ConstraintStrength,
         RuleEffect,
     )
-    from agentcontract.integrations.codex.hooks import run_hook
 
     smoke_session_id = f"smoke_{uuid.uuid4().hex[:12]}"
     sessions_dir = proj / ".agentcontract" / "sessions"
     smoke_store = CodexSessionStore(base_dir=sessions_dir)
     smoke_session_dir = sessions_dir / smoke_session_id
+    smoke_lock_file = sessions_dir / f"{smoke_session_id}.lock"
+
+    child_env = os.environ.copy()
+    child_env["AGENTCONTRACT_SESSION_DIR"] = str(sessions_dir)
+    # Ensure local agentcontract package is resolvable by child python
+    repo_src = str(Path(__file__).resolve().parents[3] / "src")
+    existing_pp = child_env.get("PYTHONPATH", "")
+    child_env["PYTHONPATH"] = f"{repo_src}{os.pathsep}{existing_pp}" if existing_pp else repo_src
+
+    smoke_failed = False
+    cleanup_errors: list[str] = []
 
     try:
-        # 2a. SessionStart
+        # 2a. Execute registered SessionStart command via child subprocess
         start_payload = {
             "session_id": smoke_session_id,
             "cwd": str(proj),
             "hook_event_name": "SessionStart",
         }
-        code_start, resp_start = run_hook(
-            stdin_data=json.dumps(start_payload),
-            event_name="SessionStart",
-            session_store=smoke_store,
+        res_start = subprocess.run(
+            shlex.split(session_start_cmd, posix=False),
+            input=json.dumps(start_payload),
+            text=True,
+            capture_output=True,
+            env=child_env,
+            cwd=str(proj),
+            timeout=15,
         )
-        if code_start != 0:
-            print(f"\n2. Offline Hook Execution Smoke Test:\n  [FAIL] SessionStart failed with code {code_start}")
+        if res_start.returncode != 0:
+            print(f"\n2. Offline Hook Subprocess Execution Smoke Test:\n  [FAIL] SessionStart subprocess failed with exit code {res_start.returncode}:\n{res_start.stderr}")
             print("=" * 60)
+            smoke_failed = True
             return 1
 
-        # 2b. Inject deterministic test constraint into session ledger
+        # 2b. Inject deterministic test constraint into session ledger in parent process
         with smoke_store.session_transaction(smoke_session_id) as tx:
             smoke_rule = Constraint(
                 id="doctor_smoke_rule",
@@ -877,7 +1004,7 @@ def doctor_hooks(project_dir: str | Path = ".") -> int:
             )
             tx.ledger.add(smoke_rule)
 
-        # 2c. PreToolUse ALLOW smoke test (harmless read)
+        # 2c. Execute registered PreToolUse command via subprocess for ALLOW (harmless read)
         allow_payload = {
             "session_id": smoke_session_id,
             "cwd": str(proj),
@@ -886,21 +1013,33 @@ def doctor_hooks(project_dir: str | Path = ".") -> int:
             "tool_input": {"command": "Get-Content probe.txt"},
             "hook_event_name": "PreToolUse",
         }
-        code_allow, resp_allow = run_hook(
-            stdin_data=json.dumps(allow_payload),
-            event_name="PreToolUse",
-            session_store=smoke_store,
+        res_allow = subprocess.run(
+            shlex.split(pre_tool_cmd, posix=False),
+            input=json.dumps(allow_payload),
+            text=True,
+            capture_output=True,
+            env=child_env,
+            cwd=str(proj),
+            timeout=15,
         )
+        allow_json: dict[str, Any] = {}
+        if res_allow.stdout.strip():
+            try:
+                allow_json = json.loads(res_allow.stdout.strip())
+            except Exception:
+                allow_json = {}
+
         is_allow = (
-            code_allow == 0
-            and (not resp_allow or resp_allow.get("hookSpecificOutput", {}).get("permissionDecision") != "deny")
+            res_allow.returncode == 0
+            and (not allow_json or allow_json.get("hookSpecificOutput", {}).get("permissionDecision") != "deny")
         )
         if not is_allow:
-            print(f"\n3. SpecGuard Decision Evaluation:\n  [FAIL] PreToolUse ALLOW evaluation failed: {resp_allow}")
+            print(f"\n3. SpecGuard Decision Evaluation:\n  [FAIL] PreToolUse ALLOW evaluation failed: stdout='{res_allow.stdout}', stderr='{res_allow.stderr}'")
             print("=" * 60)
+            smoke_failed = True
             return 1
 
-        # 2d. PreToolUse BLOCK smoke test (forbidden write)
+        # 2d. Execute registered PreToolUse command via subprocess for BLOCK (forbidden write)
         block_payload = {
             "session_id": smoke_session_id,
             "cwd": str(proj),
@@ -909,25 +1048,38 @@ def doctor_hooks(project_dir: str | Path = ".") -> int:
             "tool_input": {"command": "Set-Content -Path secrets/prod.key -Value 'test'"},
             "hook_event_name": "PreToolUse",
         }
-        code_block, resp_block = run_hook(
-            stdin_data=json.dumps(block_payload),
-            event_name="PreToolUse",
-            session_store=smoke_store,
+        res_block = subprocess.run(
+            shlex.split(pre_tool_cmd, posix=False),
+            input=json.dumps(block_payload),
+            text=True,
+            capture_output=True,
+            env=child_env,
+            cwd=str(proj),
+            timeout=15,
         )
+        block_json: dict[str, Any] = {}
+        if res_block.stdout.strip():
+            try:
+                block_json = json.loads(res_block.stdout.strip())
+            except Exception:
+                block_json = {}
+
         is_block = (
-            code_block == 0
-            and resp_block.get("hookSpecificOutput", {}).get("permissionDecision") == "deny"
+            res_block.returncode == 0
+            and block_json.get("hookSpecificOutput", {}).get("permissionDecision") == "deny"
         )
         if not is_block:
-            print(f"\n3. SpecGuard Decision Evaluation:\n  [FAIL] PreToolUse BLOCK evaluation failed: {resp_block}")
+            print(f"\n3. SpecGuard Decision Evaluation:\n  [FAIL] PreToolUse BLOCK evaluation failed: stdout='{res_block.stdout}', stderr='{res_block.stderr}'")
             print("=" * 60)
+            smoke_failed = True
             return 1
 
-        # 2e. Verify session trace
+        # 2e. Verify session trace file generated on disk
         trace_file = smoke_session_dir / "trace.json"
         if not trace_file.is_file():
             print("\n3. SpecGuard Decision Evaluation:\n  [FAIL] Session trace file was not generated.")
             print("=" * 60)
+            smoke_failed = True
             return 1
 
         trace_data = json.loads(trace_file.read_text(encoding="utf-8"))
@@ -950,18 +1102,34 @@ def doctor_hooks(project_dir: str | Path = ".") -> int:
                 f"(allow={has_guard_allow}, block={has_guard_block})"
             )
             print("=" * 60)
+            smoke_failed = True
             return 1
 
+    except Exception as smoke_exc:
+        smoke_failed = True
+        print(f"\n2. Offline Hook Execution Smoke Test:\n  [FAIL] Unexpected exception during smoke test: {smoke_exc}")
+        print("=" * 60)
+        return 1
+
     finally:
-        # Always clean up disposable smoke session directory and lock file completely
+        # Clean up disposable smoke session directory and lock file completely
+        # Make any cleanup failures visible!
         if smoke_session_dir.exists():
-            shutil.rmtree(smoke_session_dir, ignore_errors=True)
-        smoke_lock_file = sessions_dir / f"{smoke_session_id}.lock"
+            try:
+                shutil.rmtree(smoke_session_dir)
+            except Exception as err:
+                cleanup_errors.append(f"Failed to remove smoke session directory '{smoke_session_dir}': {err}")
+            if smoke_session_dir.exists():
+                cleanup_errors.append(f"Smoke session directory '{smoke_session_dir}' still exists after deletion attempt.")
+
         if smoke_lock_file.exists():
             try:
                 smoke_lock_file.unlink(missing_ok=True)
-            except OSError:
-                pass
+            except Exception as err:
+                cleanup_errors.append(f"Failed to remove smoke lock file '{smoke_lock_file}': {err}")
+            if smoke_lock_file.exists():
+                cleanup_errors.append(f"Smoke lock file '{smoke_lock_file}' still exists after deletion attempt.")
+
         try:
             if sessions_dir.exists() and not any(sessions_dir.iterdir()):
                 sessions_dir.rmdir()
@@ -971,9 +1139,21 @@ def doctor_hooks(project_dir: str | Path = ".") -> int:
         except OSError:
             pass
 
+    if smoke_failed:
+        return 1
+
+    if cleanup_errors:
+        print("\nDisposable Smoke Session Cleanup:")
+        print("  [FAIL] Smoke session cleanup failed:")
+        for err_msg in cleanup_errors:
+            print(f"    - {err_msg}")
+        print("  Smoke resources leaked on disk.")
+        print("=" * 60)
+        return 1
+
     print("\n2. Offline Hook Execution Smoke Test:")
-    print("  [PASS] SessionStart hook executed successfully")
-    print("  [PASS] PreToolUse hook invoked and processed inputs")
+    print("  [PASS] SessionStart hook executed successfully via subprocess")
+    print("  [PASS] PreToolUse hook invoked and processed inputs via subprocess")
 
     print("\n3. SpecGuard Decision Evaluation:")
     print("  [PASS] Compliant action evaluated -> SpecGuard ALLOW recorded")
@@ -984,10 +1164,47 @@ def doctor_hooks(project_dir: str | Path = ".") -> int:
     print("  [PASS] ALLOW wire-format: clean exit without blocking")
     print("  [PASS] BLOCK wire-format: structured JSON denial (permissionDecision=deny)")
 
+    # 5. Isolation & Environment Integrity Verification
     print("\n5. Isolation & Environment Integrity:")
-    print("  [PASS] User global ~/.codex completely untouched")
-    print("  [PASS] Zero elevated sandbox or global ACL modification required")
-    print("  [PASS] Zero background process termination")
+    codex_mutated = False
+    if not user_codex_existed_before:
+        if user_codex_home.exists():
+            print("  [FAIL] User global ~/.codex was created unexpectedly during doctor run!")
+            codex_mutated = True
+        else:
+            print("  [PASS] User global ~/.codex observed untouched (directory did not exist before/after)")
+    else:
+        post_entries = set(user_codex_home.iterdir())
+        diff_entries = post_entries - user_codex_entries_before
+        if diff_entries:
+            print(f"  [FAIL] User global ~/.codex had new entries created: {diff_entries}")
+            codex_mutated = True
+        else:
+            mutated_files = []
+            for f_name, pre_h in user_codex_hashes_before.items():
+                target_f = user_codex_home / f_name
+                if not target_f.is_file():
+                    mutated_files.append(f"{f_name} (deleted)")
+                else:
+                    try:
+                        curr_h = hashlib.sha256(target_f.read_bytes()).hexdigest()
+                        if curr_h != pre_h:
+                            mutated_files.append(f"{f_name} (content modified)")
+                    except OSError:
+                        pass
+            if mutated_files:
+                print(f"  [FAIL] User global ~/.codex files were modified: {mutated_files}")
+                codex_mutated = True
+            else:
+                print("  [PASS] User global ~/.codex observed untouched (tracked files and entries identical before/after)")
+
+    if codex_mutated:
+        print("=" * 60)
+        return 1
+
+    print("  [PASS] AgentContract doctor executed zero elevated sandbox, ACL, or process termination commands")
+    print("  [PASS] Disposable smoke session resources cleaned up completely")
+    print("  [NOT OBSERVED] External system ACLs, unmanaged background processes, and Desktop GUI state not monitored")
 
     print("\nSummary:")
     print("  AgentContract Codex hooks are healthy, validated, and isolated.")
