@@ -104,7 +104,7 @@ Conversely, when SpecGuard denies a tool call, the structured denial JSON (`perm
 **Commit SHA & Handoff Verification:**
 - Confirmed review round: Round 15 main-agent review (2026-10-10)
 - Remote synchronization commit: `adecd314ea3b115ff672a9db3624e75878d067ce`
-- Implementation commit: pending commit for Round 16
+- Implementation commit: `1bd028432af13f4c55470b15446ab62dd127f0ae`
 
 **Questions/blockers for main-agent review:**
 - None. Offline suite has 396 passes, same-call identity correlation enforced, non-tool events excluded, mismatched/unrelated events verified negative, and all regression tests added. Ready for main-agent review.
