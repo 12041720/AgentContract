@@ -17,7 +17,7 @@
 - Work branch: `task/TASK-012-codex-pretooluse-compat`
 - Status: **CHANGES_REQUESTED**
 - Owner: Execution agent
-- Main-agent review: Round 4 CHANGES_REQUESTED (protected destination false positives; DENY runtime evidence not call-correlated; 2 live E2E tests skipped)
+- Main-agent review: Round 5 CHANGES_REQUESTED (quoted-redirection false positive; premature ALLOW completion; runtime DENY unproven; E2E skipped)
 - Previous accepted milestone: TASK-011 / M6
 
 ## Main-agent checkpoint
@@ -111,3 +111,10 @@ On a new session:
 - Round 4 CHANGES_REQUESTED: shell destination matcher can mistake protected path appearing as content or a filename prefix for target write; Codex runtime denial is not demonstrably bound to Guard-blocked tool call.
 - Executor reports 360 passed / 2 skipped on Python 3.12.9, live Codex E2E ALLOW/DENY both skipped due to absent dedicated test auth. Static GitHub review only; no CI checks or independent live test.
 - M7 UNVERIFIED; do not merge product code or activate another task.
+
+## M7 round 5 checkpoint (2026-10-10)
+
+- Branch implementation/report remote HEAD: `2741178152075a8aaa310ceb02b64e77a598023d`; Executor Report SHA `0876d8c...` is not fetchable from GitHub.
+- Round 5 CHANGES_REQUESTED: quoted `>` is mistaken for a redirection, path matching ignores workspace roots, ALLOW completion accepts non-terminal states, and hook stderr is not proof Codex runtime honored the DENY.
+- Executor reports Python 3.12.9 362 passed / 2 skipped, 0 failures. Both required isolated online Codex CLI tests still skipped for missing opt-in test credentials; no independent run, CI checks, or real E2E proof.
+- M7 remains UNVERIFIED; TASK-012 only active task, no product merge or TASK-013.
