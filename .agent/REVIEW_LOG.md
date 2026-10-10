@@ -879,3 +879,14 @@ Mark TASK-012 BLOCKED pending dedicated test auth and isolated ALLOW/Completed +
 ## 2026-10-10 — TASK-012 round 7: authenticated E2E invocation failed before hooks
 
 **Verdict:** CHANGES_REQUESTED. First user-supplied independent test-auth run selected both live E2E scenarios; **2 failed, 7 deselected**, Python 3.12.9, both Codex exit code 2 because `--sandbox workspace-write` conflicts with `--approve-for-me`. This is an invalid CLI argument combination, **not evidence that ALLOW or DENY protocol failed**. Separate temp CODEX_HOME PATH-alias warning was not the cause. Remove `--approve-for-me` from both test argv arrays while retaining workspace-write and isolation; add deterministic CLI option regression; rerun both real online tests with dedicated auth and capture sanitized evidence. Remains UNVERIFIED; no product merge or TASK-013. See `.agent/tasks/TASK-012.md`.
+
+---
+
+## 2026-10-10 — TASK-012 round 8: live run blocked before AgentContract verification
+
+**Verdict:** BLOCKED (Windows sandbox / tool launch / project hook activation), NOT ACCEPTED.  
+**Remote HEAD reviewed:** `98ae1a28a7907499eff263cc6526f6546187e2ca`.
+
+User-provided authenticated Windows Python 3.12.9 E2E pytest: **2 failed, 8 deselected, 32.03s**. ALLOW: Codex runtime starts and model responds, but harmless `Get-Content -LiteralPath probe.txt` fails with `CreateProcess ... rejected: blocked by policy`; codex exit 0 despite no actual successful read. DENY: isolated project `.agentcontract/sessions` absent, so Guard trace/hook execution is not verified, regardless of installed `hooks.json` or protected file unchanged.
+
+Most likely preflight areas: isolated CODEX_HOME lacks native `windows.sandbox` implementation selector (official recommendation `elevated`); WindowsApps/MSIX PowerShell executable policies; warning about helper binaries in Windows TEMP; project `.codex` hook trust and Python command dispatch. Distinguish hypotheses from confirmed facts. Require non-destructive, sandbox-preserving native Windows shell preflight and authentic project hook dispatch before rerunning E2E. No personal auth copies/global changes/unrestricted access/product merge or next task. Full directions in `.agent/tasks/TASK-012.md`.
