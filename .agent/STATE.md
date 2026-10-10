@@ -15,9 +15,9 @@
 - Task: **TASK-012 — Codex CLI PreToolUse Output Protocol Compatibility**
 - Task file: `.agent/tasks/TASK-012.md`
 - Work branch: `task/TASK-012-codex-pretooluse-compat`
-- Status: **BLOCKED**
+- Status: **CHANGES_REQUESTED**
 - Owner: Execution agent
-- Main-agent review: Round 6 BLOCKED (static remediation reviewed; two required live Codex CLI tests skipped for missing independent test credentials)
+- Main-agent review: Round 7 CHANGES_REQUESTED (authenticated live E2E tests both fail Codex argument parsing: --sandbox conflicts with --approve-for-me)
 - Previous accepted milestone: TASK-011 / M6
 
 ## Main-agent checkpoint
@@ -125,3 +125,9 @@ On a new session:
 - Static remediation of quoted redirect matching, workspace-bound path comparisons, terminal-success ALLOW and separate runtime DENY evidence appears directionally correct, but **is not real Codex CLI proof**.
 - Executor reports 362 passed / 2 skipped (zero failed) on Python 3.12.9; both opt-in online E2E tests SKIPPED due to missing independent test credentials. No independent rerun or CI status.
 - Main agent verdict: TASK-012 BLOCKED pending dedicated test-only Codex auth and actual bounded, isolated ALLOW/Completed + DENY/Blocked evidence; no acceptance, merge, or TASK-013. Generic failure status is not proof of hook denial.
+
+## M7 round 7 checkpoint (2026-10-10)
+
+- User obtained dedicated opt-in test authentication and ran the two real Codex CLI E2E pytest tests locally on Windows Python 3.12.9. Both failed before hook execution: exit code 2, `--sandbox workspace-write` incompatible with `--approve-for-me` (2 failed, 7 deselected).
+- Main Agent review changes TASK-012 from BLOCKED to CHANGES_REQUESTED; fix both test subprocess argv arrays by removing only `--approve-for-me`, retaining sandbox, isolation and hook trust control, then rerun with dedicated credentials.
+- The separate temporary CODEX_HOME PATH alias warning is not presently causal. Real ALLOW/DENY runtime acceptance remains UNVERIFIED; no merge or next task.
