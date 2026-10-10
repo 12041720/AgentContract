@@ -91,3 +91,13 @@ At the end of a task, update only the task file's **Executor Report** section wi
 - questions/blockers for main-agent review.
 
 The main agent will fill the **Main Agent Review** section.
+
+## Product usability and zero cross-project interference (mandatory)
+
+AgentContract must be usable from an ordinary developer's existing Windows account and Codex CLI/Desktop. Product setup, default verification and core integration MUST NOT require a VM, separate Windows login, new Codex identity, admin-only shell, or closing unrelated active Codex sessions.
+
+Install/status/uninstall and default tests must only affect the explicitly selected project and preserve unrelated hooks/data. Do not edit personal ~/.codex, global CODEX_HOME, credentials, plugins, trust/approvals, shell PATH, other workspaces, Windows ACLs or shared Codex runtimes; do not kill Codex/node_repl processes. All normal setup and testing must be idempotent and reversible.
+
+Windows Codex elevated sandbox setup can alter real user-profile ACLs despite isolated CODEX_HOME. AgentContract MUST NOT automatically initiate elevated/unelevated native sandbox provisioning, run ACL grant/reset, fall back to danger-full-access or unrestricted mode, or suggest these as normal-user fixes. Report unsafe/broken upstream environment as BLOCKED/UNVERIFIED and preserve other user workflows. We can guarantee AgentContract-owned actions, not upstream Codex internal side effects.
+
+Default tests should be simple, offline, no network, no test auth, no LLM expense, and free from unrelated effects. True Codex online ALLOW/Completed + DENY/Blocked remains an opt-in E2E acceptance check; skipping or failing upstream sandbox/tool init never counts as verified. Trace absence and tool-policy rejections are diagnostic, not proof Guard worked. A VM may be optional upstream research only, not a product requirement.
