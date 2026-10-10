@@ -890,3 +890,11 @@ Mark TASK-012 BLOCKED pending dedicated test auth and isolated ALLOW/Completed +
 User-provided authenticated Windows Python 3.12.9 E2E pytest: **2 failed, 8 deselected, 32.03s**. ALLOW: Codex runtime starts and model responds, but harmless `Get-Content -LiteralPath probe.txt` fails with `CreateProcess ... rejected: blocked by policy`; codex exit 0 despite no actual successful read. DENY: isolated project `.agentcontract/sessions` absent, so Guard trace/hook execution is not verified, regardless of installed `hooks.json` or protected file unchanged.
 
 Most likely preflight areas: isolated CODEX_HOME lacks native `windows.sandbox` implementation selector (official recommendation `elevated`); WindowsApps/MSIX PowerShell executable policies; warning about helper binaries in Windows TEMP; project `.codex` hook trust and Python command dispatch. Distinguish hypotheses from confirmed facts. Require non-destructive, sandbox-preserving native Windows shell preflight and authentic project hook dispatch before rerunning E2E. No personal auth copies/global changes/unrestricted access/product merge or next task. Full directions in `.agent/tasks/TASK-012.md`.
+
+---
+
+## 2026-10-10 — TASK-012 round 8 Windows sandbox root-cause addendum
+
+User supplied actual `.sandbox` logs for test CODEX_HOME. Failure is a **Windows sharing violation (`os error 32`)** during sandbox runtime ACL validation on Codex's `cua_node/3dd31cfff853001c/bin/node_repl.exe`; the sandbox setup exits before any shell or AgentContract hook can execute. Numerous Codex + six node_repl processes are running, but exact file handle holder is unverified. Matches recently reported upstream Codex bugs (openai/codex #52389, #52501). `codex doctor sandbox.helpers=ok` is configuration readability only.
+
+Important M6 safety observation: sandbox setup attempted granting read ACEs to numerous user profile directories beyond the isolated test CODEX_HOME (`.pi`, `.slock`, etc.). Do not use elevated sandbox refresh repeatedly on the daily user profile, kill unrelated Codex sessions, or reset ACLs. Prefer VM/dedicated OS user/profile or fixed upstream build. M7 TASK-012 remains BLOCKED and no product changes accepted.
