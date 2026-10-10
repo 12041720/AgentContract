@@ -4,7 +4,7 @@
 **Milestone:** M7 — Codex Runtime Protocol Compatibility  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-012-codex-pretooluse-compat`  
-**Main-agent review:** CHANGES_REQUESTED — round 9
+**Main-agent review:** CHANGES_REQUESTED — round 10
 
 ## Objective
 
@@ -306,3 +306,23 @@ Safe next step: user saves active Codex work, exits Desktop/VSCode integration/o
 **Executor action:** On same TASK-012 branch, audit integration and test launcher for Windows sandbox side effects and global mutations. Implement nonintrusive default smoke/doctor plus project-local isolation regressions, safe preflight that does not trigger unsafe provisioning, and concise user instructions. Keep production SpecGuard ALLOW/DENY semantics. Run Python 3.12.9 offline suite, report exact results and remaining external E2E blocker; commit/push. No product merge or TASK-013.
 
 **Scope note:** A separate VM/OS account may be useful for upstream maintainer investigation but MUST NOT be an AgentContract requirement or recommended normal-user workaround.
+
+
+### Round 10 main-agent review — 2026-10-10
+
+**Verdict:** CHANGES_REQUESTED (not accepted; real online Codex E2E remains UNVERIFIED).
+**Implementation reviewed:** `1df5f26325d968e0111fb1f9cf7b2263b544a0b3` (reachable GitHub commit).
+**Branch report HEAD reviewed:** `8bc5b3700391c9f987195000f125e8e3d2d7414b`.
+**Evidence:** GitHub source/test/report static review, no GitHub combined CI statuses; executor reports Windows Python 3.12.9 full `pytest` **373 passed, 2 skipped**, not independently rerun.
+
+**Progress accepted:** Project-only `agentcontract codex doctor --project` command and offline deterministic SpecGuard ALLOW/BLOCK smoke implemented. Temporary session is scoped to named project; real user Codex auth is not copied during offline doctor. Explicit upstream-blocked status was introduced without sandbox escalation/ACL cleanup/process killing. New tests cover install/uninstall and foreign-hook preservation. These are meaningful improvements but cannot substantiate real Codex runtime enforcement.
+
+**BLOCKER 1 — benign Codex warning is classified as fatal upstream failure, making online E2E vacuous.** `UPSTREAM_ENV_ERROR_PATTERNS` and `check_upstream_environment_failure()` treat `Refusing to create helper binaries under temporary dir` and `could not create PATH aliases` as unconditional `UPSTREAM_ENV_BLOCKED`. The user's previous authenticated Codex run contained precisely this **nonfatal** warning while Codex connected, emitted `thread.started`, `turn.completed`, and attempted to execute a tool. Both real online E2E tests always call the detector before asserting actual outcome. On this installation they therefore can SKIP on warning even if ALLOW actually succeeded or DENY actually failed. Remove nonfatal warning patterns from fatal decision; record them separately as diagnostics. Only treat independently verified tool-process sandbox failure or fatal setup failure as upstream blocker, preferably from trusted stderr/runtime structured events rather than model-authored prose. Add regression: `returncode=0`, successful tool-completed JSONL and warning -> **not** blocked; fatal `CreateProcess rejected: blocked by policy` -> blocked.
+
+**BLOCKER 2 — offline doctor can falsely report working installed hooks and runtime enforcement without executing configured commands.** `doctor_hooks()` counts any handler whose `command` merely contains `agentcontract.integrations.codex.hooks`, but then calls `run_hook(..., session_store=smoke_store)` directly in the same interpreter. A project can have a handler like `echo agentcontract.integrations.codex.hooks PreToolUse` (never invokes AgentContract) yet doctor may display `[PASS] hooks.json valid`, `[PASS] PreToolUse hook invoked`, `[PASS] Runtime Enforcement Wire-Format`, and final `hooks are healthy`. Detect invalid executable/argv and required event mapping; execute only the **known AgentContract handler command** with a fabricated offline payload through a subprocess (no Codex, no foreign hooks, no network), or explicitly label the direct-handler check `IN_PROCESS_UNIT_CHECK_ONLY` and separate registration verification. Never claim Codex loaded the hook or its runtime honored DENY from an in-process check. Add regression with invalid-but-marker-containing handler that must not yield overall PASS.
+
+**BLOCKER 3 — doctor makes unverified system integrity claims.** It prints `[PASS] User global ~/.codex completely untouched`, `[PASS] Zero elevated sandbox or global ACL modification required` and `[PASS] Zero background process termination` without observing snapshots or side-effect instrumentation in doctor itself. Clarify that its own implementation invokes no Codex/sandbox/process-kill/global writes, report `NOT TESTED/NOT OBSERVED` for external runtime/global state, or implement narrowly scoped read-only before/after evidence. Do not claim independently proven full-machine integrity from a passing smoke test. Ensure disposal failures are visible: `shutil.rmtree(..., ignore_errors=True)` currently can leak a smoke session but still print all PASS.
+
+**Online acceptance:** Missing real Codex ALLOW/Completed and DENY/Blocked evidence remains UNVERIFIED. Keep online tests opt-in, normal offline smoke no special login or VM/admin, and never initiate `windows.sandbox=elevated` / ACL changes, alter global configuration, or terminate unrelated Codex sessions. Refine skip/error classification; an actual hook missing its trace with no independently proven upstream fault must FAIL/INCONCLUSIVE rather than SKIP.
+
+**Disposition:** Fix only the above diagnosability/accuracy issues on TASK-012, run Windows Python 3.12.9 full suite, record exact results, report live E2E separately; push branch, no merge to main or TASK-013. Direct usability smoke can be used provisionally but is **not** the acceptance gate.
