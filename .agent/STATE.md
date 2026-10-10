@@ -15,9 +15,9 @@
 - Task: **TASK-012 — Codex CLI PreToolUse Output Protocol Compatibility**
 - Task file: `.agent/tasks/TASK-012.md`
 - Work branch: `task/TASK-012-codex-pretooluse-compat`
-- Status: **CHANGES_REQUESTED**
+- Status: **BLOCKED**
 - Owner: Execution agent
-- Main-agent review: Round 15 CHANGES_REQUESTED (machine/Guard evidence not correlated per-call; live E2E still blocked)
+- Main-agent review: Round 16 BLOCKED (offline implementation review PASS; real Codex E2E upstream blocked; pause diagnostic revisions)
 - Previous accepted milestone: TASK-011 / M6
 
 ## Main-agent checkpoint
@@ -195,4 +195,10 @@ On a new session:
 - Lifecycle-only vs PreToolUse GUARD_DECISION correctly separated, plaintext Completed/Blocked no longer considered runtime evidence, shell/MSIX cause cautiously called hypothesis.
 - Diagnostic `ENFORCED` remains falsely possible if an unrelated completed/failed JSONL item coexists with an unrelated Guard verdict, or an agent_message item has status completed. Round 15 CHANGES_REQUESTED: correlate same tool/call with matching Guard and runtime result, or mark partial evidence UNVERIFIED. Tests must cover mismatch.
 - Previous local user-run offline PASS still valid. Native Codex 0.162.0 Windows tool process remains UPSTREAM_ENV_BLOCKED/UNVERIFIED; no redundant reruns, unsafe sandbox provisioning, global config/ACL/process changes, product merge or TASK-013.
+
+## M7 round 16 delivery checkpoint (2026-10-10)
+
+- Inspected `1bd028432af13f4c55470b15446ab62dd127f0ae`: same-call Guard/tool diagnostics and non-tool event filtering. Executor reports Python 3.12.9 396 passed/2 skipped, not independently rerun; user already independently validated 383 passes and temporary project hook lifecycle.
+- Stop further diagnostic-only rounds. TASK-012 implementation offline sufficiently reviewed; native Codex 0.162.0 ALLOW/DENY E2E remains blocked at Windows CreateProcess policy, no credible runtime Guard proof. Keep M7 BLOCKED without unsafe sandbox/ACL bypass; no TASK-013/main merge.
+- Unblock user-facing delivery separately: the accepted v0.1.0 Python SDK, offline demo and deterministic benchmark on `main` can already be used; they are *not* turnkey Codex runtime protection. Next product release definition must distinguish core SDK from experimental Codex adapter and provide one real end-user scenario with verified tool result.
 

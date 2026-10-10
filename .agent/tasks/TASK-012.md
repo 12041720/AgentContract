@@ -1,10 +1,10 @@
 # TASK-012 — Codex CLI PreToolUse Output Protocol Compatibility
 
-**Status:** CHANGES_REQUESTED  
+**Status:** BLOCKED  
 **Milestone:** M7 — Codex Runtime Protocol Compatibility  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-012-codex-pretooluse-compat`  
-**Main-agent review:** CHANGES_REQUESTED — round 15 (cross-call diagnosis false-positive; live E2E blocked)
+**Main-agent review:** BLOCKED — round 16 (offline implementation review PASS; native Codex E2E unverified)
 
 ## Objective
 
@@ -422,4 +422,17 @@ This is first-hand user-run offline evidence closing the round-12 **offline** ga
 **No new runtime testing requested:** Previous user native Codex CLI 0.162.0 ALLOW Get-Content and DENY Set-Content both were blocked at CreateProcess by Windows policy. The online gate is still unverified, so do NOT request a rerun merely for new diagnostics; do not create dedicated Windows user/VM, configure elevated sandbox, change user-global ACLs/auth/config/shell PATH, kill Codex processes, or enable unrestricted bypass.
 
 **Executor:** Apply only this helper-level diagnostic hardening to the TASK-012 branch, run local Python 3.12.9 offline suite, update Executor Report with actual SHA and test evidence, push. Preserve offline doctor verified from user log (383 passed, 2 excluded; later executor reports 391 passed, 2 skipped). No merge to main or TASK-013.
+
+
+### Round 16 main-agent assessment — 2026-10-10: OFFLINE IMPLEMENTATION REVIEW PASSED; NATIVE CODEX E2E BLOCKED
+
+**Scope and delivery decision:** The narrow Round 15 diagnosis-only changes have been inspected. `_correlate_tool_and_guard` prioritizes equal call IDs and rejects explicitly mismatched IDs; it has bounded command fallback when identifiers are unavailable. `is_codex_tool_item` excludes `agent_message` and other non-tool event types, and regression fixtures cover mismatched IDs, non-tool messages, unrelated failed items, missing identity, and positive same-call cases. These changes address the previous two independent-existential false positives. They are offline/synthetic corroboration, not proof of native Codex runtime enforcement. No further diagnostic-only iteration is requested.
+
+**Reviewed:** executor implementation `1bd028432af13f4c55470b15446ab62dd127f0ae`, report `8ef478adcb63a6315f6154d5c9e14ac38f6d74fc`; handoff marker confirms Round 15 read from `adecd314`. Executor reports Python 3.12.9 full offline suite **396 passed, 2 skipped**; this has not been independently re-executed on user's machine. The user's independently shared PowerShell proof already established **383 passed, 2 deselected**, plus disposable-project install/doctor/ALLOW/BLOCK/trace/uninstall success.
+
+**FINAL SCOPE SPLIT — stop review churn:** The v0.1.0 **Python SDK, deterministic demo, benchmark, tracing and EvidenceGate** were completed in TASK-001 through TASK-009 and are usable now from `main` when explicitly embedded in a Python tool executor. TASK-010/011 implemented project-local Codex hook configuration and isolation. TASK-012's ALLOW/DENY wire-format and safe offline hook subprocess tests are implemented, but **real native Codex CLI 0.162.0 tool execution remains UPSTREAM_ENV_BLOCKED** (even harmless Get-Content blocked at Windows CreateProcess by policy; protected file unchanged cannot prove Guard DENY). Do not sell the hooks as guaranteed operational protection in user's Codex setup. No formal release tag or PyPI publication is claimed.
+
+**Task status:** BLOCKED / LIVE_E2E_UNVERIFIED, not acceptance of native Codex runtime. Do not merge TASK-012 into main, start TASK-013, or open another review solely to polish E2E log diagnostics. Resume real Codex release gate only on new independently observed, safe tool process execution and correlated ALLOW/Completed + DENY/Blocked traces. No special VM, OS account, sandbox elevation, global Codex ACL/config/auth changes, other process termination or security bypass. Preserve user time: no reruns of known blocked tests without a concrete, safe compatibility change.
+
+**Immediate user-facing existing usable version (no native Codex required):** from a clean checkout of `main`, with Python 3.12.9 and Pydantic available, set process-local PYTHONPATH to `src`; run `python -m agentcontract.cli version`, `python -m agentcontract.cli demo` (offline canned extraction and simulated tool executor, *not* a live Codex invocation), and `python -m agentcontract.cli benchmark` (13 deterministic scenarios, *not* real-world agent performance). Python API `AgentContractRuntime.execute` works with caller-supplied real tool executors; guard protection applies only when actual host tool calls are routed through it. See project root README API example.
 

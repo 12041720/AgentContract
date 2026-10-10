@@ -80,7 +80,7 @@ M6 status: **COMPLETE** — TASK-011 accepted on 2026-10-09, selectively integra
 
 | Task | Title | Status | Depends on |
 |---|---|---|---|
-| TASK-012 | Codex CLI PreToolUse Output Protocol Compatibility | CHANGES_REQUESTED | TASK-011 |
+| TASK-012 | Codex CLI PreToolUse Output Protocol Compatibility | BLOCKED | TASK-011 |
 
 Goal: correct ALLOW wire format while demonstrating real runtime ALLOW/Completed and DENY/Blocked under truly isolated, sandboxed Codex tests.
 
@@ -103,4 +103,6 @@ M7 round 13 (2026-10-10): Real user opt-in Windows Codex 0.162.0 E2E: 2 skipped,
 M7 round 14 (2026-10-10): CHANGES_REQUESTED narrowly for evidence accuracy. UTF-8 process decode fix landed (agent reports 387 passed/2 skipped), but three-way diagnostics may falsely claim Codex runtime enforcement via "Completed"/"Blocked" prose and PreToolUse hook invocation from unrelated lifecycle trace events. Root-cause WindowsApps/MSIX claims require evidence or uncertainty labels. Native live E2E still BLOCKED/UNVERIFIED, no main merge/TASK-013. See Round 14 TASK-012.
 
 M7 round 15 (2026-10-10): CHANGES_REQUESTED for single diagnostic false-positive: `format_e2e_diagnostics` reports ENFORCED from unrelated tool machine event and Guard verdict, without same-call identity; `agent_message` can count as completed tool. Require genuine per-call/tool evidence or conservative UNVERIFIED, negative tests. Executor reports 391 passed/2 skipped; native Codex real E2E still UPSTREAM_ENV_BLOCKED, no rerun/merge/TASK-013. See task Round 15.
+
+M7 round 16 (2026-10-10): implementation's offline diagnostics and protocol review PASS; agent reports 396 passed/2 skipped (user personally validated earlier 383 offline passes and install/doctor/uninstall). No further diagnostic-only iteration. Native Codex runtime both ALLOW and DENY unverified because upstream Windows tool launch policy blocks even harmless read; TASK-012 remains BLOCKED, not merged. Core v0.1 Python SDK/CLI from accepted TASK-001–009 is usable now independently; release/document separately from experimental Codex hooks.
 
