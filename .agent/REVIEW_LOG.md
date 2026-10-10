@@ -947,3 +947,10 @@ Verified from user PowerShell output: checkout fast-forward to `ab13061`, `pytes
 
 User-run `codex-cli 0.162.0`, Python 3.12.9, `pytest -k real_codex_cli_pretooluse -vv -rs`: **2 skipped / 13 deselected / 1 warning (30.09s)**. ALLOW Get-Content and DENY Set-Content both rejected at Codex exec_command/CreateProcess for WindowsApps/MSIX PowerShell 7.6.6 (`pwsh.exe`) with `rejected: blocked by policy`. Since test skipped before session-trace verification, actual hook invocation and enforcement both remain UNVERIFIED; DENY not credited. Additional Python subprocess stdout thread exception: UnicodeDecodeError on Windows default `gbk` from UTF-8 Codex output. Executor should explicitly decode subprocess output as UTF-8 and add regression tests, improve diagnostic separation, and investigate only *read-only/scoped* shell path configuration, no global ACL/config/process changes or unsafe sandbox fallback. 383 offline tests remain independently user-verified; TASK-012 overall BLOCKED.
 
+---
+
+
+## 2026-10-10 — TASK-012 round 14 review
+
+**CHANGES_REQUESTED (diagnostic evidence only); native Codex E2E still BLOCKED/UNVERIFIED.** Reviewed `616b7640` with Executor Report HEAD `a7ce471f`; report says Windows Python 3.12.9 **387 passed/2 skipped**, not independently run. UTF-8 decode now explicit on four online E2E subprocess calls including retries, and three offline doctor commands; regression cases added. Two diagnostic false positives: (1) `format_e2e_diagnostics` infers true `COMPLETED/BLOCKED` from plain substring anywhere in arbitrary stdout/stderr; needs machine-event+Guard correlation or status UNVERIFIED. (2) `inspect_e2e_hook_dispatch` reports INVOKED when any lifecycle trace event exists, even USER_MESSAGE without PreToolUse GUARD_DECISION; must label lifecycle-only separately and require guard evidence for PreToolUse. Root-cause claims about MSIX shell policy/isolated CODEX_HOME lack presented read-only evidence: qualify as hypotheses. No unsafe Windows sandbox workarounds or repeated user live E2E until meaningful safe compatibility change. Keep main unchanged, no TASK-013. Full instructions in TASK-012 Round 14.
+

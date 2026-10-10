@@ -1,10 +1,10 @@
 # TASK-012 — Codex CLI PreToolUse Output Protocol Compatibility
 
-**Status:** BLOCKED  
+**Status:** CHANGES_REQUESTED  
 **Milestone:** M7 — Codex Runtime Protocol Compatibility  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-012-codex-pretooluse-compat`  
-**Main-agent review:** BLOCKED — round 13 (real Codex policy block and GBK test defect)
+**Main-agent review:** CHANGES_REQUESTED — round 14 (diagnostic false positives; live E2E still blocked)
 
 ## Objective
 
@@ -392,4 +392,21 @@ This is first-hand user-run offline evidence closing the round-12 **offline** ga
 4. Preserve the already verified **383 offline passes**; rerun full offline suite and a synthetic encoding/policy-rejection regression before asking user to run live Codex again. No main product merge or TASK-013 while true live ALLOW/Completed + DENY/Blocked evidence is missing.
 
 **Security/product UX:** Existing normal Windows account and other Codex projects must work unchanged. The special test auth path is an explicit opt-in fixture, not a product requirement. Never force-kill `node_repl`, modify global ACLs or invoke elevated sandbox to make tests pass. Keep upstream native runtime limitations distinct from AgentContract correctness.
+
+
+### Round 14 main-agent review — 2026-10-10
+
+**Verdict: CHANGES_REQUESTED for evidence/diagnostic accuracy; real Codex CLI E2E remains BLOCKED / UNVERIFIED.** Offline UTF-8 fix approved for use, but overall TASK-012 NOT ACCEPTED. No merge main/TASK-013.
+
+**Implementation reviewed:** `616b764004a2012025301168e1aa0f117ae05ba8`, executor report at `a7ce471fc9ae32b9f37361bbab9c7b823de96d05`. Executor records reading Round 13 from `a5c17997931c360be1db2687c7161bcf76a8d875`; handoff was recorded. Reported Python 3.12.9 full suite **387 passed / 2 skipped**, targeted `test_codex_cli.py` 17 passed/2 skipped and `test_codex_isolation.py` 27 passed; this is reported evidence, not an independent Windows run. No genuine E2E outcome on working Codex Windows sandbox.
+
+**Round 13 implementation gains confirmed from source:** all four online `subprocess.run` paths (two first runs + two retries) now specify UTF-8 decode and replace errors; three offline doctor subprocess calls also explicitly decode UTF-8. AST and a UTF-8 subprocess regression were added. The prior GBK `UnicodeDecodeError` should no longer arise from these calls. No global Python locale/system settings changed. Three-axis environment/dispatch/enforcement diagnostics were introduced.
+
+**BLOCKER 1 — do not infer runtime enforcement from arbitrary output strings.** In `format_e2e_diagnostics`, for otherwise unblocked invocations, `enforce_status = "COMPLETED" if "Completed" in combined else "PENDING"` (ALLOW) and `"BLOCKED" if "Blocked" in combined` (DENY). These words could be authored by the LLM, embedded in a quoted prompt/error, or refer to unrelated events. Diagnose `UNVERIFIED` unless independently corroborated **machine JSONL tool item terminal status** and correctly correlated project Guard trace/call IDs; or leave status as `OBSERVED_TOOL_STATUS_ONLY` without implying enforcement. Add negative regressions in which output contains "Completed"/"Blocked" only as plain model text and must NOT report actual runtime enforcement.
+
+**BLOCKER 2 — distinguish arbitrary lifecycle trace activity from the specific PreToolUse Guard dispatch.** `inspect_e2e_hook_dispatch` declares `invoked: True` and `status: INVOKED` when **any trace event** exists, including `USER_MESSAGE` emitted by UserPromptSubmit without any GUARD_DECISION. For the TASK-012 gate, report (a) session / other lifecycle activity, and separately (b) **PreToolUse Guard decision observed** only when a real GUARD_DECISION is present; otherwise explicit `PRETOOLUSE_UNVERIFIED`. Add a synthetic trace with only a USER_MESSAGE that must not qualify as PreToolUse invocation, plus a positive GUARD_DECISION case.
+
+**Evidence-claim correction (non-code):** The Executor Report asserts confirmed root causes about Microsoft Store `pwsh.exe` direct CreateProcess/MSIX identity, Codex Rust shell resolution, and `cap_sid` differences between actual profile and isolated `CODEX_HOME`, but the report supplies no captured read-only command output or upstream code references proving causal mechanism. The WindowsApps path was observed in the user's error, so it is an important hypothesis, **not a verified root cause**. Qualify those as hypotheses unless evidence can be provided read-only. Do not imply the isolated test identity can be repaired safely by touching user-global Codex runtime/ACL. No auto elevation, restricted sandbox bypass, global config/auth change, process kills, or VM/dedicated account requirement.
+
+**Scope and test expectation:** Fix just the two meaningful diagnostic false positives and report claims; maintain offline previously verified **383-pass** gate and rerun the current full offline suite. Keep authenticated real Codex CLI tests opt-in. If native Codex sandbox continues to block harmless CreateProcess, report `UPSTREAM_ENV_BLOCKED` with hook/runtime enforcement independently `UNVERIFIED`, and **do not re-ask the user to rerun the same known-blocked test** until a safe actionable native compatibility change has been identified. Record new implementation SHA, review round and regression evidence in Executor Report and push task branch. Do not merge main.
 

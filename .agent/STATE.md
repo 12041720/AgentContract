@@ -15,9 +15,9 @@
 - Task: **TASK-012 — Codex CLI PreToolUse Output Protocol Compatibility**
 - Task file: `.agent/tasks/TASK-012.md`
 - Work branch: `task/TASK-012-codex-pretooluse-compat`
-- Status: **BLOCKED**
+- Status: **CHANGES_REQUESTED**
 - Owner: Execution agent
-- Main-agent review: Round 13 BLOCKED (real Codex E2E both policy-blocked; online Python GBK decode bug)
+- Main-agent review: Round 14 CHANGES_REQUESTED (UTF-8 fix approved; diagnostic false-positive; live E2E remains BLOCKED/UNVERIFIED)
 - Previous accepted milestone: TASK-011 / M6
 
 ## Main-agent checkpoint
@@ -181,4 +181,11 @@ On a new session:
 - Neither actual hook invocation nor native Guard enforcement proven; test skip before trace check, so external policy failure is correctly not accepted. 383-pass offline validation remains valid.
 - Also Python subprocess reader thread GBK/UTF-8 decode error; executor must use explicit UTF-8, add regression, diagnose shell path difference read-only/scoped, never elevate/provision Windows sandbox or modify global Codex environments/ACL/processes.
 - TASK-012 still BLOCKED; no main merge or TASK-013.
+
+## M7 round 14 checkpoint (2026-10-10)
+
+- Reviewed implementation `616b764004a2012025301168e1aa0f117ae05ba8`; agent report says Python 3.12.9 387 passed / 2 skipped (not independently rerun). Four real Codex online subprocess calls and 3 doctor hook subprocess calls now explicitly decode UTF-8; synthetic regression added.
+- Three-way diagnostics currently incorrectly infer runtime enforcement from plain "Completed"/"Blocked" strings and declare PreToolUse hook INVOKED merely from unrelated lifecycle trace events. Round 14 CHANGES_REQUESTED requires precise machine-event/Guard evidence and honest unverified labels.
+- Shell selection and Microsoft Store/MSIX root cause asserted without captured evidence; treat as hypothesis. Previous independently user-run 383-offline-PASS still stands.
+- Genuine native Codex Windows ALLOW/Completed and DENY/Blocked remains BLOCKED/UNVERIFIED due CreateProcess policy; no global ACL/config/process/security changes, product merge, TASK-013, or gratuitous E2E reruns.
 

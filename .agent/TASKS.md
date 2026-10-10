@@ -80,7 +80,7 @@ M6 status: **COMPLETE** — TASK-011 accepted on 2026-10-09, selectively integra
 
 | Task | Title | Status | Depends on |
 |---|---|---|---|
-| TASK-012 | Codex CLI PreToolUse Output Protocol Compatibility | BLOCKED | TASK-011 |
+| TASK-012 | Codex CLI PreToolUse Output Protocol Compatibility | CHANGES_REQUESTED | TASK-011 |
 
 Goal: correct ALLOW wire format while demonstrating real runtime ALLOW/Completed and DENY/Blocked under truly isolated, sandboxed Codex tests.
 
@@ -99,4 +99,6 @@ M7 round 11 review (2026-10-10): CHANGES_REQUESTED — executor reports 377 pass
 M7 round 12 (2026-10-10): Offline doctor and scoped integrity/code changes PASS static main-agent review, executor reports 383 passed/2 skipped; TASK-012 overall BLOCKED pending genuine Codex Windows native runtime ALLOW/Completed + DENY/Blocked E2E. Safe temporary-project offline local validation permitted; no global Codex mutation, main product merge or TASK-013. See TASK-012 Round 12.
 
 M7 round 13 (2026-10-10): Real user opt-in Windows Codex 0.162.0 E2E: 2 skipped, 13 deselected, 1 warning; both ALLOW read and DENY write blocked by Codex native CreateProcess policy on WindowsApps/MSIX pwsh.exe before actual tool spawn. Hook invocation/enforcement UNVERIFIED. Separate test bug: Python subprocess default GBK decoding failed on UTF-8 Codex output; fix E2E UTF-8 decode and add diagnostics/regression. Keep 383-pass offline gate and external environment BLOCKED, do not merge/start TASK-013.
+
+M7 round 14 (2026-10-10): CHANGES_REQUESTED narrowly for evidence accuracy. UTF-8 process decode fix landed (agent reports 387 passed/2 skipped), but three-way diagnostics may falsely claim Codex runtime enforcement via "Completed"/"Blocked" prose and PreToolUse hook invocation from unrelated lifecycle trace events. Root-cause WindowsApps/MSIX claims require evidence or uncertainty labels. Native live E2E still BLOCKED/UNVERIFIED, no main merge/TASK-013. See Round 14 TASK-012.
 
