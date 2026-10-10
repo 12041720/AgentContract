@@ -80,6 +80,8 @@ M6 status: **COMPLETE** — TASK-011 accepted on 2026-10-09, selectively integra
 
 | Task | Title | Status | Depends on |
 |---|---|---|---|
-| TASK-012 | Codex CLI PreToolUse Output Protocol Compatibility | CHANGES_REQUESTED | TASK-011 |
+| TASK-012 | Codex CLI PreToolUse Output Protocol Compatibility | BLOCKED | TASK-011 |
 
-Goal: correct ALLOW wire format while demonstrating real runtime ALLOW/Completed and DENY/Blocked under truly isolated, sandboxed Codex tests. Round-five CHANGES_REQUESTED: quote-unaware redirect matching, premature completed-tool detection, hook stderr mistaken for Codex runtime denial, invalid Executor Report commit SHA; real Codex ALLOW/DENY E2E both skipped/UNVERIFIED. See `.agent/tasks/TASK-012.md`. No merge yet.
+Goal: correct ALLOW wire format while demonstrating real runtime ALLOW/Completed and DENY/Blocked under truly isolated, sandboxed Codex tests.
+
+M7 status: **BLOCKED / LIVE E2E UNVERIFIED** — round 6 review (2026-10-10). Static remediation reviewed; executor reports 362 passed / 2 skipped. Both real Codex CLI ALLOW/DENY tests intentionally SKIPPED because no independent test-only auth was supplied. Await bounded isolated live E2E evidence, not another offline-only implementation iteration. Details in `.agent/tasks/TASK-012.md`. No product merge or TASK-013.
