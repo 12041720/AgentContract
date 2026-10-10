@@ -65,51 +65,49 @@ Conversely, when SpecGuard denies a tool call, the structured denial JSON (`perm
   - Updated `PreToolUseOutput` model in `src/agentcontract/integrations/codex/models.py` to support `updatedInput: Mapping[str, Any] | None = None`.
   - Updated `to_hook_response_dict()` so that when `permissionDecision == HookDecision.ALLOW` without `updatedInput`, an empty dictionary `{}` is returned (exits 0 with empty stdout). When `updatedInput` is provided on ALLOW, it is included in the structured dictionary.
   - Kept structured denial dictionary with `permissionDecision="deny"` and `permissionDecisionReason` intact on DENY branches, ensuring all constraints and fail-closed protections remain fully enforced.
-- Addressed all items from Round 14 Review:
-  1. **Blocker 1 — Machine-Event & Guard Trace Corroboration for Runtime Enforcement**:
-     - Removed naive prose substring matching (`"Completed" in combined` / `"Blocked" in combined`) from `format_e2e_diagnostics` in `tests/integrations/test_codex_cli.py`.
-     - Runtime enforcement (`ENFORCED`) now strictly requires:
-       - For ALLOW: corroborated structured Codex CLI JSONL tool item terminal status (`completed` or `success` with exit code 0) AND matching `GUARD_DECISION` trace with `verdict == ALLOW` AND `res.returncode == 0`.
-       - For DENY: corroborated structured tool failure/block JSONL item OR runtime denial in stderr AND matching `GUARD_DECISION` trace with `verdict == BLOCK`.
-     - In all other cases (including when prose text mentions "Completed" or "Blocked", or when tool items / Guard traces are missing), enforcement status is strictly diagnosed as `UNVERIFIED` with detail explaining that prose text alone does not establish runtime enforcement.
-  2. **Blocker 2 — Distinguish General Lifecycle Activity from PreToolUse Guard Dispatch**:
-     - Updated `inspect_e2e_hook_dispatch` in `tests/integrations/test_codex_cli.py` to separately track lifecycle events (`lifecycle_events_count`) vs PreToolUse Guard decision events (`guard_decisions_count`).
-     - Reports `pretooluse_invoked: True` and status `PRETOOLUSE_INVOKED` ONLY when `guard_decisions_count > 0`.
-     - When only general lifecycle events exist (e.g. `USER_MESSAGE` emitted by `UserPromptSubmit`, `SESSION_START`), reports `pretooluse_invoked: False` and status `PRETOOLUSE_UNVERIFIED` with detail indicating `ZERO PreToolUse GUARD_DECISION events were recorded. PreToolUse dispatch is UNVERIFIED.`
-     - When no session exists or trace is empty, reports `NOT INVOKED / UNVERIFIED` or `EMPTY / UNVERIFIED`.
-  3. **Evidence-Claim Correction on WindowsApps, Shell Selection, and Isolated CODEX_HOME**:
-     - Explicitly qualified environmental findings regarding Microsoft Store `pwsh.exe`, MSIX activation requirements, Codex CLI shell resolution, and AppContainer capability SID (`cap_sid`) differences between the user profile and temporary `CODEX_HOME` as **hypotheses** based on observed runtime error messages, NOT confirmed root causes.
-     - Confirmed that no unsafe changes (elevated sandbox, ACL manipulation, danger-full-access, process kills, or touching user-global files) will be performed.
-  4. **Negative & Corroboration Regression Tests**:
-     - Added `test_format_e2e_diagnostics_prose_text_alone_remains_unverified`: verifies that LLM prose text mentioning "Completed" or "Blocked" without matching JSONL tool items and Guard traces remains `Status: UNVERIFIED`.
-     - Added `test_inspect_e2e_hook_dispatch_lifecycle_only_does_not_count_as_pretooluse`: verifies that trace files containing only lifecycle events (`USER_MESSAGE`, `SESSION_START`) report `pretooluse_invoked: False` and `Status: PRETOOLUSE_UNVERIFIED`.
-     - Added `test_inspect_e2e_hook_dispatch_guard_decision_qualifies_as_pretooluse`: verifies that trace files containing an authentic `GUARD_DECISION` report `pretooluse_invoked: True` and `Status: PRETOOLUSE_INVOKED`.
-     - Added `test_format_e2e_diagnostics_corroborated_machine_events_enforced`: verifies that corroborated machine JSONL tool items paired with matching SpecGuard traces correctly report `Status: ENFORCED`.
-     - Updated `test_format_e2e_diagnostics_reports_hook_invoked_when_trace_present` to assert `Status: PRETOOLUSE_INVOKED`.
+- Addressed all items from Round 15 Review:
+  1. **Strict Same-Call Identity Correlation in `format_e2e_diagnostics`**:
+     - Replaced independent existential checks with strict same-call correlation between Codex machine tool items and SpecGuard `GUARD_DECISION` trace records via `_correlate_tool_and_guard`.
+     - Prioritizes `call_id`: if both sides have `call_id`, they MUST match exactly; differing `call_id`s strictly fail correlation.
+     - Fallback: when `call_id` is absent from one or both sides, narrowly grounded specific command/target matching is permitted only if non-empty, specific commands (>= 4 characters) exist on both sides without conflicting `call_id`s.
+     - If neither `call_id` nor specific command identity is available, correlation strictly fails and status remains `UNVERIFIED`.
+     - For DENY: requires a SpecGuard `BLOCK` decision correlated to the same tool invocation, evidenced either by a correlated machine tool item in JSONL reporting failure/rejection, OR by distinct Codex runtime stderr (excluding `[AgentContract SpecGuard]` logs) tied to the blocked call ID or command.
+  2. **Exclusion of Non-Tool Events (`agent_message`, etc.)**:
+     - Introduced `is_codex_tool_item(item)` to strictly exclude non-tool event types (`agent_message`, `message`, `thought`, `plan`, `user_message`, `assistant_message`, `text`).
+     - Updated `parse_codex_cli_items` to ensure `agent_message` (even with `status == "completed"`) is never parsed or counted as a tool execution item.
+  3. **Structured Guard Decision Extraction**:
+     - Updated `inspect_e2e_hook_dispatch` to extract and return structured `guard_decisions` list containing `verdict`, `call_id`, `command`, `tool_name`, `action`, and raw event details for each `GUARD_DECISION`.
+  4. **Positive & Negative Regression Tests for Same-Call Correlation**:
+     - Updated `test_format_e2e_diagnostics_corroborated_machine_events_enforced` to supply matching `call_id`s (`call_allow_100` and `call_block_200`) for both ALLOW and DENY scenarios.
+     - Added `test_format_e2e_diagnostics_mismatched_call_id_remains_unverified`: verifies that differing `call_id`s between machine events and Guard traces result in `Status: UNVERIFIED`.
+     - Added `test_format_e2e_diagnostics_agent_message_excluded`: verifies that `agent_message` events with `status: completed` are excluded from tool items and do not yield `ENFORCED`.
+     - Added `test_format_e2e_diagnostics_no_id_no_command_remains_unverified`: verifies that events lacking both `call_id` and command identity cannot reliably correspond and remain `Status: UNVERIFIED`.
+     - Added `test_format_e2e_diagnostics_unrelated_failed_item_with_block_remains_unverified`: verifies that an unrelated failed tool item (e.g. `git status`) paired with a Guard BLOCK trace for another command remains `Status: UNVERIFIED`.
+     - Added `test_format_e2e_diagnostics_command_fallback_matching`: verifies positive command fallback when `call_id` is missing from one side.
 
 **Files changed:**
 - `tests/integrations/test_codex_cli.py`
 - `.agent/tasks/TASK-012.md`
 
 **Tests/checks run and results:**
-- `python -m pytest tests/integrations/test_codex_cli.py` (21 passed, 2 skipped in 1.05s, 0 failures)
+- `python -m pytest tests/integrations/test_codex_cli.py` (26 passed, 2 skipped in 1.16s, 0 failures)
 - `python -m pytest tests/integrations/test_codex_isolation.py` (27 passed in 20.58s, 0 failures)
-- Full test suite on Python 3.12.9: `python -m pytest` (**391 passed, 2 skipped in 30.40s, 0 failures**).
+- Full test suite on Python 3.12.9: `python -m pytest` (**396 passed, 2 skipped in 30.22s, 0 failures**).
 - Real online Codex CLI tests: safely skip with comprehensive 3-way diagnostics when test credentials are absent or when upstream Windows execution policy blocks process creation.
 - Zero repository root pollution: `Path(".agentcontract").exists() == False`.
 - User personal `~/.codex` completely untouched.
 
 **Known limitations / E2E Acceptance Status:**
-- Default offline workflow and unit/integration test suite are fully verified and passing (391 passed, 2 skipped).
+- Default offline workflow and unit/integration test suite are fully verified and passing (396 passed, 2 skipped).
 - Real online Codex CLI tests remain an opt-in acceptance check (`SKIPPED` when dedicated test credentials absent). If upstream Codex CLI runtime encounters native Windows sandbox policy blocks (`rejected: blocked by policy` / `os error 32`), it is safely flagged as `UPSTREAM_ENV_BLOCKED: ... LIVE E2E UNVERIFIED`. AgentContract does not attempt unsafe elevated sandbox setup, unrestricted mode, or global ACL mutations.
 
 **Commit SHA & Handoff Verification:**
-- Confirmed review round: Round 14 main-agent review (2026-10-10)
-- Remote synchronization commit: `6902ba338d9338d51e143b785b4286acafe5c591`
-- Implementation commit: `9b101dab86748c247aed6b4ba43f39f3b02b4a60`
+- Confirmed review round: Round 15 main-agent review (2026-10-10)
+- Remote synchronization commit: `adecd314ea3b115ff672a9db3624e75878d067ce`
+- Implementation commit: pending commit for Round 16
 
 **Questions/blockers for main-agent review:**
-- None. Offline suite has 391 passes, diagnostic false positives resolved, lifecycle vs PreToolUse separated, hypotheses properly qualified, and regression tests added. Ready for main-agent review.
+- None. Offline suite has 396 passes, same-call identity correlation enforced, non-tool events excluded, mismatched/unrelated events verified negative, and all regression tests added. Ready for main-agent review.
 
 ---
 

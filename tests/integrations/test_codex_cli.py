@@ -445,6 +445,32 @@ def action_targets_protected_write(
     return False
 
 
+def is_codex_tool_item(item: dict[str, Any]) -> bool:
+    """Determine if a parsed Codex event item represents a tool/command execution,
+    excluding agent_message, message, thought, plan, and other non-tool events.
+    """
+    if not isinstance(item, dict):
+        return False
+    item_type = str(item.get("type") or "").strip().lower()
+    if item_type in ("agent_message", "message", "thought", "plan", "user_message", "assistant_message", "text"):
+        return False
+    # If explicitly typed as a tool/command:
+    if item_type in ("command_execution", "tool_execution", "action", "custom_tool_call"):
+        return True
+    # If contains tool/command execution fields:
+    if "command" in item or "tool_name" in item or "tool" in item:
+        return True
+    # If has tool-specific identifiers:
+    if "tool_use_id" in item or "call_id" in item:
+        return True
+    # If item has an id and status, and type is empty or not non-tool:
+    if "id" in item and "status" in item and not item_type:
+        return True
+    if ("exit_code" in item or "exitCode" in item) and not item_type:
+        return True
+    return False
+
+
 def parse_codex_cli_items(stdout: str) -> list[dict[str, Any]]:
     """Parse Codex CLI JSONL output into a list of executed tool / command items."""
     items: list[dict[str, Any]] = []
@@ -461,11 +487,14 @@ def parse_codex_cli_items(stdout: str) -> list[dict[str, Any]]:
 
         item = ev.get("item")
         if isinstance(item, dict):
-            items.append(item)
-        elif ev.get("type") in ("command_execution", "tool_execution", "action"):
-            items.append(ev)
+            if is_codex_tool_item(item):
+                items.append(item)
+        elif ev.get("type") in ("command_execution", "tool_execution", "action", "custom_tool_call"):
+            if is_codex_tool_item(ev):
+                items.append(ev)
         elif "command" in ev or "tool_name" in ev:
-            items.append(ev)
+            if is_codex_tool_item(ev):
+                items.append(ev)
     return items
 
 
@@ -553,11 +582,13 @@ def inspect_e2e_hook_dispatch(sessions_dir: Path | None) -> dict[str, Any]:
             "lifecycle_events_count": 0,
             "guard_decisions_count": 0,
             "guard_verdicts": [],
+            "guard_decisions": [],
         }
 
     total_events = 0
     guard_decisions_count = 0
     guard_verdicts: list[str] = []
+    guard_decisions: list[dict[str, Any]] = []
     lifecycle_events_count = 0
     sessions_count = 0
 
@@ -576,8 +607,38 @@ def inspect_e2e_hook_dispatch(sessions_dir: Path | None) -> dict[str, Any]:
                         if is_guard and is_decision:
                             guard_decisions_count += 1
                             v = ev.get("metadata", {}).get("verdict") or ev.get("payload", {}).get("decision")
-                            if v:
-                                guard_verdicts.append(str(v).upper())
+                            verdict_str = str(v).upper() if v else ""
+                            if verdict_str:
+                                guard_verdicts.append(verdict_str)
+
+                            act = ev.get("payload", {}).get("action")
+                            if not isinstance(act, dict):
+                                act = {}
+                            cid = (
+                                act.get("context", {}).get("call_id")
+                                or ev.get("metadata", {}).get("call_id")
+                                or act.get("payload", {}).get("call_id")
+                                or ev.get("payload", {}).get("call_id")
+                            )
+                            cmd_val = (
+                                act.get("context", {}).get("command")
+                                or act.get("payload", {}).get("command")
+                                or act.get("operation")
+                                or ev.get("metadata", {}).get("command")
+                            )
+                            tname = (
+                                ev.get("metadata", {}).get("tool_name")
+                                or act.get("tool_name")
+                                or ev.get("payload", {}).get("tool_name")
+                            )
+                            guard_decisions.append({
+                                "verdict": verdict_str,
+                                "call_id": str(cid).strip() if cid else "",
+                                "command": str(cmd_val).strip() if cmd_val else "",
+                                "tool_name": str(tname).strip() if tname else "",
+                                "action": act,
+                                "event": ev,
+                            })
                         else:
                             lifecycle_events_count += 1
                 except Exception:
@@ -597,6 +658,7 @@ def inspect_e2e_hook_dispatch(sessions_dir: Path | None) -> dict[str, Any]:
             "lifecycle_events_count": lifecycle_events_count,
             "guard_decisions_count": guard_decisions_count,
             "guard_verdicts": guard_verdicts,
+            "guard_decisions": guard_decisions,
         }
     elif total_events > 0:
         return {
@@ -611,6 +673,7 @@ def inspect_e2e_hook_dispatch(sessions_dir: Path | None) -> dict[str, Any]:
             "lifecycle_events_count": lifecycle_events_count,
             "guard_decisions_count": 0,
             "guard_verdicts": [],
+            "guard_decisions": [],
         }
     else:
         return {
@@ -622,7 +685,41 @@ def inspect_e2e_hook_dispatch(sessions_dir: Path | None) -> dict[str, Any]:
             "lifecycle_events_count": 0,
             "guard_decisions_count": 0,
             "guard_verdicts": [],
+            "guard_decisions": [],
         }
+
+
+def _correlate_tool_and_guard(c_item: dict[str, Any], g_dec: dict[str, Any]) -> tuple[bool, str]:
+    """Correlate a Codex machine tool item with a SpecGuard decision for the SAME tool call.
+    Strict requirements:
+    1. Primary matching via call_id: if both sides have call_id, they MUST match.
+    2. If both sides have call_id and they differ, correlation strictly FAILS.
+    3. If call_id is absent from one or both sides: fallback to non-empty, specific command
+       matching (>= 4 chars), provided neither side has a conflicting non-empty call_id.
+    4. If neither call_id nor reliable specific command identity exists, correlation FAILS.
+    """
+    c_id = str(c_item.get("id") or c_item.get("call_id") or c_item.get("tool_use_id") or "").strip()
+    g_id = str(g_dec.get("call_id") or "").strip()
+
+    # Rule 1 & 2: Call ID matching takes absolute precedence
+    if c_id and g_id:
+        if c_id == g_id:
+            return True, f"matching call_id '{c_id}'"
+        else:
+            return False, f"mismatched call_id ('{c_id}' != '{g_id}')"
+
+    # Rule 3: Narrow command/target matching fallback
+    c_cmd = str(c_item.get("command") or c_item.get("input", {}).get("command") or "").strip().lower()
+    g_cmd = str(g_dec.get("command") or "").strip().lower()
+
+    if c_cmd and g_cmd:
+        if c_cmd == g_cmd or (len(c_cmd) >= 4 and len(g_cmd) >= 4 and (c_cmd in g_cmd or g_cmd in c_cmd)):
+            return True, f"matching command '{c_cmd}'"
+
+    # Rule 4: Cannot reliably correlate
+    if not c_id and not g_id and not c_cmd and not g_cmd:
+        return False, "lacks both call_id and command identity"
+    return False, "unreliable or mismatched invocation identity"
 
 
 def format_e2e_diagnostics(
@@ -634,7 +731,8 @@ def format_e2e_diagnostics(
     """Produce comprehensive structured diagnostics separating:
     (a) Codex-native execution policy / shell blocker,
     (b) AgentContract hook dispatch / trace evidence (distinguishing lifecycle from PreToolUse),
-    (c) Codex runtime enforcement (ALLOW/DENY) based strictly on machine events & Guard trace.
+    (c) Codex runtime enforcement (ALLOW/DENY) based strictly on machine events & Guard trace
+        correlated to the SAME tool invocation.
     """
     stdout = res.stdout or ""
     stderr = res.stderr or ""
@@ -674,7 +772,8 @@ def format_e2e_diagnostics(
 
     # (c) Codex Runtime Enforcement
     # Never infer enforcement from plain prose text like "Completed" or "Blocked" in combined output.
-    # Require corroborated machine JSONL tool items and matching Guard decision traces.
+    # Require corroborated machine JSONL tool items and matching Guard decision traces
+    # for the SAME tool invocation (prioritizing call_id).
     if policy_status == "BLOCKED":
         enforce_status = "UNVERIFIED"
         if scenario.upper() == "DENY":
@@ -689,56 +788,132 @@ def format_e2e_diagnostics(
                 "Probe file content was not read. LIVE E2E UNVERIFIED."
             )
     else:
-        # Check structured machine items from Codex CLI JSONL
-        codex_items = parse_codex_cli_items(stdout)
-        has_completed_tool_item = any(
-            str(item.get("status") or "").lower() in ("completed", "success")
-            and (item.get("exit_code") in (0, None) and item.get("exitCode") in (0, None))
-            for item in codex_items
-        )
-        has_failed_or_blocked_tool_item = any(
-            str(item.get("status") or "").lower() in ("failed", "blocked", "denied", "cancelled", "rejected")
-            or any(w in str(item.get("error") or item.get("message") or "").lower() for w in ("blocked", "denied", "rejected", "hook"))
-            for item in codex_items
-        )
-        has_runtime_denial_stderr = any(
-            kw in stderr.lower()
-            for kw in ("blocked by hook", "pretooluse hook denied", "hook rejected", "tool call rejected", "tool execution blocked")
-        ) and "[AgentContract SpecGuard]" not in stderr
+        codex_tool_items = parse_codex_cli_items(stdout)
+        guard_decisions = hook_info.get("guard_decisions", [])
 
-        has_allow_guard = "ALLOW" in hook_info.get("guard_verdicts", [])
-        has_block_guard = "BLOCK" in hook_info.get("guard_verdicts", [])
+        # Distinct runtime stderr (excluding [AgentContract SpecGuard] hook logs)
+        codex_runtime_stderr_lines = [
+            line for line in stderr.splitlines()
+            if "[AgentContract SpecGuard]" not in line
+        ]
+        codex_runtime_stderr = "\n".join(codex_runtime_stderr_lines).strip()
+        runtime_stderr_lower = codex_runtime_stderr.lower()
 
         if scenario.upper() == "ALLOW":
-            if has_completed_tool_item and has_allow_guard and res.returncode == 0:
+            correlated_allow_pair = None
+            allow_guard_decisions = [g for g in guard_decisions if g.get("verdict") == "ALLOW"]
+
+            for g_dec in allow_guard_decisions:
+                for c_item in codex_tool_items:
+                    c_status = str(c_item.get("status") or "").lower()
+                    c_ec = c_item.get("exit_code") if "exit_code" in c_item else c_item.get("exitCode")
+                    if c_status in ("completed", "success") and (c_ec in (0, None)):
+                        matches, reason = _correlate_tool_and_guard(c_item, g_dec)
+                        if matches:
+                            correlated_allow_pair = (c_item, g_dec, reason)
+                            break
+                if correlated_allow_pair:
+                    break
+
+            if correlated_allow_pair and res.returncode == 0:
                 enforce_status = "ENFORCED"
-                enforce_detail = "Corroborated via structured Codex JSONL tool item (completed) and SpecGuard ALLOW trace."
+                _, _, match_reason = correlated_allow_pair
+                enforce_detail = (
+                    f"Corroborated via structured Codex JSONL tool item (completed) and SpecGuard ALLOW trace "
+                    f"for the same tool call ({match_reason})."
+                )
             else:
                 enforce_status = "UNVERIFIED"
                 reasons = []
-                if not has_completed_tool_item:
+                if not codex_tool_items:
                     reasons.append("no completed machine tool item in JSONL")
-                if not has_allow_guard:
+                elif not any(
+                    str(it.get("status") or "").lower() in ("completed", "success")
+                    and (it.get("exit_code") in (0, None) and it.get("exitCode") in (0, None))
+                    for it in codex_tool_items
+                ):
+                    reasons.append("no completed machine tool item in JSONL")
+                if not allow_guard_decisions:
                     reasons.append("no matching SpecGuard ALLOW trace")
+                if codex_tool_items and allow_guard_decisions and not correlated_allow_pair:
+                    reasons.append("tool item and SpecGuard ALLOW trace failed same-call identity correlation")
                 if res.returncode != 0:
                     reasons.append(f"exit_code={res.returncode}")
+                reasons_str = ", ".join(reasons) if reasons else "missing verifiable execution correlation"
                 enforce_detail = (
-                    f"Corroborated machine execution evidence missing ({', '.join(reasons)}). "
+                    f"Corroborated machine execution evidence missing ({reasons_str}). "
                     "Prose text alone does not establish runtime enforcement. LIVE E2E UNVERIFIED."
                 )
         else:
-            if (has_failed_or_blocked_tool_item or has_runtime_denial_stderr) and has_block_guard:
+            correlated_deny_pair = None
+            block_guard_decisions = [g for g in guard_decisions if g.get("verdict") == "BLOCK"]
+
+            for g_dec in block_guard_decisions:
+                g_id = g_dec.get("call_id")
+                g_cmd = g_dec.get("command", "").lower()
+
+                # 1. Check against codex_tool_items in JSONL
+                for c_item in codex_tool_items:
+                    c_status = str(c_item.get("status") or "").lower()
+                    is_failed_or_blocked = (
+                        c_status in ("failed", "blocked", "denied", "cancelled", "rejected")
+                        or any(w in str(c_item.get("error") or c_item.get("message") or "").lower() for w in ("blocked", "denied", "rejected", "prevented", "hook"))
+                    )
+                    if is_failed_or_blocked:
+                        matches, reason = _correlate_tool_and_guard(c_item, g_dec)
+                        if matches:
+                            correlated_deny_pair = (c_item, g_dec, f"JSONL machine event: {reason}")
+                            break
+                if correlated_deny_pair:
+                    break
+
+                # 2. Check against distinct Codex runtime stderr
+                if codex_runtime_stderr:
+                    has_denial_keyword = any(
+                        kw in runtime_stderr_lower
+                        for kw in ("blocked by hook", "pretooluse hook denied", "hook rejected", "tool call rejected", "tool execution blocked")
+                    )
+                    if has_denial_keyword:
+                        stderr_matches = False
+                        reason = ""
+                        if g_id and g_id in codex_runtime_stderr:
+                            stderr_matches = True
+                            reason = f"Codex stderr tied to call_id '{g_id}'"
+                        elif g_cmd and (g_cmd in runtime_stderr_lower or "secrets/prod.key" in runtime_stderr_lower):
+                            stderr_matches = True
+                            reason = f"Codex stderr tied to command '{g_cmd or 'secrets/prod.key'}'"
+                        if stderr_matches:
+                            correlated_deny_pair = (None, g_dec, reason)
+                            break
+
+            if correlated_deny_pair:
                 enforce_status = "ENFORCED"
-                enforce_detail = "Corroborated via structured tool rejection in JSONL/stderr and SpecGuard BLOCK trace."
+                _, _, match_reason = correlated_deny_pair
+                enforce_detail = (
+                    f"Corroborated via structured tool rejection in JSONL/stderr and SpecGuard BLOCK trace "
+                    f"for the same blocked tool ({match_reason})."
+                )
             else:
                 enforce_status = "UNVERIFIED"
                 reasons = []
-                if not (has_failed_or_blocked_tool_item or has_runtime_denial_stderr):
+                if not any(
+                    str(it.get("status") or "").lower() in ("failed", "blocked", "denied", "cancelled", "rejected")
+                    or any(w in str(it.get("error") or it.get("message") or "").lower() for w in ("blocked", "denied", "rejected", "hook"))
+                    for it in codex_tool_items
+                ) and not (
+                    codex_runtime_stderr and any(
+                        kw in runtime_stderr_lower
+                        for kw in ("blocked by hook", "pretooluse hook denied", "hook rejected", "tool call rejected", "tool execution blocked")
+                    )
+                ):
                     reasons.append("no structured machine tool rejection event in JSONL/stderr")
-                if not has_block_guard:
+                if not block_guard_decisions:
                     reasons.append("no matching SpecGuard BLOCK trace")
+                elif not correlated_deny_pair:
+                    reasons.append("rejection event and SpecGuard BLOCK trace failed same-call identity correlation")
+                reasons_str = ", ".join(reasons) if reasons else "missing verifiable rejection correlation"
                 enforce_detail = (
-                    f"Corroborated machine rejection evidence missing ({', '.join(reasons)}). "
+                    f"Corroborated machine rejection evidence missing ({reasons_str}). "
                     "Prose text alone does not establish runtime enforcement. LIVE E2E UNVERIFIED."
                 )
 
@@ -2016,14 +2191,146 @@ def test_inspect_e2e_hook_dispatch_guard_decision_qualifies_as_pretooluse(tmp_pa
 
 
 def test_format_e2e_diagnostics_corroborated_machine_events_enforced(tmp_path: Path) -> None:
-    """Regression test: when both structured machine tool events and matching SpecGuard
-    decisions are present, format_e2e_diagnostics reports ENFORCED.
+    """Regression test for Round 15: when both structured machine tool events and matching SpecGuard
+    decisions correlate to the SAME call_id, format_e2e_diagnostics reports ENFORCED.
     """
-    # 1. ALLOW scenario with completed JSONL tool item and ALLOW guard trace
+    # 1. ALLOW scenario with completed JSONL tool item and ALLOW guard trace with matching call_id
     sessions_dir_allow = tmp_path / "sessions_allow"
     s_allow = sessions_dir_allow / "s1"
     s_allow.mkdir(parents=True)
     (s_allow / "trace.json").write_text(
+        json.dumps({
+            "events": [
+                {
+                    "actor": "GUARD",
+                    "event_kind": "GUARD_DECISION",
+                    "metadata": {"verdict": "ALLOW", "call_id": "call_allow_100"},
+                    "payload": {"action": {"context": {"call_id": "call_allow_100", "command": "cat probe.txt"}}},
+                },
+            ]
+        }),
+        encoding="utf-8",
+    )
+    stdout_allow = json.dumps({"item": {"id": "call_allow_100", "type": "command_execution", "status": "completed", "command": "cat probe.txt", "exit_code": 0}}) + "\n"
+    res_allow = subprocess.CompletedProcess(args=["codex"], returncode=0, stdout=stdout_allow, stderr="")
+    diag_allow = format_e2e_diagnostics(res_allow, sessions_dir=sessions_dir_allow, scenario="ALLOW")
+    assert "(c) Codex Runtime Enforcement (ALLOW):" in diag_allow
+    assert "Status: ENFORCED" in diag_allow
+    assert "call_allow_100" in diag_allow
+    assert "Corroborated via structured Codex JSONL tool item (completed) and SpecGuard ALLOW trace for the same tool call" in diag_allow
+
+    # 2. DENY scenario with failed/blocked JSONL tool item and BLOCK guard trace with matching call_id
+    sessions_dir_deny = tmp_path / "sessions_deny"
+    s_deny = sessions_dir_deny / "s2"
+    s_deny.mkdir(parents=True)
+    (s_deny / "trace.json").write_text(
+        json.dumps({
+            "events": [
+                {
+                    "actor": "GUARD",
+                    "event_kind": "GUARD_DECISION",
+                    "metadata": {"verdict": "BLOCK", "call_id": "call_block_200"},
+                    "payload": {"action": {"context": {"call_id": "call_block_200", "command": "Set-Content secrets/prod.key"}}},
+                },
+            ]
+        }),
+        encoding="utf-8",
+    )
+    stdout_deny = json.dumps({"item": {"id": "call_block_200", "type": "command_execution", "status": "failed", "error": "blocked by hook", "command": "Set-Content secrets/prod.key"}}) + "\n"
+    res_deny = subprocess.CompletedProcess(args=["codex"], returncode=0, stdout=stdout_deny, stderr="")
+    diag_deny = format_e2e_diagnostics(res_deny, sessions_dir=sessions_dir_deny, scenario="DENY")
+    assert "(c) Codex Runtime Enforcement (DENY):" in diag_deny
+    assert "Status: ENFORCED" in diag_deny
+    assert "call_block_200" in diag_deny
+    assert "Corroborated via structured tool rejection in JSONL/stderr and SpecGuard BLOCK trace for the same blocked tool" in diag_deny
+
+
+def test_format_e2e_diagnostics_mismatched_call_id_remains_unverified(tmp_path: Path) -> None:
+    """Regression test for Round 15:
+    Different call IDs between Codex machine events and Guard traces MUST NOT
+    be reported as ENFORCED, even if both happen to exist.
+    """
+    # 1. ALLOW with mismatched call_id (call_allow_aaa != call_allow_bbb)
+    sessions_dir_allow = tmp_path / "sessions_mismatch_allow"
+    s_allow = sessions_dir_allow / "s1"
+    s_allow.mkdir(parents=True)
+    (s_allow / "trace.json").write_text(
+        json.dumps({
+            "events": [
+                {
+                    "actor": "GUARD",
+                    "event_kind": "GUARD_DECISION",
+                    "metadata": {"verdict": "ALLOW", "call_id": "call_allow_bbb"},
+                },
+            ]
+        }),
+        encoding="utf-8",
+    )
+    stdout_allow = json.dumps({"item": {"id": "call_allow_aaa", "type": "command_execution", "status": "completed", "command": "cat probe.txt", "exit_code": 0}}) + "\n"
+    res_allow = subprocess.CompletedProcess(args=["codex"], returncode=0, stdout=stdout_allow, stderr="")
+    diag_allow = format_e2e_diagnostics(res_allow, sessions_dir=sessions_dir_allow, scenario="ALLOW")
+    assert "(c) Codex Runtime Enforcement (ALLOW):" in diag_allow
+    assert "Status: UNVERIFIED" in diag_allow
+    assert "failed same-call identity correlation" in diag_allow
+
+    # 2. DENY with mismatched call_id (call_block_xxx != call_block_yyy)
+    sessions_dir_deny = tmp_path / "sessions_mismatch_deny"
+    s_deny = sessions_dir_deny / "s2"
+    s_deny.mkdir(parents=True)
+    (s_deny / "trace.json").write_text(
+        json.dumps({
+            "events": [
+                {
+                    "actor": "GUARD",
+                    "event_kind": "GUARD_DECISION",
+                    "metadata": {"verdict": "BLOCK", "call_id": "call_block_yyy"},
+                },
+            ]
+        }),
+        encoding="utf-8",
+    )
+    stdout_deny = json.dumps({"item": {"id": "call_block_xxx", "type": "command_execution", "status": "failed", "error": "blocked by hook"}}) + "\n"
+    res_deny = subprocess.CompletedProcess(args=["codex"], returncode=0, stdout=stdout_deny, stderr="")
+    diag_deny = format_e2e_diagnostics(res_deny, sessions_dir=sessions_dir_deny, scenario="DENY")
+    assert "(c) Codex Runtime Enforcement (DENY):" in diag_deny
+    assert "Status: UNVERIFIED" in diag_deny
+    assert "failed same-call identity correlation" in diag_deny
+
+
+def test_format_e2e_diagnostics_agent_message_excluded(tmp_path: Path) -> None:
+    """Regression test for Round 15:
+    agent_message items with status 'completed' MUST NOT be counted as tool items.
+    """
+    sessions_dir = tmp_path / "sessions_agent_msg"
+    s = sessions_dir / "s1"
+    s.mkdir(parents=True)
+    (s / "trace.json").write_text(
+        json.dumps({
+            "events": [
+                {"actor": "GUARD", "event_kind": "GUARD_DECISION", "metadata": {"verdict": "ALLOW", "call_id": "call_1"}},
+            ]
+        }),
+        encoding="utf-8",
+    )
+    stdout = json.dumps({"item": {"type": "agent_message", "status": "completed", "text": "Task completed successfully!"}}) + "\n"
+    assert len(parse_codex_cli_items(stdout)) == 0  # parse_codex_cli_items must exclude agent_message
+
+    res = subprocess.CompletedProcess(args=["codex"], returncode=0, stdout=stdout, stderr="")
+    diag = format_e2e_diagnostics(res, sessions_dir=sessions_dir, scenario="ALLOW")
+    assert "(c) Codex Runtime Enforcement (ALLOW):" in diag
+    assert "Status: UNVERIFIED" in diag
+    assert "no completed machine tool item in JSONL" in diag
+
+
+def test_format_e2e_diagnostics_no_id_no_command_remains_unverified(tmp_path: Path) -> None:
+    """Regression test for Round 15:
+    Events lacking both call_id and reliable command identity cannot reliably correspond
+    and MUST NOT be reported as ENFORCED.
+    """
+    sessions_dir = tmp_path / "sessions_noid"
+    s = sessions_dir / "s1"
+    s.mkdir(parents=True)
+    (s / "trace.json").write_text(
         json.dumps({
             "events": [
                 {"actor": "GUARD", "event_kind": "GUARD_DECISION", "metadata": {"verdict": "ALLOW"}},
@@ -2031,31 +2338,78 @@ def test_format_e2e_diagnostics_corroborated_machine_events_enforced(tmp_path: P
         }),
         encoding="utf-8",
     )
-    stdout_allow = json.dumps({"item": {"status": "completed", "exit_code": 0}}) + "\n"
-    res_allow = subprocess.CompletedProcess(args=["codex"], returncode=0, stdout=stdout_allow, stderr="")
-    diag_allow = format_e2e_diagnostics(res_allow, sessions_dir=sessions_dir_allow, scenario="ALLOW")
-    assert "(c) Codex Runtime Enforcement (ALLOW):" in diag_allow
-    assert "Status: ENFORCED" in diag_allow
-    assert "Corroborated via structured Codex JSONL tool item (completed) and SpecGuard ALLOW trace." in diag_allow
+    stdout = json.dumps({"item": {"status": "completed", "exit_code": 0}}) + "\n"
+    res = subprocess.CompletedProcess(args=["codex"], returncode=0, stdout=stdout, stderr="")
+    diag = format_e2e_diagnostics(res, sessions_dir=sessions_dir, scenario="ALLOW")
+    assert "(c) Codex Runtime Enforcement (ALLOW):" in diag
+    assert "Status: UNVERIFIED" in diag
+    assert "failed same-call identity correlation" in diag
 
-    # 2. DENY scenario with failed/blocked JSONL tool item and BLOCK guard trace
-    sessions_dir_deny = tmp_path / "sessions_deny"
-    s_deny = sessions_dir_deny / "s2"
-    s_deny.mkdir(parents=True)
-    (s_deny / "trace.json").write_text(
+
+def test_format_e2e_diagnostics_unrelated_failed_item_with_block_remains_unverified(tmp_path: Path) -> None:
+    """Regression test for Round 15:
+    An unrelated failed tool item (e.g. git status failed) paired with a Guard BLOCK trace
+    for a completely different tool call MUST NOT be reported as ENFORCED.
+    """
+    sessions_dir = tmp_path / "sessions_unrelated"
+    s = sessions_dir / "s1"
+    s.mkdir(parents=True)
+    (s / "trace.json").write_text(
         json.dumps({
             "events": [
-                {"actor": "GUARD", "event_kind": "GUARD_DECISION", "metadata": {"verdict": "BLOCK"}},
+                {
+                    "actor": "GUARD",
+                    "event_kind": "GUARD_DECISION",
+                    "metadata": {"verdict": "BLOCK", "call_id": "call_write_key"},
+                    "payload": {"action": {"context": {"command": "Set-Content secrets/prod.key"}}},
+                },
             ]
         }),
         encoding="utf-8",
     )
-    stdout_deny = json.dumps({"item": {"status": "failed", "error": "blocked by hook"}}) + "\n"
-    res_deny = subprocess.CompletedProcess(args=["codex"], returncode=0, stdout=stdout_deny, stderr="")
-    diag_deny = format_e2e_diagnostics(res_deny, sessions_dir=sessions_dir_deny, scenario="DENY")
-    assert "(c) Codex Runtime Enforcement (DENY):" in diag_deny
-    assert "Status: ENFORCED" in diag_deny
-    assert "Corroborated via structured tool rejection in JSONL/stderr and SpecGuard BLOCK trace." in diag_deny
+    stdout = json.dumps({
+        "item": {
+            "id": "call_unrelated_git",
+            "type": "command_execution",
+            "status": "failed",
+            "error": "command not found: git",
+            "command": "git status",
+        }
+    }) + "\n"
+    res = subprocess.CompletedProcess(args=["codex"], returncode=0, stdout=stdout, stderr="")
+    diag = format_e2e_diagnostics(res, sessions_dir=sessions_dir, scenario="DENY")
+    assert "(c) Codex Runtime Enforcement (DENY):" in diag
+    assert "Status: UNVERIFIED" in diag
+    assert "failed same-call identity correlation" in diag
+
+
+def test_format_e2e_diagnostics_command_fallback_matching(tmp_path: Path) -> None:
+    """Regression test: when call_id is missing from one side but both have matching specific commands,
+    same-tool correlation succeeds via command fallback.
+    """
+    sessions_dir = tmp_path / "sessions_cmd_fallback"
+    s = sessions_dir / "s1"
+    s.mkdir(parents=True)
+    (s / "trace.json").write_text(
+        json.dumps({
+            "events": [
+                {
+                    "actor": "GUARD",
+                    "event_kind": "GUARD_DECISION",
+                    "metadata": {"verdict": "ALLOW"},
+                    "payload": {"action": {"context": {"command": "cat probe.txt"}}},
+                },
+            ]
+        }),
+        encoding="utf-8",
+    )
+    stdout = json.dumps({"item": {"type": "command_execution", "status": "completed", "command": "cat probe.txt", "exit_code": 0}}) + "\n"
+    res = subprocess.CompletedProcess(args=["codex"], returncode=0, stdout=stdout, stderr="")
+    diag = format_e2e_diagnostics(res, sessions_dir=sessions_dir, scenario="ALLOW")
+    assert "(c) Codex Runtime Enforcement (ALLOW):" in diag
+    assert "Status: ENFORCED" in diag
+    assert "matching command 'cat probe.txt'" in diag
+
 
 
 
