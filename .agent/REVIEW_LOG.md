@@ -850,3 +850,14 @@ Explicit `--sandbox workspace-write` added and Executor Report now acknowledges 
 Positive: missing typing import, broad sandbox-exception swallowing, empty-call-ID check and pre-try auth copy/cleanup scope fixed. Executor reports Python 3.12.9 **360 passed / 2 skipped**, with both real online E2E tests skipped. Independent Windows/Codex run unavailable; no GitHub combined status checks.
 
 Remaining blockers: `action_targets_protected_write` still allows shell command substring false positives (protected path as content value or `.bak` suffix rather than destination). The apparent machine-event evidence is checked against AgentContract trace events rather than Codex CLI JSONL, and remaining stderr checks are not correlated to the specific blocked call. Require exact mutating destination, call-linked machine/runtime denial evidence and matched ALLOW evidence. Real online ALLOW/DENY acceptance remains UNVERIFIED. Full directions in `.agent/tasks/TASK-012.md`. No product merge or next task.
+
+---
+
+## 2026-10-10 — TASK-012 fifth review
+
+**Reviewed remote HEAD:** `2741178152075a8aaa310ceb02b64e77a598023d`  
+**Verdict:** CHANGES_REQUESTED
+
+Positive: separate Codex JSONL from AgentContract trace, improved shell destination extraction, call-tag stderr. Executor reports 362 passed/2 skipped on Windows Python 3.12.9. Real Codex CLI ALLOW/DENY online tests both SKIPPED/UNVERIFIED. No GitHub CI checks; independent clone blocked by DNS.
+
+Blocking: redirection regex counts `>` inside a quoted string as a write to `secrets/prod.key`; path matcher accepts unrelated absolute workspaces with same suffix. ALLOW parser counts any non-`failed` `command_execution` (including in-progress) as completed; DENY relies on hook's own stderr as though that proved Codex runtime honored the block. Executor Report SHA `0876d8c...` is not a reachable GitHub commit (422); remote HEAD is `274117815...`. Fix these and obtain dedicated, sandboxed, correlated real Codex E2E proof before acceptance. Details in `.agent/tasks/TASK-012.md`. No merge or next task.
