@@ -924,16 +924,33 @@ def doctor_hooks(project_dir: str | Path = ".") -> int:
     # Snapshot user global ~/.codex before smoke test to detect any leaks or mutations
     user_codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
     user_codex_existed_before = user_codex_home.exists()
-    user_codex_entries_before = set(user_codex_home.iterdir()) if user_codex_existed_before else set()
-    user_codex_hashes_before: dict[str, str | None] = {}
+    user_codex_entries_before: set[str] = set()
+    user_codex_hashes_before: dict[str, str] = {}
+    baseline_read_errors: list[str] = []
+
+    TRACKED_GLOBAL_FILES = ("config.toml", "hooks.json", "auth.json")
+
     if user_codex_existed_before:
-        for f_name in ("config.toml", "hooks.json", "auth.json"):
+        try:
+            user_codex_entries_before = {p.name for p in user_codex_home.iterdir()}
+        except Exception as err:
+            baseline_read_errors.append(f"Failed to list entries in user Codex home: {err}")
+
+        for f_name in TRACKED_GLOBAL_FILES:
             target_f = user_codex_home / f_name
             if target_f.is_file():
                 try:
                     user_codex_hashes_before[f_name] = hashlib.sha256(target_f.read_bytes()).hexdigest()
-                except OSError:
-                    pass
+                except Exception as err:
+                    baseline_read_errors.append(f"Failed to read/hash tracked file '{f_name}': {err}")
+
+    if baseline_read_errors:
+        print("\n5. Isolation & Environment Integrity:")
+        print("  [FAIL] Baseline snapshot of user global ~/.codex failed due to read error:")
+        for r_err in baseline_read_errors:
+            print(f"    - {r_err}")
+        print("=" * 60)
+        return 1
 
     # 2. Offline Smoke Test (SessionStart, PreToolUse ALLOW, PreToolUse BLOCK)
     from agentcontract.constraints.models import (
@@ -1022,19 +1039,18 @@ def doctor_hooks(project_dir: str | Path = ".") -> int:
             cwd=str(proj),
             timeout=15,
         )
-        allow_json: dict[str, Any] = {}
-        if res_allow.stdout.strip():
-            try:
-                allow_json = json.loads(res_allow.stdout.strip())
-            except Exception:
-                allow_json = {}
+        if res_allow.returncode != 0:
+            print(f"\n3. SpecGuard Decision Evaluation:\n  [FAIL] PreToolUse ALLOW evaluation failed with non-zero exit code ({res_allow.returncode}): stderr='{res_allow.stderr}'")
+            print("=" * 60)
+            smoke_failed = True
+            return 1
 
-        is_allow = (
-            res_allow.returncode == 0
-            and (not allow_json or allow_json.get("hookSpecificOutput", {}).get("permissionDecision") != "deny")
-        )
-        if not is_allow:
-            print(f"\n3. SpecGuard Decision Evaluation:\n  [FAIL] PreToolUse ALLOW evaluation failed: stdout='{res_allow.stdout}', stderr='{res_allow.stderr}'")
+        if res_allow.stdout.strip() != "":
+            print(
+                "\n3. SpecGuard Decision Evaluation:\n"
+                f"  [FAIL] PreToolUse ALLOW protocol violation: expected exit code 0 with completely empty stdout (no input rewrite), "
+                f"but received nonempty stdout: {res_allow.stdout.strip()!r}"
+            )
             print("=" * 60)
             smoke_failed = True
             return 1
@@ -1161,7 +1177,7 @@ def doctor_hooks(project_dir: str | Path = ".") -> int:
     print("  [PASS] Authentic trace events recorded in session store")
 
     print("\n4. Runtime Enforcement Wire-Format:")
-    print("  [PASS] ALLOW wire-format: clean exit without blocking")
+    print("  [PASS] ALLOW wire-format: exit code 0 with completely empty stdout (no input rewrite)")
     print("  [PASS] BLOCK wire-format: structured JSON denial (permissionDecision=deny)")
 
     # 5. Isolation & Environment Integrity Verification
@@ -1174,29 +1190,52 @@ def doctor_hooks(project_dir: str | Path = ".") -> int:
         else:
             print("  [PASS] User global ~/.codex observed untouched (directory did not exist before/after)")
     else:
-        post_entries = set(user_codex_home.iterdir())
-        diff_entries = post_entries - user_codex_entries_before
-        if diff_entries:
-            print(f"  [FAIL] User global ~/.codex had new entries created: {diff_entries}")
+        if not user_codex_home.exists():
+            print("  [FAIL] User global ~/.codex was deleted during doctor run!")
             codex_mutated = True
         else:
-            mutated_files = []
-            for f_name, pre_h in user_codex_hashes_before.items():
-                target_f = user_codex_home / f_name
-                if not target_f.is_file():
-                    mutated_files.append(f"{f_name} (deleted)")
-                else:
-                    try:
-                        curr_h = hashlib.sha256(target_f.read_bytes()).hexdigest()
-                        if curr_h != pre_h:
-                            mutated_files.append(f"{f_name} (content modified)")
-                    except OSError:
-                        pass
-            if mutated_files:
-                print(f"  [FAIL] User global ~/.codex files were modified: {mutated_files}")
+            try:
+                post_entries = {p.name for p in user_codex_home.iterdir()}
+            except Exception as err:
+                print(f"  [FAIL] Failed to list entries in user global ~/.codex after smoke test: {err}")
                 codex_mutated = True
-            else:
-                print("  [PASS] User global ~/.codex observed untouched (tracked files and entries identical before/after)")
+                post_entries = set()
+
+            if not codex_mutated:
+                added_entries = post_entries - user_codex_entries_before
+                deleted_entries = user_codex_entries_before - post_entries
+                if added_entries or deleted_entries:
+                    if added_entries:
+                        print(f"  [FAIL] User global ~/.codex had new entries created: {sorted(added_entries)}")
+                    if deleted_entries:
+                        print(f"  [FAIL] User global ~/.codex had entries deleted: {sorted(deleted_entries)}")
+                    codex_mutated = True
+                else:
+                    mutated_files = []
+                    post_read_errors = []
+                    for f_name, pre_h in user_codex_hashes_before.items():
+                        target_f = user_codex_home / f_name
+                        if not target_f.is_file():
+                            mutated_files.append(f"{f_name} (deleted or changed file type)")
+                        else:
+                            try:
+                                curr_h = hashlib.sha256(target_f.read_bytes()).hexdigest()
+                                if curr_h != pre_h:
+                                    mutated_files.append(f"{f_name} (content modified)")
+                            except Exception as err:
+                                post_read_errors.append(f"Failed to read/hash tracked file '{f_name}': {err}")
+
+                    if post_read_errors:
+                        print("  [FAIL] Post-smoke verification of user global ~/.codex failed due to read error:")
+                        for p_err in post_read_errors:
+                            print(f"    - {p_err}")
+                        codex_mutated = True
+                    elif mutated_files:
+                        print(f"  [FAIL] User global ~/.codex tracked config files were modified: {mutated_files}")
+                        codex_mutated = True
+                    else:
+                        tracked_list = sorted(user_codex_hashes_before.keys())
+                        print(f"  [PASS] User global ~/.codex observed untouched (top-level entries identical; tracked files {tracked_list} verified unchanged)")
 
     if codex_mutated:
         print("=" * 60)
@@ -1204,7 +1243,7 @@ def doctor_hooks(project_dir: str | Path = ".") -> int:
 
     print("  [PASS] AgentContract doctor executed zero elevated sandbox, ACL, or process termination commands")
     print("  [PASS] Disposable smoke session resources cleaned up completely")
-    print("  [NOT OBSERVED] External system ACLs, unmanaged background processes, and Desktop GUI state not monitored")
+    print("  [NOT OBSERVED] External system ACLs, unmanaged background processes, untracked subdirectory contents, and Desktop GUI state not monitored")
 
     print("\nSummary:")
     print("  AgentContract Codex hooks are healthy, validated, and isolated.")

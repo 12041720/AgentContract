@@ -526,12 +526,12 @@ def test_doctor_hooks_on_installed_project(tmp_path: Path, capsys: pytest.Captur
     assert "[PASS] Compliant action evaluated -> SpecGuard ALLOW recorded" in captured.out
     assert "[PASS] Forbidden action evaluated -> SpecGuard BLOCK recorded" in captured.out
     assert "[PASS] Authentic trace events recorded in session store" in captured.out
-    assert "[PASS] ALLOW wire-format: clean exit without blocking" in captured.out
+    assert "[PASS] ALLOW wire-format: exit code 0 with completely empty stdout (no input rewrite)" in captured.out
     assert "[PASS] BLOCK wire-format: structured JSON denial" in captured.out
     assert "[PASS] User global ~/.codex observed untouched" in captured.out
     assert "[PASS] AgentContract doctor executed zero elevated sandbox, ACL, or process termination commands" in captured.out
     assert "[PASS] Disposable smoke session resources cleaned up completely" in captured.out
-    assert "[NOT OBSERVED] External system ACLs, unmanaged background processes, and Desktop GUI state not monitored" in captured.out
+    assert "[NOT OBSERVED] External system ACLs" in captured.out
     assert "Upstream Environment Advisory" in captured.out
 
     # 3. Verify disposable smoke session was completely cleaned up
@@ -792,6 +792,184 @@ def test_doctor_hooks_detects_user_codex_mutation(
     assert ret == 1
     captured = capsys.readouterr()
     assert "[FAIL] User global ~/.codex had new entries created" in captured.out
+
+
+def test_doctor_hooks_rejects_allow_garbage_stdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Round 12 regression: PreToolUse ALLOW producing non-empty junk stdout must fail doctor."""
+    proj = tmp_path / "allow_garbage_proj"
+    proj.mkdir()
+    install_hooks(project_dir=proj)
+
+    real_run = subprocess.run
+
+    def fake_run(args, *pargs, **kwargs):
+        stdin_data = kwargs.get("input", "")
+        if "PreToolUse" in args and "call_smoke_allow" in stdin_data:
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout="some junk output from hook\n",
+                stderr="",
+            )
+        return real_run(args, *pargs, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    ret = doctor_hooks(project_dir=proj)
+    assert ret == 1
+    captured = capsys.readouterr()
+    assert "[FAIL] PreToolUse ALLOW protocol violation" in captured.out
+    assert "expected exit code 0 with completely empty stdout" in captured.out
+
+
+def test_doctor_hooks_rejects_allow_structured_json_stdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Round 12 regression: PreToolUse ALLOW emitting non-empty structured ALLOW JSON must fail doctor."""
+    proj = tmp_path / "allow_json_proj"
+    proj.mkdir()
+    install_hooks(project_dir=proj)
+
+    real_run = subprocess.run
+
+    def fake_run(args, *pargs, **kwargs):
+        stdin_data = kwargs.get("input", "")
+        if "PreToolUse" in args and "call_smoke_allow" in stdin_data:
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout='{"hookSpecificOutput": {"permissionDecision": "allow"}}\n',
+                stderr="",
+            )
+        return real_run(args, *pargs, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    ret = doctor_hooks(project_dir=proj)
+    assert ret == 1
+    captured = capsys.readouterr()
+    assert "[FAIL] PreToolUse ALLOW protocol violation" in captured.out
+    assert "expected exit code 0 with completely empty stdout" in captured.out
+
+
+def test_doctor_hooks_detects_user_codex_entry_deletion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Round 12 regression: deletion of any top-level entry in ~/.codex during doctor run must fail doctor."""
+    mock_codex_home = tmp_path / "mock_user_codex"
+    mock_codex_home.mkdir()
+    (mock_codex_home / "config.toml").write_text("model = 'gpt-5'\n", encoding="utf-8")
+    (mock_codex_home / "preexisting_tool.txt").write_text("tool data", encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(mock_codex_home))
+
+    proj = tmp_path / "codex_del_proj"
+    proj.mkdir()
+    install_hooks(project_dir=proj)
+
+    real_run = subprocess.run
+
+    def deleting_run(*args, **kwargs):
+        (mock_codex_home / "preexisting_tool.txt").unlink(missing_ok=True)
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", deleting_run)
+
+    ret = doctor_hooks(project_dir=proj)
+    assert ret == 1
+    captured = capsys.readouterr()
+    assert "[FAIL] User global ~/.codex had entries deleted" in captured.out
+    assert "preexisting_tool.txt" in captured.out
+
+
+def test_doctor_hooks_detects_user_codex_tracked_file_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Round 12 regression: in-place modification of tracked config files in ~/.codex must fail doctor."""
+    mock_codex_home = tmp_path / "mock_user_codex"
+    mock_codex_home.mkdir()
+    (mock_codex_home / "config.toml").write_text("model = 'gpt-5'\n", encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(mock_codex_home))
+
+    proj = tmp_path / "codex_mod_proj"
+    proj.mkdir()
+    install_hooks(project_dir=proj)
+
+    real_run = subprocess.run
+
+    def modifying_run(*args, **kwargs):
+        (mock_codex_home / "config.toml").write_text("model = 'corrupted_model'\n", encoding="utf-8")
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", modifying_run)
+
+    ret = doctor_hooks(project_dir=proj)
+    assert ret == 1
+    captured = capsys.readouterr()
+    assert "[FAIL] User global ~/.codex tracked config files were modified" in captured.out
+
+
+def test_doctor_hooks_fails_on_user_codex_read_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Round 12 regression: unreadable tracked files in ~/.codex must fail doctor with an explicit error, never PASS."""
+    mock_codex_home = tmp_path / "mock_user_codex"
+    mock_codex_home.mkdir()
+    cfg_file = mock_codex_home / "config.toml"
+    cfg_file.write_text("model = 'gpt-5'\n", encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(mock_codex_home))
+
+    proj = tmp_path / "codex_read_err_proj"
+    proj.mkdir()
+    install_hooks(project_dir=proj)
+
+    real_read_bytes = Path.read_bytes
+
+    def failing_read_bytes(self, *args, **kwargs):
+        if self.name == "config.toml" and str(mock_codex_home) in str(self):
+            raise PermissionError("Simulated locked file")
+        return real_read_bytes(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_bytes", failing_read_bytes)
+
+    ret = doctor_hooks(project_dir=proj)
+    assert ret == 1
+    captured = capsys.readouterr()
+    assert "[FAIL]" in captured.out
+    assert "read error" in captured.out.lower() or "read failure" in captured.out.lower()
+
+
+def test_doctor_hooks_untracked_file_mutation_does_not_falsely_claim_verified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Round 12 regression: mutating untracked files in ~/.codex does not cause doctor to claim all files were verified."""
+    mock_codex_home = tmp_path / "mock_user_codex"
+    mock_codex_home.mkdir()
+    (mock_codex_home / "config.toml").write_text("model = 'gpt-5'\n", encoding="utf-8")
+    (mock_codex_home / "untracked_cache.log").write_text("initial log\n", encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(mock_codex_home))
+
+    proj = tmp_path / "codex_untracked_proj"
+    proj.mkdir()
+    install_hooks(project_dir=proj)
+
+    real_run = subprocess.run
+
+    def mutating_untracked(*args, **kwargs):
+        # Modify untracked log file content in-place without changing directory entries
+        (mock_codex_home / "untracked_cache.log").write_text("new log line\n", encoding="utf-8")
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", mutating_untracked)
+
+    ret = doctor_hooks(project_dir=proj)
+    assert ret == 0
+    captured = capsys.readouterr()
+    # Doctor must accurately scope its claim to tracked files and NOT claim untracked files were verified
+    assert "tracked files ['config.toml'] verified unchanged" in captured.out
+    assert "[NOT OBSERVED] External system ACLs, unmanaged background processes, untracked subdirectory contents" in captured.out
+
 
 
 

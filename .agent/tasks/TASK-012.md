@@ -65,52 +65,50 @@ Conversely, when SpecGuard denies a tool call, the structured denial JSON (`perm
   - Updated `PreToolUseOutput` model in `src/agentcontract/integrations/codex/models.py` to support `updatedInput: Mapping[str, Any] | None = None`.
   - Updated `to_hook_response_dict()` so that when `permissionDecision == HookDecision.ALLOW` without `updatedInput`, an empty dictionary `{}` is returned (exits 0 with empty stdout). When `updatedInput` is provided on ALLOW, it is included in the structured dictionary.
   - Kept the structured denial dictionary with `permissionDecision="deny"` and `permissionDecisionReason` intact on DENY branches, ensuring all constraints and fail-closed protections remain fully enforced.
-- Addressed all Round 10 Main Agent Review blockers in Round 11:
-  1. **Blocker 1 — Distinguish Codex Nonfatal Warnings from Fatal Upstream Failures**:
-     - Separated `FATAL_UPSTREAM_ENV_ERROR_PATTERNS` from `NONFATAL_UPSTREAM_WARNING_PATTERNS` in `tests/integrations/test_codex_cli.py`.
-     - Removed nonfatal warnings (`Refusing to create helper binaries under temporary dir` and `could not create PATH aliases`) from the fatal decision in `check_upstream_environment_failure()`.
-     - Added `get_upstream_environment_warnings(res)` to capture nonfatal warnings as diagnostics without skipping tests prematurely.
-     - Updated regression tests: `test_check_upstream_environment_warning_not_fatal` verifies that nonfatal warnings combined with exit code 0 and tool-completed JSONL output yield `err is None` (not blocked) while warnings are captured in diagnostics. Fatal `CreateProcess ... rejected: blocked by policy` and `os error 32` remain identified as fatal upstream errors.
-  2. **Blocker 2 — Doctor Strict Registered Command Validation & Child Subprocess Execution**:
-     - Added `_validate_agentcontract_command(command, expected_event)` and `_extract_agentcontract_commands(hooks_map)` in `src/agentcontract/integrations/codex/cli.py`. Strictly rejects non-python executables (decoys like `echo`), broken syntax, missing `-m`, incorrect module names, and mismatched event arguments (e.g. `SessionStart` registered under `PreToolUse`).
-     - Updated `doctor_hooks()` to validate all registered commands across all events, strictly requiring handlers for `SessionStart` and `PreToolUse`.
-     - Replaced in-process `run_hook()` in doctor smoke test with real child subprocess execution: executes the registered `SessionStart` and `PreToolUse` commands via `subprocess.run(shlex.split(cmd, posix=False))` with fabricated offline payloads and project-local `AGENTCONTRACT_SESSION_DIR`.
-     - Verified runtime wire-format and trace emission via subprocess: ALLOW exits 0 with empty stdout; BLOCK exits 0 with structured JSON denial (`permissionDecision: "deny"`) and SpecGuard stderr message; session store records authentic `GUARD_DECISION` ALLOW and BLOCK events.
-     - Added negative regression tests in `tests/integrations/test_codex_isolation.py`:
-       - `test_doctor_hooks_rejects_wrapper_decoy_handler`: confirms decoy handler like `echo agentcontract.integrations.codex.hooks PreToolUse` fails doctor with exit code 1.
-       - `test_doctor_hooks_rejects_mismatched_event_command`: confirms mismatched event argument fails doctor with exit code 1.
-  3. **Blocker 3 — Verified Integrity Snapshots & Visible Disposal Failure Reporting**:
-     - Implemented read-only before/after snapshot of user global `~/.codex` (`user_codex_home` existence, directory listing, and SHA-256 hashes of tracked configuration files `config.toml`, `hooks.json`, `auth.json`) inside `doctor_hooks()`. Verifies no files were added, deleted, or modified, outputting `[PASS] User global ~/.codex observed untouched`.
-     - Clarified diagnostic scope: doctor reports `[PASS] AgentContract doctor executed zero elevated sandbox, ACL, or process termination commands` and labels external runtime memory/system state as `[NOT OBSERVED] External system ACLs, unmanaged background processes, and Desktop GUI state not monitored`.
-     - Made disposable smoke session cleanup failures visible: in `finally:`, doctor verifies that `smoke_session_dir` and `smoke_lock_file` are deleted and no longer exist on disk. If deletion fails or resources remain on disk, doctor records `cleanup_errors`, prints `[FAIL] Smoke session cleanup failed ... Smoke resources leaked on disk`, and returns exit code 1.
+- Addressed all Round 11 Main Agent Review blockers in Round 12:
+  1. **Blocker 1 — Strict Doctor PreToolUse ALLOW Child Subprocess Wire-Format Check**:
+     - Updated `doctor_hooks()` in `src/agentcontract/integrations/codex/cli.py` to strictly enforce that the PreToolUse ALLOW child subprocess exits with code 0 (`res_allow.returncode == 0`) AND returns completely empty stdout (`res_allow.stdout.strip() == ""`).
+     - Any non-empty stdout (including garbage strings, parse errors, or non-empty structured ALLOW JSON such as `{"hookSpecificOutput": {"permissionDecision": "allow"}}`) is rejected as a protocol violation (`[FAIL] PreToolUse ALLOW protocol violation: expected exit code 0 with completely empty stdout (no input rewrite), but received nonempty stdout`) and causes doctor to return exit code 1.
+     - Updated doctor section 4 output to `[PASS] ALLOW wire-format: exit code 0 with completely empty stdout (no input rewrite)`.
+     - Added deterministic regression tests in `tests/integrations/test_codex_isolation.py`:
+       - `test_doctor_hooks_rejects_allow_garbage_stdout`: verifies junk stdout from ALLOW subprocess fails doctor with exit code 1.
+       - `test_doctor_hooks_rejects_allow_structured_json_stdout`: verifies non-empty structured JSON from ALLOW subprocess fails doctor with exit code 1.
+  2. **Blocker 2 — Precise Global Codex Directory Snapshot & Scoped Integrity Verification**:
+     - Enhanced before/after snapshot of user global `~/.codex` (`user_codex_home`):
+       - Lists top-level directory entries before and after the smoke test and verifies both additions (`added_entries = post_entries - user_codex_entries_before`) and deletions (`deleted_entries = user_codex_entries_before - post_entries`). Deletions fail doctor with exit code 1.
+       - Clearly scopes content hashing to `TRACKED_GLOBAL_FILES = ("config.toml", "hooks.json", "auth.json")`.
+       - Handled read/listing errors: baseline or post-smoke read/hash failures (`Exception` / `OSError`) are captured in error lists and fail doctor with exit code 1 instead of silently passing.
+       - Narrowed doctor output claims to accurately reflect the verified scope: `[PASS] User global ~/.codex observed untouched (top-level entries identical; tracked files {tracked_list} verified unchanged)`.
+       - Explicitly labeled unmonitored boundaries: `[NOT OBSERVED] External system ACLs, unmanaged background processes, untracked subdirectory contents, and Desktop GUI state not monitored`.
      - Added regression tests in `tests/integrations/test_codex_isolation.py`:
-       - `test_doctor_hooks_fails_when_smoke_cleanup_fails`: verifies doctor fails (code 1) when directory deletion fails and reports cleanup failure.
-       - `test_doctor_hooks_detects_user_codex_mutation`: verifies doctor fails (code 1) if `~/.codex` is modified during execution.
+       - `test_doctor_hooks_detects_user_codex_entry_deletion`: verifies deletion of a top-level file in `~/.codex` fails doctor with exit code 1.
+       - `test_doctor_hooks_detects_user_codex_tracked_file_mutation`: verifies in-place modification of tracked config files fails doctor with exit code 1.
+       - `test_doctor_hooks_fails_on_user_codex_read_failure`: verifies read failure when hashing tracked files fails doctor with exit code 1.
+       - `test_doctor_hooks_untracked_file_mutation_does_not_falsely_claim_verified`: verifies in-place mutation of untracked files does not cause doctor to claim all files were verified, properly reporting scope limited to tracked files and noting untracked contents as NOT OBSERVED.
 
 **Files changed:**
 - `src/agentcontract/integrations/codex/cli.py`
-- `tests/integrations/test_codex_cli.py`
 - `tests/integrations/test_codex_isolation.py`
 - `.agent/tasks/TASK-012.md`
 
 **Tests/checks run and results:**
-- `python -m pytest tests/integrations/test_codex_isolation.py` (21 passed in 13.18s, 0 failures)
+- `python -m pytest tests/integrations/test_codex_isolation.py` (27 passed in 20.74s, 0 failures)
 - `python -m pytest tests/integrations/test_codex_cli.py` (13 passed, 2 skipped in 0.75s, 0 failures)
-- Full test suite on Python 3.12.9: `python -m pytest` (**377 passed, 2 skipped in 23.82s, 0 failures**).
+- Full test suite on Python 3.12.9: `python -m pytest` (**383 passed, 2 skipped in 30.37s, 0 failures**).
 - Real Codex CLI online E2E tests: both `test_real_codex_cli_pretooluse_allow_completed` and `test_real_codex_cli_pretooluse_deny_blocked` safely skip when dedicated isolated test credentials (`AGENTCONTRACT_TEST_CODEX_AUTH_JSON` / `CODEX_TEST_AUTH_JSON`) are absent from the environment.
 - Nonfatal Codex warnings (`Refusing to create helper binaries under temporary dir` and `could not create PATH aliases`) do not cause E2E tests to prematurely skip as blockers.
 - Zero repository root pollution: `Path(".agentcontract").exists() == False`.
 - User personal `~/.codex` completely untouched.
 
 **Known limitations / E2E Acceptance Status:**
-- Default offline workflow is fully verified and passing (377 tests).
+- Default offline workflow and unit/integration test suite are fully verified and passing (383 passed, 2 skipped).
 - Real online Codex CLI tests remain an opt-in acceptance check (`SKIPPED` when dedicated test credentials absent). If upstream Codex CLI runtime encounters native Windows sandbox policy blocks (`rejected: blocked by policy` / `os error 32`), it is safely flagged as `UPSTREAM_ENV_BLOCKED: ... LIVE E2E UNVERIFIED`. AgentContract does not attempt unsafe elevated sandbox setup, unrestricted mode, or global ACL mutations.
 
 **Commit SHA:**
-- Implementation commit: `75abc98a8838869cc4038c168bded3cce3342134`
+- Implementation commit: pending commit for Round 12
 
 **Questions/blockers for main-agent review:**
-- None. All 3 Round 10 blockers are resolved, negative regressions added, and full test suite passes with 377 passed / 2 skipped on Python 3.12.9. Ready for main-agent review.
+- None. Both Round 11 blockers are resolved, negative regressions added, and full test suite passes with 383 passed / 2 skipped on Python 3.12.9. Ready for main-agent review.
 
 ---
 
