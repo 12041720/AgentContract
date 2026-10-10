@@ -933,3 +933,10 @@ Do not broaden task or change Windows sandbox/global Codex configs, ACLs, proces
 ## 2026-10-10 — TASK-012 round 12
 
 **Offline code review: PASS; task status: BLOCKED, live E2E still UNVERIFIED.** Reviewed `9b3538f4` implementation and `e0e91b02` report, including verified executor handoff from Round 11. Doctor now uses registered hook subprocess and rejects nonempty ALLOW stdout; global Codex home checks both added/deleted entries and tracks three config-file hashes with explicit scope and read errors. Negative regressions present. Executor reports Python 3.12.9 **383 passed / 2 skipped**; results not independently reproduced and online real Codex ALLOW/DENY both skipped. Authorize safe offline local smoke only, not production ACCEPTED. Windows Codex native sandbox/ACL upstream bug remains, so no special account/VM/global repairs/process kills, unsafe bypass or main merge. Details and user testing steps in Round 12 task review.
+
+---
+
+## 2026-10-10 — TASK-012 user-run offline acceptance evidence
+
+Verified from user PowerShell output: checkout fast-forward to `ab13061`, `pytest -k "not real_codex_cli_pretooluse"`: **383 passed, 2 deselected (29.46s)**; isolated disposable TEMP project hook install + doctor exit **0** + status + uninstall, with project hooks file absent after uninstall. Doctor observed real AgentContract handler subprocess SessionStart/PreToolUse, Guard ALLOW/BLOCK traces, empty ALLOW stdout, structured DENY; scoped `~/.codex` snapshot unchanged for top-level names and tracked `auth.json`/`config.toml`. Untracked global content, ACLs, Codex GUI remain unobserved. **OFFLINE VALIDATED, native Codex E2E UNVERIFIED, overall TASK-012 BLOCKED**. No merge/TASK-013. No risky Windows sandbox preparation required.
+

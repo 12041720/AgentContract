@@ -168,3 +168,10 @@ On a new session:
 - Offline Doctor registered-hook subprocess wire format now rejects junk/structured ALLOW stdout; global Codex home snapshot detects top-level additions/deletions and tracked file edits/read errors, and truthfully limits inspection scope.
 - Main-agent offline code review PASS; product task overall **BLOCKED** because real Codex CLI ALLOW/Completed + DENY/Blocked with linked Guard traces has not been established; Windows native Codex tool policy and CUA ACL refresh upstream failures remain. No main product merge/TASK-013.
 - User may run offline local pytest and temporary project install/doctor/status/audit/uninstall without invoking native sandbox/elevated Windows setup. Do not modify global Codex config/auth/ACL/processes.
+
+## M7 round 12 user-run offline validation (2026-10-10)
+
+- User verified local task branch HEAD `ab13061` via safe fast-forward. Windows offline pytest excluding both real online Codex cases: **383 passed, 2 deselected in 29.46 seconds**.
+- Disposable TEMP project: 5 project-only hook events installed; `agentcontract codex doctor` exited 0, verifying child-process SessionStart/PreToolUse, SpecGuard ALLOW/BLOCK trace and correct stdout JSON/wire format, cleanup and scoped tracked global Codex home integrity. Status saw zero persisted sessions; uninstall removed project hooks file (Test-Path False). Parent PYTHONPATH restored.
+- This establishes OFFLINE_VALIDATED from user-run logs. Genuine native Codex CLI runtime ALLOW/Completed + DENY/Blocked E2E still UNVERIFIED; TASK-012 overall BLOCKED. No product merge/TASK-013, and no global ACL/config/process modifications or sandbox bypass.
+
