@@ -540,20 +540,27 @@ def check_upstream_environment_failure(
 
 
 def inspect_e2e_hook_dispatch(sessions_dir: Path | None) -> dict[str, Any]:
-    """Inspect whether AgentContract hooks were actually dispatched and traces recorded."""
+    """Inspect whether AgentContract hooks were actually dispatched,
+    distinguishing general lifecycle events from authentic PreToolUse GUARD_DECISION events.
+    """
     if sessions_dir is None or not sessions_dir.is_dir():
         return {
-            "invoked": False,
+            "pretooluse_invoked": False,
+            "lifecycle_invoked": False,
             "status": "NOT INVOKED / UNVERIFIED",
             "detail": f"Sessions directory '{sessions_dir}' was not created by Codex CLI.",
             "sessions_count": 0,
-            "events_count": 0,
-            "verdicts": [],
+            "lifecycle_events_count": 0,
+            "guard_decisions_count": 0,
+            "guard_verdicts": [],
         }
 
     total_events = 0
-    verdicts: list[str] = []
+    guard_decisions_count = 0
+    guard_verdicts: list[str] = []
+    lifecycle_events_count = 0
     sessions_count = 0
+
     for sdir in sessions_dir.iterdir():
         if sdir.is_dir():
             sessions_count += 1
@@ -564,33 +571,58 @@ def inspect_e2e_hook_dispatch(sessions_dir: Path | None) -> dict[str, Any]:
                     events = tdata.get("events", [])
                     total_events += len(events)
                     for ev in events:
-                        if (
-                            str(ev.get("actor")).upper() == "GUARD"
-                            and str(ev.get("event_kind")).upper() == "GUARD_DECISION"
-                        ):
+                        is_guard = str(ev.get("actor", "")).upper() == "GUARD"
+                        is_decision = str(ev.get("event_kind", "")).upper() == "GUARD_DECISION"
+                        if is_guard and is_decision:
+                            guard_decisions_count += 1
                             v = ev.get("metadata", {}).get("verdict") or ev.get("payload", {}).get("decision")
                             if v:
-                                verdicts.append(str(v).upper())
+                                guard_verdicts.append(str(v).upper())
+                        else:
+                            lifecycle_events_count += 1
                 except Exception:
                     pass
 
-    if total_events > 0 or verdicts:
+    if guard_decisions_count > 0:
         return {
-            "invoked": True,
-            "status": "INVOKED",
-            "detail": f"Observed {sessions_count} session(s) with {total_events} trace events (guard verdicts: {verdicts}).",
+            "pretooluse_invoked": True,
+            "lifecycle_invoked": True,
+            "status": "PRETOOLUSE_INVOKED",
+            "detail": (
+                f"PreToolUse Guard dispatch confirmed: observed {guard_decisions_count} GUARD_DECISION event(s) "
+                f"(verdicts: {guard_verdicts}) across {sessions_count} session(s) "
+                f"({lifecycle_events_count} lifecycle event(s), {total_events} total trace events)."
+            ),
             "sessions_count": sessions_count,
-            "events_count": total_events,
-            "verdicts": verdicts,
+            "lifecycle_events_count": lifecycle_events_count,
+            "guard_decisions_count": guard_decisions_count,
+            "guard_verdicts": guard_verdicts,
         }
-    return {
-        "invoked": False,
-        "status": "EMPTY / UNVERIFIED",
-        "detail": f"Sessions directory exists ({sessions_count} sessions) but no trace events recorded.",
-        "sessions_count": sessions_count,
-        "events_count": 0,
-        "verdicts": [],
-    }
+    elif total_events > 0:
+        return {
+            "pretooluse_invoked": False,
+            "lifecycle_invoked": True,
+            "status": "PRETOOLUSE_UNVERIFIED",
+            "detail": (
+                f"Lifecycle activity observed ({lifecycle_events_count} event(s) in {sessions_count} session(s)), "
+                f"but ZERO PreToolUse GUARD_DECISION events were recorded. PreToolUse dispatch is UNVERIFIED."
+            ),
+            "sessions_count": sessions_count,
+            "lifecycle_events_count": lifecycle_events_count,
+            "guard_decisions_count": 0,
+            "guard_verdicts": [],
+        }
+    else:
+        return {
+            "pretooluse_invoked": False,
+            "lifecycle_invoked": False,
+            "status": "EMPTY / UNVERIFIED",
+            "detail": f"Sessions directory exists ({sessions_count} sessions) but no trace events recorded.",
+            "sessions_count": sessions_count,
+            "lifecycle_events_count": 0,
+            "guard_decisions_count": 0,
+            "guard_verdicts": [],
+        }
 
 
 def format_e2e_diagnostics(
@@ -601,8 +633,8 @@ def format_e2e_diagnostics(
 ) -> str:
     """Produce comprehensive structured diagnostics separating:
     (a) Codex-native execution policy / shell blocker,
-    (b) AgentContract hook dispatch / trace evidence,
-    (c) Codex runtime enforcement (ALLOW/DENY).
+    (b) AgentContract hook dispatch / trace evidence (distinguishing lifecycle from PreToolUse),
+    (c) Codex runtime enforcement (ALLOW/DENY) based strictly on machine events & Guard trace.
     """
     stdout = res.stdout or ""
     stderr = res.stderr or ""
@@ -635,12 +667,14 @@ def format_e2e_diagnostics(
     if target_shell:
         policy_detail += f" (target shell: {target_shell})"
 
-    # (b) AgentContract Hook Dispatch
+    # (b) AgentContract Hook Dispatch (strictly distinguishing lifecycle vs PreToolUse)
     hook_info = inspect_e2e_hook_dispatch(sessions_dir)
     hook_status = hook_info["status"]
     hook_detail = hook_info["detail"]
 
     # (c) Codex Runtime Enforcement
+    # Never infer enforcement from plain prose text like "Completed" or "Blocked" in combined output.
+    # Require corroborated machine JSONL tool items and matching Guard decision traces.
     if policy_status == "BLOCKED":
         enforce_status = "UNVERIFIED"
         if scenario.upper() == "DENY":
@@ -655,12 +689,58 @@ def format_e2e_diagnostics(
                 "Probe file content was not read. LIVE E2E UNVERIFIED."
             )
     else:
+        # Check structured machine items from Codex CLI JSONL
+        codex_items = parse_codex_cli_items(stdout)
+        has_completed_tool_item = any(
+            str(item.get("status") or "").lower() in ("completed", "success")
+            and (item.get("exit_code") in (0, None) and item.get("exitCode") in (0, None))
+            for item in codex_items
+        )
+        has_failed_or_blocked_tool_item = any(
+            str(item.get("status") or "").lower() in ("failed", "blocked", "denied", "cancelled", "rejected")
+            or any(w in str(item.get("error") or item.get("message") or "").lower() for w in ("blocked", "denied", "rejected", "hook"))
+            for item in codex_items
+        )
+        has_runtime_denial_stderr = any(
+            kw in stderr.lower()
+            for kw in ("blocked by hook", "pretooluse hook denied", "hook rejected", "tool call rejected", "tool execution blocked")
+        ) and "[AgentContract SpecGuard]" not in stderr
+
+        has_allow_guard = "ALLOW" in hook_info.get("guard_verdicts", [])
+        has_block_guard = "BLOCK" in hook_info.get("guard_verdicts", [])
+
         if scenario.upper() == "ALLOW":
-            enforce_status = "COMPLETED" if "Completed" in combined else "PENDING"
-            enforce_detail = f"ALLOW scenario runtime status: exit_code={res.returncode}"
+            if has_completed_tool_item and has_allow_guard and res.returncode == 0:
+                enforce_status = "ENFORCED"
+                enforce_detail = "Corroborated via structured Codex JSONL tool item (completed) and SpecGuard ALLOW trace."
+            else:
+                enforce_status = "UNVERIFIED"
+                reasons = []
+                if not has_completed_tool_item:
+                    reasons.append("no completed machine tool item in JSONL")
+                if not has_allow_guard:
+                    reasons.append("no matching SpecGuard ALLOW trace")
+                if res.returncode != 0:
+                    reasons.append(f"exit_code={res.returncode}")
+                enforce_detail = (
+                    f"Corroborated machine execution evidence missing ({', '.join(reasons)}). "
+                    "Prose text alone does not establish runtime enforcement. LIVE E2E UNVERIFIED."
+                )
         else:
-            enforce_status = "BLOCKED" if "Blocked" in combined else "PENDING"
-            enforce_detail = f"DENY scenario runtime status: exit_code={res.returncode}"
+            if (has_failed_or_blocked_tool_item or has_runtime_denial_stderr) and has_block_guard:
+                enforce_status = "ENFORCED"
+                enforce_detail = "Corroborated via structured tool rejection in JSONL/stderr and SpecGuard BLOCK trace."
+            else:
+                enforce_status = "UNVERIFIED"
+                reasons = []
+                if not (has_failed_or_blocked_tool_item or has_runtime_denial_stderr):
+                    reasons.append("no structured machine tool rejection event in JSONL/stderr")
+                if not has_block_guard:
+                    reasons.append("no matching SpecGuard BLOCK trace")
+                enforce_detail = (
+                    f"Corroborated machine rejection evidence missing ({', '.join(reasons)}). "
+                    "Prose text alone does not establish runtime enforcement. LIVE E2E UNVERIFIED."
+                )
 
     warnings = get_upstream_environment_warnings(res)
     warn_text = f"\n  (d) Upstream Diagnostics Warnings: {warnings}" if warnings else ""
@@ -1814,11 +1894,169 @@ def test_format_e2e_diagnostics_reports_hook_invoked_when_trace_present(tmp_path
     assert "Status: BLOCKED" in diag
 
     assert "(b) AgentContract Hook Dispatch:" in diag
-    assert "Status: INVOKED" in diag
+    assert "Status: PRETOOLUSE_INVOKED" in diag
     assert "BLOCK" in diag
 
     assert "(c) Codex Runtime Enforcement (DENY):" in diag
     assert "Status: UNVERIFIED" in diag
+
+
+def test_format_e2e_diagnostics_prose_text_alone_remains_unverified() -> None:
+    """Regression test for Round 14 Blocker 1:
+    Plain prose text in stdout/stderr containing 'Completed' or 'Blocked' MUST NOT
+    be inferred as runtime enforcement without corroborated machine JSONL tool items
+    and matching SpecGuard trace decisions.
+    """
+    # 1. ALLOW scenario with LLM prose claiming 'Completed'
+    res_allow_prose = subprocess.CompletedProcess(
+        args=["codex"],
+        returncode=0,
+        stdout="I have Completed the task. All requested items were read successfully.",
+        stderr="",
+    )
+    diag_allow = format_e2e_diagnostics(res_allow_prose, sessions_dir=None, scenario="ALLOW")
+    assert "(c) Codex Runtime Enforcement (ALLOW):" in diag_allow
+    assert "Status: UNVERIFIED" in diag_allow
+    assert "Prose text alone does not establish runtime enforcement. LIVE E2E UNVERIFIED." in diag_allow
+    assert "no completed machine tool item in JSONL" in diag_allow
+    assert "no matching SpecGuard ALLOW trace" in diag_allow
+
+    # 2. DENY scenario with LLM prose claiming 'Blocked'
+    res_deny_prose = subprocess.CompletedProcess(
+        args=["codex"],
+        returncode=0,
+        stdout="The operation was Blocked because it violates security boundaries.",
+        stderr="",
+    )
+    diag_deny = format_e2e_diagnostics(res_deny_prose, sessions_dir=None, scenario="DENY")
+    assert "(c) Codex Runtime Enforcement (DENY):" in diag_deny
+    assert "Status: UNVERIFIED" in diag_deny
+    assert "Prose text alone does not establish runtime enforcement. LIVE E2E UNVERIFIED." in diag_deny
+    assert "no structured machine tool rejection event in JSONL/stderr" in diag_deny
+    assert "no matching SpecGuard BLOCK trace" in diag_deny
+
+
+def test_inspect_e2e_hook_dispatch_lifecycle_only_does_not_count_as_pretooluse(tmp_path: Path) -> None:
+    """Regression test for Round 14 Blocker 2:
+    Lifecycle events (e.g. USER_MESSAGE from UserPromptSubmit, SESSION_START)
+    MUST NOT be treated as PreToolUse invocation.
+    PreToolUse requires an authentic GUARD_DECISION event.
+    """
+    sessions_dir = tmp_path / "sessions"
+    s1 = sessions_dir / "sess_lifecycle_only"
+    s1.mkdir(parents=True)
+    trace_data = {
+        "events": [
+            {
+                "actor": "USER",
+                "event_kind": "USER_MESSAGE",
+                "payload": {"text": "Please read probe.txt"},
+            },
+            {
+                "actor": "SESSION",
+                "event_kind": "SESSION_START",
+                "payload": {"session_id": "sess_lifecycle_only"},
+            },
+        ]
+    }
+    (s1 / "trace.json").write_text(json.dumps(trace_data), encoding="utf-8")
+
+    hook_info = inspect_e2e_hook_dispatch(sessions_dir)
+    assert hook_info["pretooluse_invoked"] is False
+    assert hook_info["lifecycle_invoked"] is True
+    assert hook_info["status"] == "PRETOOLUSE_UNVERIFIED"
+    assert hook_info["guard_decisions_count"] == 0
+    assert hook_info["lifecycle_events_count"] == 2
+    assert "ZERO PreToolUse GUARD_DECISION events were recorded" in hook_info["detail"]
+
+    # In format_e2e_diagnostics, hook status must be PRETOOLUSE_UNVERIFIED
+    res = subprocess.CompletedProcess(
+        args=["codex"],
+        returncode=0,
+        stdout="Completed: task finished.",
+        stderr="",
+    )
+    diag = format_e2e_diagnostics(res, sessions_dir=sessions_dir, scenario="ALLOW")
+    assert "Status: PRETOOLUSE_UNVERIFIED" in diag
+    assert "Status: UNVERIFIED" in diag  # enforcement also unverified
+
+
+def test_inspect_e2e_hook_dispatch_guard_decision_qualifies_as_pretooluse(tmp_path: Path) -> None:
+    """Regression test for Round 14 Blocker 2 (positive case):
+    An authentic GUARD_DECISION trace event confirms PreToolUse invocation.
+    """
+    sessions_dir = tmp_path / "sessions"
+    s1 = sessions_dir / "sess_with_guard"
+    s1.mkdir(parents=True)
+    trace_data = {
+        "events": [
+            {
+                "actor": "USER",
+                "event_kind": "USER_MESSAGE",
+                "payload": {"text": "Run probe command"},
+            },
+            {
+                "actor": "GUARD",
+                "event_kind": "GUARD_DECISION",
+                "metadata": {"verdict": "ALLOW"},
+                "payload": {"tool_name": "exec_command", "decision": "ALLOW"},
+            },
+        ]
+    }
+    (s1 / "trace.json").write_text(json.dumps(trace_data), encoding="utf-8")
+
+    hook_info = inspect_e2e_hook_dispatch(sessions_dir)
+    assert hook_info["pretooluse_invoked"] is True
+    assert hook_info["lifecycle_invoked"] is True
+    assert hook_info["status"] == "PRETOOLUSE_INVOKED"
+    assert hook_info["guard_decisions_count"] == 1
+    assert hook_info["guard_verdicts"] == ["ALLOW"]
+    assert hook_info["lifecycle_events_count"] == 1
+    assert "PreToolUse Guard dispatch confirmed" in hook_info["detail"]
+
+
+def test_format_e2e_diagnostics_corroborated_machine_events_enforced(tmp_path: Path) -> None:
+    """Regression test: when both structured machine tool events and matching SpecGuard
+    decisions are present, format_e2e_diagnostics reports ENFORCED.
+    """
+    # 1. ALLOW scenario with completed JSONL tool item and ALLOW guard trace
+    sessions_dir_allow = tmp_path / "sessions_allow"
+    s_allow = sessions_dir_allow / "s1"
+    s_allow.mkdir(parents=True)
+    (s_allow / "trace.json").write_text(
+        json.dumps({
+            "events": [
+                {"actor": "GUARD", "event_kind": "GUARD_DECISION", "metadata": {"verdict": "ALLOW"}},
+            ]
+        }),
+        encoding="utf-8",
+    )
+    stdout_allow = json.dumps({"item": {"status": "completed", "exit_code": 0}}) + "\n"
+    res_allow = subprocess.CompletedProcess(args=["codex"], returncode=0, stdout=stdout_allow, stderr="")
+    diag_allow = format_e2e_diagnostics(res_allow, sessions_dir=sessions_dir_allow, scenario="ALLOW")
+    assert "(c) Codex Runtime Enforcement (ALLOW):" in diag_allow
+    assert "Status: ENFORCED" in diag_allow
+    assert "Corroborated via structured Codex JSONL tool item (completed) and SpecGuard ALLOW trace." in diag_allow
+
+    # 2. DENY scenario with failed/blocked JSONL tool item and BLOCK guard trace
+    sessions_dir_deny = tmp_path / "sessions_deny"
+    s_deny = sessions_dir_deny / "s2"
+    s_deny.mkdir(parents=True)
+    (s_deny / "trace.json").write_text(
+        json.dumps({
+            "events": [
+                {"actor": "GUARD", "event_kind": "GUARD_DECISION", "metadata": {"verdict": "BLOCK"}},
+            ]
+        }),
+        encoding="utf-8",
+    )
+    stdout_deny = json.dumps({"item": {"status": "failed", "error": "blocked by hook"}}) + "\n"
+    res_deny = subprocess.CompletedProcess(args=["codex"], returncode=0, stdout=stdout_deny, stderr="")
+    diag_deny = format_e2e_diagnostics(res_deny, sessions_dir=sessions_dir_deny, scenario="DENY")
+    assert "(c) Codex Runtime Enforcement (DENY):" in diag_deny
+    assert "Status: ENFORCED" in diag_deny
+    assert "Corroborated via structured tool rejection in JSONL/stderr and SpecGuard BLOCK trace." in diag_deny
+
 
 
 

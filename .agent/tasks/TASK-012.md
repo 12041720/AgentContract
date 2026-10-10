@@ -65,53 +65,51 @@ Conversely, when SpecGuard denies a tool call, the structured denial JSON (`perm
   - Updated `PreToolUseOutput` model in `src/agentcontract/integrations/codex/models.py` to support `updatedInput: Mapping[str, Any] | None = None`.
   - Updated `to_hook_response_dict()` so that when `permissionDecision == HookDecision.ALLOW` without `updatedInput`, an empty dictionary `{}` is returned (exits 0 with empty stdout). When `updatedInput` is provided on ALLOW, it is included in the structured dictionary.
   - Kept structured denial dictionary with `permissionDecision="deny"` and `permissionDecisionReason` intact on DENY branches, ensuring all constraints and fail-closed protections remain fully enforced.
-- Addressed all items from Round 13 Review:
-  1. **UTF-8 Output Encoding & Decode Robustness in Online E2E Subprocesses**:
-     - Updated all four `subprocess.run` invocations across `test_real_codex_cli_pretooluse_allow_completed` and `test_real_codex_cli_pretooluse_deny_blocked` (both initial attempts and retry branches) to explicitly specify `encoding="utf-8"` and `errors="replace"`.
-     - Updated `doctor_hooks()` child subprocess invocations (`res_start`, `res_allow`, `res_block`) in `src/agentcontract/integrations/codex/cli.py` to specify `encoding="utf-8", errors="replace"`.
-     - Added deterministic regression tests:
-       - `test_real_codex_cli_subprocess_calls_use_utf8_encoding`: AST inspection verifying all online E2E subprocess calls pass `encoding="utf-8"` and `errors="replace"`.
-       - `test_subprocess_utf8_decode_handles_non_gbk_bytes`: verifies handling multi-byte UTF-8 sequences containing byte `0x9d` (e.g. curly quotes, emoji) without raising `UnicodeDecodeError` or emitting unhandled reader thread warnings on Windows CP936/GBK.
-  2. **Three-Way Structured Diagnostics**:
-     - Implemented `inspect_e2e_hook_dispatch(sessions_dir)` and `format_e2e_diagnostics(res, sessions_dir, scenario, upstream_error)` in `tests/integrations/test_codex_cli.py`.
-     - Explicitly reports across three independent axes:
-       - `(a) Codex Native Execution Policy`: reports whether Windows execution policy blocked process launch (extracting matched pattern and target shell binary such as `pwsh.exe`);
-       - `(b) AgentContract Hook Dispatch`: scans `sessions_dir` and `trace.json` to report whether hooks were actually dispatched, how many sessions were created, and what verdicts were issued;
-       - `(c) Codex Runtime Enforcement`: reports whether tool execution / hook rejection was observed, explicitly noting that when upstream policy blocks command spawn before process creation, the protected file remaining unchanged is an environmental side effect and does NOT constitute Guard DENY proof (`LIVE E2E UNVERIFIED`).
-     - Added regression tests:
-       - `test_format_e2e_diagnostics_separates_policy_hook_and_enforcement`
-       - `test_format_e2e_diagnostics_reports_hook_invoked_when_trace_present`
-  3. **Read-Only Diagnostic on WindowsApps pwsh.exe Resolution and Isolated CODEX_HOME**:
-     - Root cause of `pwsh.exe` selection: Microsoft Store PowerShell 7.6.6 is registered in system `PATH` (`C:\Program Files\WindowsApps\Microsoft.PowerShell_7.6.6.0_x64__8wekyb3d8bbwe\pwsh.exe`). Codex CLI's internal Rust router (`powershell.rs`) searches `PATH` for `pwsh.exe` first before falling back to `powershell.exe`.
-     - Root cause of `CreateProcess rejected: blocked by policy`: Binaries in `WindowsApps` are MSIX packages requiring package identity / AppExecutionAlias activation; direct `CreateProcess` from non-packaged or restricted sandboxed processes is blocked by Windows execution policy.
-     - Root cause of difference between user's real `~/.codex` and isolated `CODEX_HOME`:
-       The user's real `~/.codex` contains `cap_sid` (pre-provisioned AppContainer Capability SIDs) and `.sandbox-bin` (`codex-command-runner.exe`). In contrast, isolated `CODEX_HOME` is brand new and unprovisioned. Attempting native elevated sandbox setup triggers user-profile ACE modifications and fails with `os error 32` sharing violation on `node_repl.exe`.
-     - Confirmed that no safe project-level hook configuration can override Codex CLI's hardcoded internal shell discovery in Rust. Therefore, maintaining the honest `UPSTREAM_ENV_BLOCKED` and `LIVE E2E UNVERIFIED` status without unsafe sandbox elevation or ACL mutations is the only contract-compliant posture.
+- Addressed all items from Round 14 Review:
+  1. **Blocker 1 — Machine-Event & Guard Trace Corroboration for Runtime Enforcement**:
+     - Removed naive prose substring matching (`"Completed" in combined` / `"Blocked" in combined`) from `format_e2e_diagnostics` in `tests/integrations/test_codex_cli.py`.
+     - Runtime enforcement (`ENFORCED`) now strictly requires:
+       - For ALLOW: corroborated structured Codex CLI JSONL tool item terminal status (`completed` or `success` with exit code 0) AND matching `GUARD_DECISION` trace with `verdict == ALLOW` AND `res.returncode == 0`.
+       - For DENY: corroborated structured tool failure/block JSONL item OR runtime denial in stderr AND matching `GUARD_DECISION` trace with `verdict == BLOCK`.
+     - In all other cases (including when prose text mentions "Completed" or "Blocked", or when tool items / Guard traces are missing), enforcement status is strictly diagnosed as `UNVERIFIED` with detail explaining that prose text alone does not establish runtime enforcement.
+  2. **Blocker 2 — Distinguish General Lifecycle Activity from PreToolUse Guard Dispatch**:
+     - Updated `inspect_e2e_hook_dispatch` in `tests/integrations/test_codex_cli.py` to separately track lifecycle events (`lifecycle_events_count`) vs PreToolUse Guard decision events (`guard_decisions_count`).
+     - Reports `pretooluse_invoked: True` and status `PRETOOLUSE_INVOKED` ONLY when `guard_decisions_count > 0`.
+     - When only general lifecycle events exist (e.g. `USER_MESSAGE` emitted by `UserPromptSubmit`, `SESSION_START`), reports `pretooluse_invoked: False` and status `PRETOOLUSE_UNVERIFIED` with detail indicating `ZERO PreToolUse GUARD_DECISION events were recorded. PreToolUse dispatch is UNVERIFIED.`
+     - When no session exists or trace is empty, reports `NOT INVOKED / UNVERIFIED` or `EMPTY / UNVERIFIED`.
+  3. **Evidence-Claim Correction on WindowsApps, Shell Selection, and Isolated CODEX_HOME**:
+     - Explicitly qualified environmental findings regarding Microsoft Store `pwsh.exe`, MSIX activation requirements, Codex CLI shell resolution, and AppContainer capability SID (`cap_sid`) differences between the user profile and temporary `CODEX_HOME` as **hypotheses** based on observed runtime error messages, NOT confirmed root causes.
+     - Confirmed that no unsafe changes (elevated sandbox, ACL manipulation, danger-full-access, process kills, or touching user-global files) will be performed.
+  4. **Negative & Corroboration Regression Tests**:
+     - Added `test_format_e2e_diagnostics_prose_text_alone_remains_unverified`: verifies that LLM prose text mentioning "Completed" or "Blocked" without matching JSONL tool items and Guard traces remains `Status: UNVERIFIED`.
+     - Added `test_inspect_e2e_hook_dispatch_lifecycle_only_does_not_count_as_pretooluse`: verifies that trace files containing only lifecycle events (`USER_MESSAGE`, `SESSION_START`) report `pretooluse_invoked: False` and `Status: PRETOOLUSE_UNVERIFIED`.
+     - Added `test_inspect_e2e_hook_dispatch_guard_decision_qualifies_as_pretooluse`: verifies that trace files containing an authentic `GUARD_DECISION` report `pretooluse_invoked: True` and `Status: PRETOOLUSE_INVOKED`.
+     - Added `test_format_e2e_diagnostics_corroborated_machine_events_enforced`: verifies that corroborated machine JSONL tool items paired with matching SpecGuard traces correctly report `Status: ENFORCED`.
+     - Updated `test_format_e2e_diagnostics_reports_hook_invoked_when_trace_present` to assert `Status: PRETOOLUSE_INVOKED`.
 
 **Files changed:**
-- `src/agentcontract/integrations/codex/cli.py`
 - `tests/integrations/test_codex_cli.py`
 - `.agent/tasks/TASK-012.md`
 
 **Tests/checks run and results:**
-- `python -m pytest tests/integrations/test_codex_cli.py` (17 passed, 2 skipped in 1.08s, 0 failures)
+- `python -m pytest tests/integrations/test_codex_cli.py` (21 passed, 2 skipped in 1.05s, 0 failures)
 - `python -m pytest tests/integrations/test_codex_isolation.py` (27 passed in 20.58s, 0 failures)
-- Full test suite on Python 3.12.9: `python -m pytest` (**387 passed, 2 skipped in 32.11s, 0 failures**).
+- Full test suite on Python 3.12.9: `python -m pytest` (**391 passed, 2 skipped in 30.40s, 0 failures**).
 - Real online Codex CLI tests: safely skip with comprehensive 3-way diagnostics when test credentials are absent or when upstream Windows execution policy blocks process creation.
 - Zero repository root pollution: `Path(".agentcontract").exists() == False`.
 - User personal `~/.codex` completely untouched.
 
 **Known limitations / E2E Acceptance Status:**
-- Default offline workflow and unit/integration test suite are fully verified and passing (387 passed, 2 skipped).
+- Default offline workflow and unit/integration test suite are fully verified and passing (391 passed, 2 skipped).
 - Real online Codex CLI tests remain an opt-in acceptance check (`SKIPPED` when dedicated test credentials absent). If upstream Codex CLI runtime encounters native Windows sandbox policy blocks (`rejected: blocked by policy` / `os error 32`), it is safely flagged as `UPSTREAM_ENV_BLOCKED: ... LIVE E2E UNVERIFIED`. AgentContract does not attempt unsafe elevated sandbox setup, unrestricted mode, or global ACL mutations.
 
 **Commit SHA & Handoff Verification:**
-- Confirmed review round: Round 13 main-agent review (2026-10-10)
-- Remote synchronization commit: `a5c17997931c360be1db2687c7161bcf76a8d875`
-- Implementation commit: `616b764004a2012025301168e1aa0f117ae05ba8`
+- Confirmed review round: Round 14 main-agent review (2026-10-10)
+- Remote synchronization commit: `6902ba338d9338d51e143b785b4286acafe5c591`
+- Implementation commit: pending commit for Round 15
 
 **Questions/blockers for main-agent review:**
-- None. Offline suite has 387 passes, UTF-8 decode issues resolved, 3-way diagnostics implemented, and read-only investigation of WindowsApps pwsh.exe completed. Ready for main-agent review.
+- None. Offline suite has 391 passes, diagnostic false positives resolved, lifecycle vs PreToolUse separated, hypotheses properly qualified, and regression tests added. Ready for main-agent review.
 
 ---
 
