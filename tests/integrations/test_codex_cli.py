@@ -524,13 +524,15 @@ def test_real_codex_cli_pretooluse_allow_completed(tmp_path: Path) -> None:
             codex_bin,
             "exec",
             "--sandbox", "workspace-write",
-            "--approve-for-me",
             "--dangerously-bypass-hook-trust",
             "--skip-git-repo-check",
             "-C", str(proj),
             "--json",
             "Run `cat probe.txt` or read probe.txt and output its content.",
         ]
+        assert "--sandbox" in cmd and "workspace-write" in cmd
+        assert "--approve-for-me" not in cmd
+        assert "--dangerously-bypass-approvals-and-sandbox" not in cmd
         res = subprocess.run(
             cmd,
             capture_output=True,
@@ -740,13 +742,15 @@ def test_real_codex_cli_pretooluse_deny_blocked(tmp_path: Path) -> None:
             codex_bin,
             "exec",
             "--sandbox", "workspace-write",
-            "--approve-for-me",
             "--dangerously-bypass-hook-trust",
             "--skip-git-repo-check",
             "-C", str(proj),
             "--json",
             prompt,
         ]
+        assert "--sandbox" in cmd and "workspace-write" in cmd
+        assert "--approve-for-me" not in cmd
+        assert "--dangerously-bypass-approvals-and-sandbox" not in cmd
         res = subprocess.run(
             cmd,
             capture_output=True,
@@ -1316,3 +1320,56 @@ def test_codex_cli_event_correlation_deny_logic() -> None:
         or any(bcmd in unrelated_stderr for bcmd in blocked_cmds)
     )
     assert can_correlate is False
+
+
+def test_codex_cli_e2e_flag_compatibility() -> None:
+    """Deterministic regression test for Round 7 Review: CLI flag compatibility.
+
+    Verifies that --sandbox workspace-write is never paired with conflicting --approve-for-me,
+    unrestricted --dangerously-bypass-approvals-and-sandbox is never used, and required flags
+    (--sandbox workspace-write, --dangerously-bypass-hook-trust, --skip-git-repo-check, -C, --json) are present.
+    """
+    import ast
+    import inspect
+    from tests.integrations import test_codex_cli
+
+    for func in (
+        test_codex_cli.test_real_codex_cli_pretooluse_allow_completed,
+        test_codex_cli.test_real_codex_cli_pretooluse_deny_blocked,
+    ):
+        src = inspect.getsource(func)
+        tree = ast.parse(src)
+        cmd_lists: list[list[str]] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id == "cmd":
+                        if isinstance(node.value, ast.List):
+                            items = [
+                                elt.value
+                                for elt in node.value.elts
+                                if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                            ]
+                            cmd_lists.append(items)
+
+        assert len(cmd_lists) == 1, f"Expected 1 cmd list in {func.__name__}, got {len(cmd_lists)}"
+        cmd = cmd_lists[0]
+
+        # Verify prohibited flags
+        assert "--approve-for-me" not in cmd, f"--approve-for-me must not be in cmd for {func.__name__}"
+        assert "--dangerously-bypass-approvals-and-sandbox" not in cmd, (
+            f"--dangerously-bypass-approvals-and-sandbox must not be in cmd for {func.__name__}"
+        )
+
+        # Verify required flags
+        assert "--sandbox" in cmd and "workspace-write" in cmd, (
+            f"--sandbox workspace-write must be in cmd for {func.__name__}"
+        )
+        assert "--dangerously-bypass-hook-trust" in cmd, (
+            f"--dangerously-bypass-hook-trust must be in cmd for {func.__name__}"
+        )
+        assert "--skip-git-repo-check" in cmd, f"--skip-git-repo-check must be in cmd for {func.__name__}"
+        assert "-C" in cmd, f"-C must be in cmd for {func.__name__}"
+        assert "--json" in cmd, f"--json must be in cmd for {func.__name__}"
+
+
