@@ -904,3 +904,12 @@ Important M6 safety observation: sandbox setup attempted granting read ACEs to n
 ## 2026-10-10 — TASK-012 round 9 user-directed ease and isolation requirement
 
 **Verdict: CHANGES_REQUESTED.** User explicitly rejects VM, additional Windows account, stopping Codex work, invasive Windows ACL provision or separate identity for routine product use. Previous Round 8 VM/dedicated-account suggestion is superseded as a product/testing prerequisite. AgentContract must be normal Windows account + existing Codex, project-only, reversible, no global auth/config/plugins/trust/ACL/process side effects. The Windows Codex elevated native sandbox can update real profile ACL even with isolated CODEX_HOME and currently errors on active node_repl.exe; never automatically trigger it. Require no-login, no-network, zero-intrusion default offline verification; online ALLOW/DENY remains a separate optional UNVERIFIED gate. Executor to harden safe UX/test preflight with regression coverage. Full criteria in TASK-012 Round 9; no main product merge or TASK-013.
+
+
+---
+
+## 2026-10-10 — TASK-012 round 10 review
+
+**Verdict CHANGES_REQUESTED**, implementation `1df5f263`, report HEAD `8bc5b370`. Offline doctor/project-scope smoke and nonintrusive test intent improved; executor reports Windows Python 3.12.9 373 passed / 2 skipped; no independent rerun, CI statuses or live E2E verification.
+
+Blockers: (1) nonfatal `could not create PATH aliases / Refusing to create helper binaries under temporary dir` warning is classified as UPSTREAM_ENV_BLOCKED, making both real E2E tests skip before checking results; (2) doctor only directly calls `run_hook` in process, so even marker-bearing non-executable hook commands can be misreported as installed/operational; (3) doctor asserts proven global Codex untouched/no ACL changes/no process kills without instrumenting those facts, and silent cleanup errors may be reported as PASS. Require severity-aware detection, actual safe subprocess command validation or honest in-process-only labelling, and bounded truthful integrity/cleanup reporting. Keep zero global side effects and no sandbox escalation. M7 still UNVERIFIED. Details in TASK-012 Round 10.
