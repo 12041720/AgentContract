@@ -1,10 +1,10 @@
 # TASK-012 — Codex CLI PreToolUse Output Protocol Compatibility
 
-**Status:** CHANGES_REQUESTED  
+**Status:** BLOCKED  
 **Milestone:** M7 — Codex Runtime Protocol Compatibility  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-012-codex-pretooluse-compat`  
-**Main-agent review:** CHANGES_REQUESTED — round 7
+**Main-agent review:** BLOCKED — round 8
 
 ## Objective
 
@@ -65,18 +65,23 @@ Conversely, when SpecGuard denies a tool call, the structured denial JSON (`perm
   - Updated `PreToolUseOutput` model in `src/agentcontract/integrations/codex/models.py` to support `updatedInput: Mapping[str, Any] | None = None`.
   - Updated `to_hook_response_dict()` so that when `permissionDecision == HookDecision.ALLOW` without `updatedInput`, an empty dictionary `{}` is returned (exits 0 with empty stdout). When `updatedInput` is provided on ALLOW, it is included in the structured dictionary.
   - Kept the structured denial dictionary with `permissionDecision="deny"` and `permissionDecisionReason` intact on DENY branches, ensuring all constraints and fail-closed protections remain fully enforced.
-- Addressed all Round 1 Main Agent review blockers:
-  1. **Strict Test Credential Isolation**: Forbidden automatic copying of real user `~/.codex/auth.json`. Real online tests in `test_codex_cli.py` strictly require explicit isolated test credentials via `AGENTCONTRACT_TEST_CODEX_AUTH_JSON` or `CODEX_TEST_AUTH_JSON`; if absent, tests explicitly skip with informative reason.
-  2. **Removed Dangerous Bypass Flag**: Removed `--dangerously-bypass-approvals-and-sandbox` in favor of `--approve-for-me` (which maintains the `workspace-write` sandbox and automatic reviews in non-interactive mode).
-  3. **Authentic SpecGuard Decision Traces**:
-     - Verified authentic Guard ALLOW decisions (`TraceEvent` with actor `GUARD`, event_kind `GUARD_DECISION`, and verdict `ALLOW`) in both real CLI execution (when credentials provided) and offline deterministic test suites (`test_pre_tool_use_cli_subprocess_allow_empty_stdout` and `test_pre_tool_use_guard_allow_and_block_traces`).
-     - Verified authentic Guard BLOCK decisions (`TraceEvent` with actor `GUARD`, event_kind `GUARD_DECISION`, and verdict `BLOCK`) in both real CLI execution and offline deterministic test suites.
-  4. **Workspace Session Confinement & Zero Repo/Global Pollution**:
-     - Added `AGENTCONTRACT_SESSION_DIR` environment variable support to `CodexSessionStore` and payload `cwd` fallback in `run_hook` to guarantee sessions are created exclusively inside the targeted project/temporary workspace.
-     - Isolated all CLI subprocess tests in `test_codex_hooks.py` and `test_codex_cli.py` with `tmp_path`, custom session directories, and `cwd=str(tmp_path)`. Verified repo root never contains `.agentcontract`.
-  5. **Leftover Auth Cleanup & User State Protection**:
-     - Checked and cleaned up all temporary copies of `auth.json` in system temp directories. Confirmed user original `~/.codex/auth.json` is intact and unmodified (3982 bytes).
-     - Added explicit cleanup in `test_codex_cli.py` `finally:` blocks to remove temporary `auth.json` copies immediately after tests.
+- Addressed all Round 5 Main Agent review blockers:
+  1. **Fixed quoted redirection false positives & workspace-aware path matching (Round 5 Blocker 1)**:
+     - Implemented quote-aware redirection extraction `extract_unquoted_redirections()` and quote-aware pipeline splitting `split_unquoted_pipeline()`. Redirections (`>`, `>>`) inside single or double quotes (e.g. `echo 'look > secrets/prod.key'` and `Set-Content -Path harmless.txt -Value 'note > secrets/prod.key'`) are ignored and no longer produce false positive write targets.
+     - Updated `_path_matches()` and `action_targets_protected_write()` to resolve absolute paths against `workspace_root` (or context `cwd`/`workspace`). Foreign cross-workspace absolute paths (e.g. `C:/other_workspace/secrets/prod.key`) are rejected (`False`).
+     - Added comprehensive regression negative tests in `test_action_targets_protected_write_precision` for quoted redirections and foreign cross-workspace absolute paths.
+  2. **Strict ALLOW completion & independent Codex runtime DENY proof (Round 5 Blocker 2)**:
+     - ALLOW test (`test_real_codex_cli_pretooluse_allow_completed`): requires terminal completed/successful status (`status in ("completed", "success")`, exit code 0 or None, and probe content verification). Rejects `in_progress`, pending, failed, or blocked. Updated `test_codex_cli_event_correlation_allow_logic` with deterministic negative assertions.
+     - DENY test (`test_real_codex_cli_pretooluse_deny_blocked`): hook's own stderr logs (`[AgentContract SpecGuard] BLOCKED ...`) are strictly excluded as proof of Codex honoring the block. Verification requires independent proof from the Codex CLI runtime: a machine event in Codex CLI JSONL with failed/blocked/denied/cancelled status or hook rejection error, OR distinct Codex runtime stderr diagnostics (excluding hook logs) tied to the blocked call/command, along with byte-for-byte SHA-256 hash preservation and absence of successful `ToolResult`. If unproven, marks `INCONCLUSIVE`.
+     - Separated Guard trace `call_id` and Codex event IDs until correspondence is established.
+  3. **Corrected commit SHA provenance (Round 5 Blocker 3)**:
+     - Replaced non-retrievable amended commit SHA with the verified, reachable implementation commit SHA pushed to remote branch `task/TASK-012-codex-pretooluse-compat`.
+- Addressed Round 7 Main Agent review:
+  4. **Resolved Codex CLI Argument Conflict (Round 7 Review)**:
+     - Removed the incompatible `"--approve-for-me"` flag from both `test_real_codex_cli_pretooluse_allow_completed` and `test_real_codex_cli_pretooluse_deny_blocked` subprocess invocations in `tests/integrations/test_codex_cli.py`, eliminating the `cannot be used with '--approve-for-me'` CLI parser exit code 2 error.
+     - Retained mandatory `"--sandbox", "workspace-write"`, `"--dangerously-bypass-hook-trust"`, `"--skip-git-repo-check"`, `-C <proj>`, `--json`, isolated `CODEX_HOME`, and project-local `AGENTCONTRACT_SESSION_DIR`. Never using unrestricted `--dangerously-bypass-approvals-and-sandbox`.
+     - Added in-test assertions in both scenarios verifying flag configuration before subprocess execution.
+     - Added deterministic offline regression test `test_codex_cli_e2e_flag_compatibility` that parses the AST of `cmd` in both scenarios to guarantee `--approve-for-me` is absent and `--sandbox workspace-write` is present.
 
 **Files changed:**
 - `src/agentcontract/integrations/codex/models.py`
@@ -88,22 +93,23 @@ Conversely, when SpecGuard denies a tool call, the structured denial JSON (`perm
 - `.agent/tasks/TASK-012.md`
 
 **Tests/checks run and results:**
+- `python -m pytest tests/integrations/test_codex_cli.py` (8 passed, 2 skipped)
 - `python -m pytest tests/integrations/test_codex_hooks.py` (22 passed)
 - `python -m pytest tests/integrations/test_codex_adapter.py` (16 passed)
-- `python -m pytest tests/integrations/test_codex_cli.py` (2 passed, 2 skipped due to absent test auth env vars)
-- Full test suite: `python -m pytest` on local Python 3.12.9: **357 passed, 2 skipped in 12.92s, 0 failures**.
-- Real Codex CLI E2E tests: both `test_real_codex_cli_pretooluse_allow_completed` and `test_real_codex_cli_pretooluse_deny_blocked` were accurately SKIPPED as intended, because neither `AGENTCONTRACT_TEST_CODEX_AUTH_JSON` nor `CODEX_TEST_AUTH_JSON` was provided in the test environment.
-- Verified zero repository root pollution: `Path(".agentcontract").exists() == False`.
-- Verified user original `~/.codex/auth.json` intact: exists and unchanged.
+- Full test suite on Python 3.12.9: **363 passed, 2 skipped in 14.01s, 0 failures**.
+- Real Codex CLI online E2E tests: both `test_real_codex_cli_pretooluse_allow_completed` and `test_real_codex_cli_pretooluse_deny_blocked` safely skip when dedicated isolated test credentials (`AGENTCONTRACT_TEST_CODEX_AUTH_JSON` / `CODEX_TEST_AUTH_JSON`) are absent from the environment.
+- Zero repository root pollution: `Path(".agentcontract").exists() == False`.
+- User original `~/.codex` completely untouched.
 
-**Known limitations:**
-- None.
+**Known limitations / E2E Acceptance Status:**
+- The CLI flag incompatibility between `--sandbox workspace-write` and `--approve-for-me` is resolved.
+- Real online Codex CLI tests will be executed and validated with dedicated test credentials.
 
 **Commit SHA:**
-- `0599b50a0c5947a49acbac70400c7775f8f0b0eb`
+- `62260ac4f7db0fa0ac9bfdffeb6a3826ac6e252d`
 
 **Questions/blockers for main-agent review:**
-- None. All 5 Round 1 review blockers resolved and fully verified.
+- None. Flag conflict resolved and verified via AST regression test; stopping as instructed for user-arranged authenticated live E2E rerun.
 
 ---
 
@@ -243,3 +249,25 @@ The `WARNING: ... could not create PATH aliases ... Refusing to create helper bi
 **Regression and proof:** Add a deterministic assertion preventing incompatible approval flags on either E2E invocation; run local Python 3.12.9 offline suite, then re-run `python -m pytest tests/integrations/test_codex_cli.py -k "real_codex_cli_pretooluse" -vv -rs` with the *already independently supplied* dedicated test auth. Preserve sanitized stdout JSONL, stderr and trace evidence for actual ALLOW/Completed and DENY/Blocked. If any new runtime failure appears, document it precisely and do not declare success based on static tests or hook stderr alone. Do not paste auth or API tokens into report.
 
 **Disposition:** Dedicated auth prerequisite is now available in the user's local test environment, but test harness commands fail before agent runtime. Change task status from BLOCKED to CHANGES_REQUESTED pending CLI flag fix and live retest. No product merge, no TASK-013, no global Codex changes.
+
+
+### Round 8 review — 2026-10-10 — authenticated E2E reaches Codex but Windows execution policy blocks tools
+
+**Verdict:** BLOCKED — Windows sandbox/tool-process preflight and project-hook activation unverified; NOT ACCEPTED.  
+**Reviewed branch/report HEAD:** `98ae1a28a7907499eff263cc6526f6546187e2ca`  
+**Evidence:** User-provided native Windows PowerShell pytest output for Python 3.12.9, 2 failed / 8 deselected in 32.03s. This is actual opt-in authenticated Codex CLI invocation evidence, not a passing live E2E.
+
+**ALLOW failure:** Prior `--approve-for-me` conflict is resolved. Codex produces JSONL thread/turn events and connects to the model, but `Get-Content -LiteralPath probe.txt` fails **before the child shell starts**, with `codex_core::tools::router: exec_command failed: CreateProcess ... rejected: blocked by policy`. Codex exits 0 and emits an agent message saying the environment blocked the command; `probe_content` is absent. This is NOT evidence of SpecGuard rejecting a compliant action. It is a tool execution policy/sandbox issue. A separate warning reports inability to create PATH aliases because test `CODEX_HOME` is beneath Windows TEMP; possible environment contributor, not established root cause.
+
+**DENY failure:** Codex subprocess completes sufficiently to reach the test's later assertion, but `deny_proj/.agentcontract/sessions` **does not exist**. The test did install project-local `.codex/hooks.json`; nevertheless installation alone does not demonstrate that Codex loaded/called the hook. Because no Guard trace exists, neither a protected write attempt nor Guard BLOCK nor runtime hook DENY can be established. The protected file remaining unchanged is insufficient: no tool execution/hook activation has been proven.
+
+**Likely preflight/configuration issue, not yet proven:** Current tests create a fresh `CODEX_HOME` inside `tmp_path` and copy only opt-in test `auth.json`; they do not configure the Windows native sandbox backend. OpenAI Codex configuration documents `windows.sandbox="elevated"` (Windows sandbox implementation), separately from the bounded `--sandbox workspace-write` filesystem permission mode. Public native Windows Codex reports describe identical `CreateProcess ... blocked by policy` on an isolated home without this selector, though Store/MSIX PowerShell launch restrictions are another possibility. These are hypotheses pending a controlled A/B run, not an established diagnosis of this exact machine.
+
+**Required next diagnostics (no security bypass):**
+1. In the **existing test-only CODEX_HOME**, establish executable/CLI version and effective native Windows sandbox backend. Perform a non-model sandbox smoke probe for a harmless `cmd.exe /c echo` and then an isolated read-only PowerShell probe; compare with/without the explicit `-c 'windows.sandbox="elevated"'` override, retaining bounded workspace-write and all Windows security controls. If the CLI syntax differs, inspect its `sandbox --help`; do not fall back to `danger-full-access`.
+2. Examine project-hook activation only inside the synthetic project: verify Codex recognizes project `.codex/hooks.json`, project trust rules, that the `python -m agentcontract.integrations.codex.hooks` command is executable in the sandbox and the injected `AGENTCONTRACT_SESSION_DIR` reaches the handler. Separate direct hook smoke tests from Codex-dispatched hook tests; do not manufacture trace evidence.
+3. Investigate the warning about temporary `CODEX_HOME` helper aliases. If the actual sandbox requires a CODEX_HOME outside Windows TEMP, create a per-test disposable directory under a dedicated `%LOCALAPPDATA%/AgentContract/` subtree with rigorous `try/finally` cleanup; never alter the personal home.
+4. Make preflight failure clearly distinguish Windows policy rejection/hook not loaded from a product ALLOW/DENY protocol failure. Do not treat `res.returncode==0`, an agent final message, protected checksum stability, or absence of a session as successful Guard evidence.
+5. Only after harmless shell and genuine session hook preflight pass, rerun isolated ALLOW/Completed and DENY/Blocked E2E with the dedicated test credentials; capture sanitized Codex JSONL and linked Guard trace. No token/auth contents in reports.
+
+**Scope boundary:** Do not relax `--sandbox workspace-write`, switch to `danger-full-access`/`--dangerously-bypass-approvals-and-sandbox`, copy personal `~/.codex/auth.json`, modify global Codex trust/config, or merge product to `main`. TASK-012 remains sole active task. Review decision is BLOCKED pending safe Windows environment + hook-dispatch preflight evidence; no TASK-013.
