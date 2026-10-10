@@ -1,10 +1,10 @@
 # TASK-012 — Codex CLI PreToolUse Output Protocol Compatibility
 
-**Status:** BLOCKED  
+**Status:** CHANGES_REQUESTED  
 **Milestone:** M7 — Codex Runtime Protocol Compatibility  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-012-codex-pretooluse-compat`  
-**Main-agent review:** BLOCKED — round 6
+**Main-agent review:** CHANGES_REQUESTED — round 7
 
 ## Objective
 
@@ -224,3 +224,23 @@ Keep patch tightly scoped to test safety, evidence correlation, and report accur
 **Scope decision:** Do not weaken or waive the real online acceptance criterion; do not merge product/test changes to main or activate TASK-013. This task is **BLOCKED**, pending dedicated opt-in test credentials / authentic live evidence. No further offline-only rewrite cycle is requested in the meantime.
 
 **Unblock action for execution agent:** Await availability of dedicated test authentication; then execute only the two existing isolated E2E scenarios, report sanitized Codex JSONL + trace correlation, record exact pass/fail/skip and reachable commit SHA, and resubmit for main-agent review. Do not reveal authentication contents in the report or chat.
+
+
+### Round 7 review — 2026-10-10 — first authenticated E2E attempt
+
+**Verdict:** CHANGES_REQUESTED — CLI invocation compatibility; E2E still UNVERIFIED  
+**Review basis:** User-provided Windows PowerShell/pytest output from Python 3.12.9, pytest 8.4.2, running `-k "real_codex_cli_pretooluse"` in the AgentContract workspace. No tokens/auth contents were uploaded. Reported test-only auth login succeeded and the test credential path exists.
+
+**Live E2E test results:** `2 failed, 7 deselected in 1.33s`. Both `test_real_codex_cli_pretooluse_allow_completed` and `test_real_codex_cli_pretooluse_deny_blocked` failed at the same CLI option-parser boundary, `res.returncode == 2`, **before any AgentContract ALLOW/DENY runtime behavior was exercised**:
+
+```
+error: the argument '--sandbox <SANDBOX_MODE>' cannot be used with '--approve-for-me'
+```
+
+The `WARNING: ... could not create PATH aliases ... Refusing to create helper binaries under temporary dir ...` is a separate, currently non-fatal warning; do not change sandbox or users' global Codex settings as a workaround.
+
+**Required minimal patch:** In the **two** real Codex CLI subprocess argument arrays in `tests/integrations/test_codex_cli.py`, remove the obsolete/incompatible `"--approve-for-me"` element; **retain** explicit `"--sandbox", "workspace-write"`, `"--dangerously-bypass-hook-trust"` only for the isolated test workspace with vetted project hooks, project-local `-C`, `--json`, isolated `CODEX_HOME` and `AGENTCONTRACT_SESSION_DIR`. Never use `--dangerously-bypass-approvals-and-sandbox` or `danger-full-access`. Codex CLI's documented non-interactive form is `codex exec --sandbox workspace-write`. If approval policy must be selected explicitly, verify support from the installed `codex exec --help` and use the supported `--ask-for-approval never` rather than `--approve-for-me`, but prioritize the simplest safe compatible argv.
+
+**Regression and proof:** Add a deterministic assertion preventing incompatible approval flags on either E2E invocation; run local Python 3.12.9 offline suite, then re-run `python -m pytest tests/integrations/test_codex_cli.py -k "real_codex_cli_pretooluse" -vv -rs` with the *already independently supplied* dedicated test auth. Preserve sanitized stdout JSONL, stderr and trace evidence for actual ALLOW/Completed and DENY/Blocked. If any new runtime failure appears, document it precisely and do not declare success based on static tests or hook stderr alone. Do not paste auth or API tokens into report.
+
+**Disposition:** Dedicated auth prerequisite is now available in the user's local test environment, but test harness commands fail before agent runtime. Change task status from BLOCKED to CHANGES_REQUESTED pending CLI flag fix and live retest. No product merge, no TASK-013, no global Codex changes.
