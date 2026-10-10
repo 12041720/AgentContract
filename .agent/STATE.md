@@ -17,7 +17,7 @@
 - Work branch: `task/TASK-012-codex-pretooluse-compat`
 - Status: **CHANGES_REQUESTED**
 - Owner: Execution agent
-- Main-agent review: Round 10 CHANGES_REQUESTED (nonfatal Codex warning misclassified; doctor in-process hook false-positive; unverified global-integrity PASS claims)
+- Main-agent review: Round 11 CHANGES_REQUESTED (doctor ALLOW stdout false-positive; Codex-home integrity snapshot overclaims)
 - Previous accepted milestone: TASK-011 / M6
 
 ## Main-agent checkpoint
@@ -154,3 +154,10 @@ On a new session:
 - New project-local offline `agentcontract codex doctor` improves UX, but its direct in-process `run_hook` cannot establish actual project hook command dispatch or Codex acceptance. Doctor may PASS if hook command contains marker but is not executable, and overclaims integrity without evidence.
 - Live E2E helper erroneously treats a known nonfatal temp CODEX_HOME PATH-alias warning as fatal upstream block and may skip genuine tests. Must separate warnings from actual tool/sandbox failures.
 - Round 10 CHANGES_REQUESTED; enforce truthful status/cleanup and simple safe offline test, no unsafe sandbox setup, no main product merge/TASK-013; real Codex E2E still UNVERIFIED.
+
+## M7 round 11 checkpoint (2026-10-10)
+
+- Reviewed implementation `75abc98a8838869cc4038c168bded3cce3342134`, report head `cf9507189715358f22329cf8fffad92f404b8235`. Executor reports Windows Python 3.12.9 377 passed/2 skipped; both true online Codex E2E still skipped/UNVERIFIED.
+- Nonfatal PATH warning no longer treated as blocker, doctor now calls actual configured SessionStart/PreToolUse via safe offline subprocess, and cleanup errors are visible.
+- Round 11 CHANGES_REQUESTED: doctor currently accepts garbage or structured nonempty ALLOW stdout, contradicting required empty-wire-format; global Codex home snapshot observes only additions + three files and may falsely claim entire home unchanged after deletion or other changes.
+- Fix two narrow evidence issues, maintain normal Windows existing Codex account/project isolation; no product merge/TASK-013.
