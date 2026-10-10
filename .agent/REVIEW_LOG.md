@@ -940,3 +940,10 @@ Do not broaden task or change Windows sandbox/global Codex configs, ACLs, proces
 
 Verified from user PowerShell output: checkout fast-forward to `ab13061`, `pytest -k "not real_codex_cli_pretooluse"`: **383 passed, 2 deselected (29.46s)**; isolated disposable TEMP project hook install + doctor exit **0** + status + uninstall, with project hooks file absent after uninstall. Doctor observed real AgentContract handler subprocess SessionStart/PreToolUse, Guard ALLOW/BLOCK traces, empty ALLOW stdout, structured DENY; scoped `~/.codex` snapshot unchanged for top-level names and tracked `auth.json`/`config.toml`. Untracked global content, ACLs, Codex GUI remain unobserved. **OFFLINE VALIDATED, native Codex E2E UNVERIFIED, overall TASK-012 BLOCKED**. No merge/TASK-013. No risky Windows sandbox preparation required.
 
+---
+
+
+## 2026-10-10 — TASK-012 real E2E run: both blocked by Codex process policy; Python GBK decoding warning
+
+User-run `codex-cli 0.162.0`, Python 3.12.9, `pytest -k real_codex_cli_pretooluse -vv -rs`: **2 skipped / 13 deselected / 1 warning (30.09s)**. ALLOW Get-Content and DENY Set-Content both rejected at Codex exec_command/CreateProcess for WindowsApps/MSIX PowerShell 7.6.6 (`pwsh.exe`) with `rejected: blocked by policy`. Since test skipped before session-trace verification, actual hook invocation and enforcement both remain UNVERIFIED; DENY not credited. Additional Python subprocess stdout thread exception: UnicodeDecodeError on Windows default `gbk` from UTF-8 Codex output. Executor should explicitly decode subprocess output as UTF-8 and add regression tests, improve diagnostic separation, and investigate only *read-only/scoped* shell path configuration, no global ACL/config/process changes or unsafe sandbox fallback. 383 offline tests remain independently user-verified; TASK-012 overall BLOCKED.
+

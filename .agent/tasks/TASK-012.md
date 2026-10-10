@@ -4,7 +4,7 @@
 **Milestone:** M7 — Codex Runtime Protocol Compatibility  
 **Owner:** Execution agent  
 **Work branch:** `task/TASK-012-codex-pretooluse-compat`  
-**Main-agent review:** BLOCKED — round 12 (offline code PASS; live Codex E2E unverified)
+**Main-agent review:** BLOCKED — round 13 (real Codex policy block and GBK test defect)
 
 ## Objective
 
@@ -376,4 +376,19 @@ Safe next step: user saves active Codex work, exits Desktop/VSCode integration/o
 **Status: OFFLINE_VALIDATED; online real Codex E2E still UNVERIFIED; TASK-012 overall BLOCKED.** Local checkout clean before fetch; `git fetch` + `git pull --ff-only` confirmed code and governance HEAD `ab13061`. User ran `python -m pytest -k "not real_codex_cli_pretooluse" -q`: **383 passed, 2 deselected in 29.46s**, 0 failed. On a uniquely named disposable Windows TEMP project, used the normal Python project package through local PYTHONPATH, installed 5 project-only Codex lifecycle hook handlers. `python -m agentcontract.cli codex doctor --project <TEMP>` returned **exit code 0** and explicitly passed SessionStart/PreToolUse subprocess hooks, SpecGuard ALLOW & BLOCK decision traces, ALLOW empty stdout and DENY structured permissionDecision=deny, smoke cleanup and scoped global Codex home checks. Scoped snapshot reported top-level entries identical, tracked `auth.json` and `config.toml` unchanged, and explicitly *NOT OBSERVED* system ACLs/untracked contents/Desktop state. Project `codex status` reported no persisted sessions. `codex uninstall` removed local handlers, and `Test-Path ...\.codex\hooks.json` returned **False**. PowerShell restored previous PYTHONPATH.
 
 This is first-hand user-run offline evidence closing the round-12 **offline** gate. It is **NOT** evidence that the native Codex CLI loaded hooks, ran an ALLOW command successfully or honored a real DENY; the two online E2E tests were excluded. External Codex Windows policy blocking and global CUA runtime ACL sharing-violation preflight remain. No changes to product code, main, or next task; do not weaken sandbox or mutate unrelated Codex state for verification.
+
+
+### Round 13 user-run real Codex CLI E2E diagnosis (2026-10-10)
+
+**Main-agent verdict: BLOCKED — LIVE_E2E_UNVERIFIED, offline validation remains PASSED.** User ran Windows 11, Python 3.12.9, Codex CLI 0.162.0 authenticated opt-in E2E with test-specific `AGENTCONTRACT_TEST_CODEX_AUTH_JSON`. Results: **2 skipped, 13 deselected, 1 warning, 30.09s**. Both specific `test_real_codex_cli_pretooluse_*` cases skipped as `UPSTREAM_ENV_BLOCKED`: Codex exec_command/CreateProcess refused its **WindowsApps/MSIX PowerShell 7.6.6 executable** under `C:\Program Files\WindowsApps\Microsoft.PowerShell_7.6.6.0_x64__8wekyb3d8bbwe\pwsh.exe`. ALLOW `Get-Content -LiteralPath probe.txt -Raw` and DENY `Set-Content -Path secrets/prod.key -Value 'OVERWRITTEN'` both failed with `rejected: blocked by policy`. This is a Codex execution-policy failure at tool process creation; the DENY failure is **not evidence of Guard enforcing DENY**, and the ALLOW failure is **not evidence of broken Guard**. Current E2E skips before validating project-local session trace, so whether the hook ran is unverified. No elevated sandbox, ACL resets or process kills were used.
+
+**Additional actionable test defect:** `PytestUnhandledThreadExceptionWarning` in DENY test: Python 3.12 `subprocess._readerthread` `UnicodeDecodeError: 'gbk' codec can't decode byte 0x9d in position 760`. Online subprocess calls use `text=True` without `encoding`, so Chinese Windows CP936/GBK may fail to decode UTF-8 Codex JSONL/stderr and mask evidence.
+
+**Executor narrowly scoped next steps (same TASK-012):**
+1. Add explicit `encoding="utf-8"` and `errors="replace"` to all real online Codex subprocess.run paths including retries. Regression test that no locale-dependent defaults remain; avoid global Python locale/codepage changes.
+2. Separate **(a)** Codex-native shell/process policy blocker, **(b)** observed hook dispatch/Guard trace, and **(c)** Codex runtime enforcement in result diagnostics. If policy blocks before command spawn, report UPSTREAM_ENV_BLOCKED and hook/effect as UNVERIFIED unless trace actually proves invocation. The protected file remaining unchanged alone never counts as Guard DENY proof; never auto-accept skipped E2E.
+3. Make a **read-only diagnostic** of why isolated test CODEX_HOME differs from the existing working Codex setup and why the chosen shell resolves to WindowsApps pwsh.exe. A shell executable path that differs from a normal working Codex invocation is a useful environmental clue, not proven root cause. If safe scoped configuration or supported native runtime adjustment is available, demonstrate it without touching user-global config, sessions, credentials, Windows ACLs, trust/approvals, or processes and without elevated/unelevated sandbox provisioning, unrestricted mode or VM requirement. If no safe solution, keep external upstream blocker and do not design a harmful workaround.
+4. Preserve the already verified **383 offline passes**; rerun full offline suite and a synthetic encoding/policy-rejection regression before asking user to run live Codex again. No main product merge or TASK-013 while true live ALLOW/Completed + DENY/Blocked evidence is missing.
+
+**Security/product UX:** Existing normal Windows account and other Codex projects must work unchanged. The special test auth path is an explicit opt-in fixture, not a product requirement. Never force-kill `node_repl`, modify global ACLs or invoke elevated sandbox to make tests pass. Keep upstream native runtime limitations distinct from AgentContract correctness.
 

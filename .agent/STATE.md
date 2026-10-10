@@ -17,7 +17,7 @@
 - Work branch: `task/TASK-012-codex-pretooluse-compat`
 - Status: **BLOCKED**
 - Owner: Execution agent
-- Main-agent review: Round 12 BLOCKED (offline fixes pass code review; real Codex ALLOW/DENY E2E unverified)
+- Main-agent review: Round 13 BLOCKED (real Codex E2E both policy-blocked; online Python GBK decode bug)
 - Previous accepted milestone: TASK-011 / M6
 
 ## Main-agent checkpoint
@@ -174,4 +174,11 @@ On a new session:
 - User verified local task branch HEAD `ab13061` via safe fast-forward. Windows offline pytest excluding both real online Codex cases: **383 passed, 2 deselected in 29.46 seconds**.
 - Disposable TEMP project: 5 project-only hook events installed; `agentcontract codex doctor` exited 0, verifying child-process SessionStart/PreToolUse, SpecGuard ALLOW/BLOCK trace and correct stdout JSON/wire format, cleanup and scoped tracked global Codex home integrity. Status saw zero persisted sessions; uninstall removed project hooks file (Test-Path False). Parent PYTHONPATH restored.
 - This establishes OFFLINE_VALIDATED from user-run logs. Genuine native Codex CLI runtime ALLOW/Completed + DENY/Blocked E2E still UNVERIFIED; TASK-012 overall BLOCKED. No product merge/TASK-013, and no global ACL/config/process modifications or sandbox bypass.
+
+## M7 round 13 checkpoint (2026-10-10)
+
+- Real Windows user-run opt-in E2E: Codex 0.162.0 Python 3.12.9, 2 SKIPPED / 13 deselected / 1 warning; both attempted shell calls blocked at CreateProcess with WindowsApps MSIX pwsh.exe path, including harmless ALLOW read and DENY write.
+- Neither actual hook invocation nor native Guard enforcement proven; test skip before trace check, so external policy failure is correctly not accepted. 383-pass offline validation remains valid.
+- Also Python subprocess reader thread GBK/UTF-8 decode error; executor must use explicit UTF-8, add regression, diagnose shell path difference read-only/scoped, never elevate/provision Windows sandbox or modify global Codex environments/ACL/processes.
+- TASK-012 still BLOCKED; no main merge or TASK-013.
 
